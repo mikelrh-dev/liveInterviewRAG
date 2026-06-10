@@ -9,7 +9,7 @@ class Config:
 
     def __init__(self):
         # API Keys
-        self.OWL_API_KEY: str = os.getenv("OWL_API_KEY", "")
+        self.OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "")
 
         # Whisper settings
         self.WHISPER_MODEL: str = os.getenv("WHISPER_MODEL", "base")
@@ -20,8 +20,9 @@ class Config:
         self.TTS_VOICE: str = os.getenv("TTS_VOICE", "es-ES-AlvaroNeural")
 
         # LLM settings
-        self.OWL_API_URL: str = os.getenv("OWL_API_URL", "https://api.owl.ai/v1/chat/completions")
-        self.OWL_MODEL: str = os.getenv("OWL_MODEL", "gpt-3.5-turbo")
+        self.LLM_MODEL: str = os.getenv("LLM_MODEL", "openrouter/owl-alpha")
+        self.LLM_TEMPERATURE: float = float(os.getenv("LLM_TEMPERATURE", "0.7"))
+        self.LLM_MAX_TOKENS: int = int(os.getenv("LLM_MAX_TOKENS", "500"))
 
         # RAG settings
         self.EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")

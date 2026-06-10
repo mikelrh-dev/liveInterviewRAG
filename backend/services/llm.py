@@ -1,29 +1,25 @@
-"""LLM service using Owl API for candidate response generation."""
+"""LLM service using OpenRouter API with Owl Alpha model."""
 
 import logging
 from typing import Optional
 
-import httpx
+from openrouter import OpenRouter
 
 logger = logging.getLogger(__name__)
 
 
 class LLMService:
-    """Owl API client for generating candidate responses."""
+    """OpenRouter API client for generating candidate responses."""
 
-    def __init__(self, api_key: str, api_url: str, model: str = "gpt-3.5-turbo"):
+    def __init__(self, api_key: str, model: str = "openrouter/owl-alpha",
+                 temperature: float = 0.7, max_tokens: int = 500):
         self.api_key = api_key
-        self.api_url = api_url
         self.model = model
-        self._client: Optional[httpx.AsyncClient] = None
+        self.temperature = temperature
+        self.max_tokens = max_tokens
 
-    async def _get_client(self) -> httpx.AsyncClient:
-        if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(timeout=30.0)
-        return self._client
-
-    async def generate(self, prompt: str, context: str = "", system_prompt: str = "") -> str:
-        """Generate a response using the Owl API.
+    def generate(self, prompt: str, context: str = "", system_prompt: str = "") -> str:
+        """Generate a response using the OpenRouter API.
 
         Args:
             prompt: The user's question/input.
@@ -37,7 +33,7 @@ class LLMService:
             RuntimeError: If API call fails or returns invalid response.
         """
         if not self.api_key:
-            raise RuntimeError("OWL_API_KEY not configured")
+            raise RuntimeError("OPENROUTER_API_KEY not configured")
 
         messages = []
 
@@ -45,47 +41,29 @@ class LLMService:
             messages.append({"role": "system", "content": system_prompt})
 
         if context:
-            user_content = f"Context from candidate's profile:\n{context}\n\nUser question: {prompt}"
+            user_content = (
+                f"Context from the candidate's profile:\n{context}\n\n"
+                f"Recruiter question: {prompt}"
+            )
         else:
             user_content = prompt
 
         messages.append({"role": "user", "content": user_content})
 
         try:
-            client = await self._get_client()
-            response = await client.post(
-                self.api_url,
-                headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": self.model,
-                    "messages": messages,
-                    "temperature": 0.7,
-                    "max_tokens": 500,
-                },
-            )
+            with OpenRouter(api_key=self.api_key) as client:
+                response = client.chat.send(
+                    model=self.model,
+                    messages=messages,
+                    temperature=self.temperature,
+                    max_tokens=self.max_tokens,
+                )
+            return response.choices[0].message.content
 
-            if response.status_code == 429:
-                logger.warning("Rate limited by Owl API")
+        except Exception as e:
+            error_msg = str(e).lower()
+            if "rate" in error_msg or "429" in error_msg:
+                logger.warning("Rate limited by OpenRouter API")
                 raise RuntimeError("Rate limit exceeded. Please try again later.")
-
-            if response.status_code != 200:
-                logger.error("Owl API error: %d - %s", response.status_code, response.text)
-                raise RuntimeError(f"LLM request failed: HTTP {response.status_code}")
-
-            data = response.json()
-            return data["choices"][0]["message"]["content"]
-
-        except httpx.TimeoutException:
-            logger.error("Owl API timeout")
-            raise RuntimeError("Response generation timed out")
-        except httpx.HTTPError as e:
-            logger.error("Owl API HTTP error: %s", e)
+            logger.error("OpenRouter API error: %s", e)
             raise RuntimeError(f"Response generation temporarily unavailable: {e}")
-
-    async def close(self):
-        """Close the HTTP client."""
-        if self._client and not self._client.is_closed:
-            await self._client.aclose()

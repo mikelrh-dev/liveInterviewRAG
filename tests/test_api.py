@@ -28,7 +28,7 @@ def mock_services():
         mock_rag.chunks = [MagicMock()]  # Non-empty
 
         # LLM mock
-        mock_llm.generate = AsyncMock(return_value="I built InterviewTTS using Python and FastAPI.")
+        mock_llm.generate.return_value = "I built InterviewTTS using Python and FastAPI."
 
         # TTS mock
         async def mock_synthesize(text, output_path=None):
@@ -162,7 +162,7 @@ class TestMessageEndpoint:
 
     def test_send_message_llm_failure(self, client, mock_services):
         """LLM failure returns 503."""
-        mock_services["llm"].generate = AsyncMock(side_effect=RuntimeError("API unavailable"))
+        mock_services["llm"].generate.side_effect = RuntimeError("API unavailable")
 
         conv_response = client.post("/api/conversation")
         conversation_id = conv_response.json()["conversation_id"]

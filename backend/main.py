@@ -1,5 +1,6 @@
 """InterviewTTS — FastAPI application with voice interview pipeline."""
 
+import asyncio
 import logging
 import os
 import time
@@ -37,9 +38,10 @@ stt_service = STTService(
     compute_type=config.WHISPER_COMPUTE_TYPE,
 )
 llm_service = LLMService(
-    api_key=config.OWL_API_KEY,
-    api_url=config.OWL_API_URL,
-    model=config.OWL_MODEL,
+    api_key=config.OPENROUTER_API_KEY,
+    model=config.LLM_MODEL,
+    temperature=config.LLM_TEMPERATURE,
+    max_tokens=config.LLM_MAX_TOKENS,
 )
 tts_service = TTSService(
     voice=config.TTS_VOICE,
@@ -82,7 +84,6 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
-    await llm_service.close()
     logger.info("InterviewTTS backend stopped")
 
 
@@ -224,7 +225,8 @@ async def send_message(conversation_id: str, audio: UploadFile = File(...)):
         # Step 3: LLM — generate response as candidate
         system_prompt = build_system_prompt(context)
         try:
-            response_text = await llm_service.generate(
+            response_text = await asyncio.to_thread(
+                llm_service.generate,
                 prompt=user_text,
                 context=context,
                 system_prompt=system_prompt,
