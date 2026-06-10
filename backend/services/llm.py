@@ -1,11 +1,12 @@
 """LLM service using OpenRouter API with Owl Alpha model."""
 
 import logging
-from typing import Optional
 
-from openrouter import OpenRouter
+import httpx
 
 logger = logging.getLogger(__name__)
+
+OPENROUTER_BASE = "https://openrouter.ai/api/v1"
 
 
 class LLMService:
@@ -51,19 +52,41 @@ class LLMService:
         messages.append({"role": "user", "content": user_content})
 
         try:
-            with OpenRouter(api_key=self.api_key) as client:
-                response = client.chat.send(
-                    model=self.model,
-                    messages=messages,
-                    temperature=self.temperature,
-                    max_tokens=self.max_tokens,
+            with httpx.Client(timeout=60.0) as client:
+                response = client.post(
+                    f"{OPENROUTER_BASE}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": self.model,
+                        "messages": messages,
+                        "temperature": self.temperature,
+                        "max_tokens": self.max_tokens,
+                    },
                 )
-            return response.choices[0].message.content
 
+                if response.status_code == 429:
+                    logger.warning("Rate limited by OpenRouter API")
+                    raise RuntimeError("Rate limit exceeded. Please try again later.")
+
+                if response.status_code == 401 or response.status_code == 403:
+                    logger.error("OpenRouter auth error: %s", response.text)
+                    raise RuntimeError("Authentication failed. Check your OPENROUTER_API_KEY.")
+
+                if response.status_code != 200:
+                    logger.error("OpenRouter API error: %d - %s", response.status_code, response.text)
+                    raise RuntimeError(f"Response generation temporarily unavailable: HTTP {response.status_code}")
+
+                data = response.json()
+                return data["choices"][0]["message"]["content"]
+
+        except httpx.TimeoutException:
+            logger.error("OpenRouter API timeout")
+            raise RuntimeError("Response generation timed out. Try again.")
+        except RuntimeError:
+            raise
         except Exception as e:
-            error_msg = str(e).lower()
-            if "rate" in error_msg or "429" in error_msg:
-                logger.warning("Rate limited by OpenRouter API")
-                raise RuntimeError("Rate limit exceeded. Please try again later.")
             logger.error("OpenRouter API error: %s", e)
             raise RuntimeError(f"Response generation temporarily unavailable: {e}")

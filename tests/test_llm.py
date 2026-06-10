@@ -1,7 +1,8 @@
 """Tests for LLM service with mocked OpenRouter API."""
 
+import httpx
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch, MagicMock
 
 from backend.services.llm import LLMService
 
@@ -26,41 +27,68 @@ class TestLLMService:
     def test_generate_success(self):
         """Generate returns text from successful API response."""
         mock_response = MagicMock()
-        mock_response.choices = [
-            MagicMock(message=MagicMock(
-                content="I am a junior developer with experience in Python."
-            ))
-        ]
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": "Soy Mikel, un desarrollador junior."}}]
+        }
 
-        with patch("backend.services.llm.OpenRouter") as mock_openrouter:
-            mock_client = MagicMock()
-            mock_client.chat.send.return_value = mock_response
-            mock_openrouter.return_value.__enter__.return_value = mock_client
+        with patch("backend.services.llm.httpx.Client") as mock_client:
+            mock_client.return_value.__enter__.return_value = mock_client
+            mock_client.post.return_value = mock_response
 
             svc = LLMService(api_key="test-key")
-            result = svc.generate("Tell me about yourself")
+            result = svc.generate("Cuéntame de ti")
 
-            assert "junior developer" in result
-            mock_client.chat.send.assert_called_once()
+            assert "Mikel" in result
+            mock_client.post.assert_called_once()
 
     def test_generate_rate_limit(self):
         """Generate raises on rate limit."""
-        with patch("backend.services.llm.OpenRouter") as mock_openrouter:
-            mock_client = MagicMock()
-            mock_client.chat.send.side_effect = Exception("rate limit exceeded")
-            mock_openrouter.return_value.__enter__.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.status_code = 429
+
+        with patch("backend.services.llm.httpx.Client") as mock_client:
+            mock_client.return_value.__enter__.return_value = mock_client
+            mock_client.post.return_value = mock_response
 
             svc = LLMService(api_key="test-key")
             with pytest.raises(RuntimeError, match="Rate limit"):
                 svc.generate("Hello")
 
+    def test_generate_auth_error(self):
+        """Generate raises on auth error."""
+        mock_response = MagicMock()
+        mock_response.status_code = 401
+        mock_response.text = "Unauthorized"
+
+        with patch("backend.services.llm.httpx.Client") as mock_client:
+            mock_client.return_value.__enter__.return_value = mock_client
+            mock_client.post.return_value = mock_response
+
+            svc = LLMService(api_key="bad-key")
+            with pytest.raises(RuntimeError, match="Authentication"):
+                svc.generate("Hello")
+
     def test_generate_server_error(self):
         """Generate raises on server error."""
-        with patch("backend.services.llm.OpenRouter") as mock_openrouter:
-            mock_client = MagicMock()
-            mock_client.chat.send.side_effect = Exception("API error 500")
-            mock_openrouter.return_value.__enter__.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.status_code = 500
+        mock_response.text = "Server Error"
+
+        with patch("backend.services.llm.httpx.Client") as mock_client:
+            mock_client.return_value.__enter__.return_value = mock_client
+            mock_client.post.return_value = mock_response
 
             svc = LLMService(api_key="test-key")
-            with pytest.raises(RuntimeError, match="Response generation"):
+            with pytest.raises(RuntimeError, match="temporarily unavailable"):
+                svc.generate("Hello")
+
+    def test_generate_timeout(self):
+        """Generate raises on timeout."""
+        with patch("backend.services.llm.httpx.Client") as mock_client:
+            mock_client.return_value.__enter__.return_value = mock_client
+            mock_client.post.side_effect = httpx.TimeoutException("timeout")
+
+            svc = LLMService(api_key="test-key")
+            with pytest.raises(RuntimeError, match="timed out"):
                 svc.generate("Hello")
