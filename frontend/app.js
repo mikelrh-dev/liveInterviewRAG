@@ -1,6 +1,6 @@
 /**
  * InterviewTTS — Frontend voice chat logic
- * Handles microphone recording, audio playback, and conversation display.
+ * Handles microphone recording, VAD auto-stop, audio playback, and conversation display.
  */
 
 const API_BASE = '';
@@ -9,6 +9,14 @@ let mediaRecorder = null;
 let audioChunks = [];
 let isRecording = false;
 let isProcessing = false;
+
+// VAD (Voice Activity Detection) state
+let audioContext = null;
+let vadAnalyser = null;
+let vadAnimationId = null;
+let silenceStart = null;
+const SILENCE_TIMEOUT_MS = 1500;
+const RMS_THRESHOLD = 0.025;
 
 // DOM elements
 const micButton = document.getElementById('micButton');
@@ -74,19 +82,87 @@ function escapeHtml(text) {
 }
 
 /**
+ * RMS (volume) from AnalyserNode — 0 = silence, 1 = max
+ */
+function calculateRms(analyser) {
+    const buffer = new Uint8Array(analyser.fftSize);
+    analyser.getByteTimeDomainData(buffer);
+    let sum = 0;
+    for (let i = 0; i < buffer.length; i++) {
+        const value = (buffer[i] - 128) / 128;
+        sum += value * value;
+    }
+    return Math.sqrt(sum / buffer.length);
+}
+
+/**
+ * VAD loop — runs on each animation frame while recording
+ */
+function vadLoop() {
+    if (!isRecording || !vadAnalyser) return;
+
+    const rms = calculateRms(vadAnalyser);
+
+    if (rms < RMS_THRESHOLD) {
+        // Silence detected
+        if (silenceStart === null) {
+            silenceStart = Date.now();
+        } else if (Date.now() - silenceStart >= SILENCE_TIMEOUT_MS) {
+            updateStatus('Procesando...');
+            stopRecording(true); // auto-stop by VAD
+            return;
+        }
+    } else {
+        // Sound detected — reset silence timer
+        silenceStart = null;
+    }
+
+    vadAnimationId = requestAnimationFrame(vadLoop);
+}
+
+/**
+ * Start VAD monitoring from a media stream
+ */
+function startVad(stream) {
+    audioContext = new AudioContext();
+    const source = audioContext.createMediaStreamSource(stream);
+    vadAnalyser = audioContext.createAnalyser();
+    vadAnalyser.fftSize = 256;
+    source.connect(vadAnalyser);
+    silenceStart = null;
+    vadAnimationId = requestAnimationFrame(vadLoop);
+}
+
+/**
+ * Stop VAD monitoring and clean up
+ */
+function stopVad() {
+    if (vadAnimationId) {
+        cancelAnimationFrame(vadAnimationId);
+        vadAnimationId = null;
+    }
+    if (audioContext) {
+        audioContext.close().catch(() => {});
+        audioContext = null;
+    }
+    vadAnalyser = null;
+    silenceStart = null;
+}
+
+/**
  * Toggle recording state
  */
 function toggleRecording() {
     if (isProcessing) return;
     if (isRecording) {
-        stopRecording();
+        stopRecording(false); // manual stop
     } else {
         startRecording();
     }
 }
 
 /**
- * Start recording audio
+ * Start recording audio with VAD
  */
 async function startRecording() {
     try {
@@ -107,11 +183,15 @@ async function startRecording() {
 
         mediaRecorder.onstop = () => {
             stream.getTracks().forEach(track => track.stop());
+            stopVad();
             processRecording();
         };
 
         mediaRecorder.start();
         isRecording = true;
+
+        // Start VAD monitoring
+        startVad(stream);
 
         // Update UI
         micButton.classList.add('recording');
@@ -127,8 +207,9 @@ async function startRecording() {
 
 /**
  * Stop recording audio
+ * @param {boolean} [auto=false] — true if VAD triggered the stop
  */
-function stopRecording() {
+function stopRecording(auto = false) {
     if (mediaRecorder && mediaRecorder.state !== 'inactive') {
         mediaRecorder.stop();
     }
