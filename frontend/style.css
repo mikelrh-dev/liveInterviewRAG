@@ -118,30 +118,40 @@ body {
     border-top: 1px solid #334155;
 }
 
-.mic-button {
+.btn-interview {
     width: 64px;
     height: 64px;
     border-radius: 50%;
     border: none;
-    background: #3b82f6;
+    background: #22c55e;
     color: white;
     cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;
     transition: all 0.2s ease;
+    position: relative;
 }
 
-.mic-button:hover {
-    background: #2563eb;
+.btn-interview:hover {
     transform: scale(1.05);
 }
 
-.mic-button:active,
-.mic-button.recording {
+.btn-interview.active {
     background: #ef4444;
-    transform: scale(0.95);
     animation: pulse 1.5s infinite;
+}
+
+.btn-interview.listening {
+    background: #3b82f6;
+    animation: pulse 1.5s infinite;
+}
+
+.btn-interview:disabled {
+    background: #475569;
+    cursor: not-allowed;
+    transform: none;
+    animation: none;
 }
 
 @keyframes pulse {
@@ -149,20 +159,30 @@ body {
     50% { box-shadow: 0 0 0 12px rgba(239, 68, 68, 0); }
 }
 
-.mic-button:disabled {
-    background: #475569;
-    cursor: not-allowed;
-    transform: none;
-    animation: none;
-}
-
-.mic-icon, .stop-icon {
+.play-icon, .stop-icon {
     width: 28px;
     height: 28px;
+    position: absolute;
+}
+
+.btn-interview.active .play-icon {
+    display: none;
+}
+
+.btn-interview.listening .play-icon {
+    display: none;
 }
 
 .hidden {
     display: none;
+}
+
+#btnLabel {
+    margin-top: 72px;
+    font-size: 0.75rem;
+    color: #94a3b8;
+    position: absolute;
+    white-space: nowrap;
 }
 
 .status {

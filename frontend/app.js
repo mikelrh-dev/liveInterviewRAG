@@ -1,6 +1,6 @@
 /**
  * InterviewTTS — Frontend voice chat logic
- * Handles microphone recording, VAD auto-stop, audio playback, and conversation display.
+ * Continuous interview loop: VAD auto-stop + auto-restart listening after each response.
  */
 
 const API_BASE = '';
@@ -9,6 +9,8 @@ let mediaRecorder = null;
 let audioChunks = [];
 let isRecording = false;
 let isProcessing = false;
+let isInterviewActive = false;
+let isWaitingForRestart = false;
 
 // VAD (Voice Activity Detection) state
 let audioContext = null;
@@ -19,26 +21,85 @@ const SILENCE_TIMEOUT_MS = 1500;
 const RMS_THRESHOLD = 0.025;
 
 // DOM elements
-const micButton = document.getElementById('micButton');
+const btnInterview = document.getElementById('btnInterview');
+const btnLabel = document.getElementById('btnLabel');
 const status = document.getElementById('status');
 const conversation = document.getElementById('conversation');
-const micIcon = micButton.querySelector('.mic-icon');
-const stopIcon = micButton.querySelector('.stop-icon');
+const playIcon = btnInterview.querySelector('.play-icon');
+const stopIcon = btnInterview.querySelector('.stop-icon');
 
 /**
- * Initialize conversation on page load
+ * Initialize on page load
  */
 async function init() {
+    addMessage('system', 'Presiona "Iniciar entrevista" para empezar la entrevista por voz con Mikel.');
+    updateStatus('Preparado para escuchar');
+}
+
+/**
+ * Toggle interview on/off
+ */
+function toggleInterview() {
+    if (isInterviewActive) {
+        endInterview();
+    } else {
+        startInterview();
+    }
+}
+
+/**
+ * Start interview — creates conversation and begins listening
+ */
+async function startInterview() {
+    if (isInterviewActive) return;
+
     try {
         const response = await fetch(`${API_BASE}/api/conversation`, { method: 'POST' });
         const data = await response.json();
         conversationId = data.conversation_id;
-        addMessage('system', data.welcome_message);
-        updateStatus('Preparado para escuchar');
     } catch (error) {
         console.error('Failed to create conversation:', error);
         updateStatus('Error de conexión — recarga la página', true);
+        return;
     }
+
+    isInterviewActive = true;
+    btnInterview.classList.remove('active');
+    btnInterview.classList.add('listening');
+    playIcon.classList.add('hidden');
+    stopIcon.classList.remove('hidden');
+    btnLabel.textContent = 'Finalizar';
+    addMessage('system', 'Entrevista iniciada. Habla cuando quieras.');
+
+    startListening();
+}
+
+/**
+ * End interview — stops recording and resets state
+ */
+function endInterview() {
+    isInterviewActive = false;
+    isWaitingForRestart = false;
+
+    if (isRecording) {
+        stopRecording();
+    }
+
+    btnInterview.classList.remove('active', 'listening');
+    playIcon.classList.remove('hidden');
+    stopIcon.classList.add('hidden');
+    btnLabel.textContent = 'Iniciar entrevista';
+    updateStatus('Entrevista finalizada');
+    addMessage('system', 'Entrevista finalizada. Presiona "Iniciar entrevista" para una nueva.');
+}
+
+/**
+ * Start listening — VAD-enabled recording
+ */
+function startListening() {
+    if (!isInterviewActive || isProcessing || isRecording) return;
+    isWaitingForRestart = false;
+    startRecording();
 }
 
 /**
@@ -104,16 +165,14 @@ function vadLoop() {
     const rms = calculateRms(vadAnalyser);
 
     if (rms < RMS_THRESHOLD) {
-        // Silence detected
         if (silenceStart === null) {
             silenceStart = Date.now();
         } else if (Date.now() - silenceStart >= SILENCE_TIMEOUT_MS) {
             updateStatus('Procesando...');
-            stopRecording(true); // auto-stop by VAD
+            stopRecording(true);
             return;
         }
     } else {
-        // Sound detected — reset silence timer
         silenceStart = null;
     }
 
@@ -150,18 +209,6 @@ function stopVad() {
 }
 
 /**
- * Toggle recording state
- */
-function toggleRecording() {
-    if (isProcessing) return;
-    if (isRecording) {
-        stopRecording(false); // manual stop
-    } else {
-        startRecording();
-    }
-}
-
-/**
  * Start recording audio with VAD
  */
 async function startRecording() {
@@ -190,13 +237,8 @@ async function startRecording() {
         mediaRecorder.start();
         isRecording = true;
 
-        // Start VAD monitoring
-        startVad(stream);
-
-        // Update UI
-        micButton.classList.add('recording');
-        micIcon.classList.add('hidden');
-        stopIcon.classList.remove('hidden');
+        btnInterview.classList.remove('active');
+        btnInterview.classList.add('listening');
         updateStatus('Escuchando...');
 
     } catch (error) {
@@ -214,21 +256,20 @@ function stopRecording(auto = false) {
         mediaRecorder.stop();
     }
     isRecording = false;
-
-    // Update UI
-    micButton.classList.remove('recording');
-    micIcon.classList.remove('hidden');
-    stopIcon.classList.add('hidden');
+    btnInterview.classList.remove('listening');
 }
 
 /**
  * Process the recorded audio through the pipeline
  */
 async function processRecording() {
-    if (audioChunks.length === 0) return;
+    if (audioChunks.length === 0) {
+        if (isInterviewActive) startListening();
+        return;
+    }
 
     isProcessing = true;
-    micButton.disabled = true;
+    btnInterview.disabled = true;
     updateStatus('Procesando...');
 
     const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
@@ -257,7 +298,24 @@ async function processRecording() {
         // Display candidate's response with audio
         addMessage('candidate', data.response_text, data.audio_url);
 
-        updateStatus('Preparado para escuchar');
+        updateStatus('Respuesta recibida');
+
+        // Wait for the audio to finish playing, then auto-restart listening
+        const lastAudioEl = conversation.querySelector('.message:last-child audio');
+        if (lastAudioEl) {
+            isWaitingForRestart = true;
+            lastAudioEl.addEventListener('ended', () => {
+                isWaitingForRestart = false;
+                if (isInterviewActive) {
+                    updateStatus('Escuchando...');
+                    startListening();
+                }
+            }, { once: true });
+        } else {
+            setTimeout(() => {
+                if (isInterviewActive) startListening();
+            }, 1000);
+        }
 
     } catch (error) {
         console.error('Pipeline error:', error);
@@ -270,15 +328,15 @@ async function processRecording() {
             message = 'No se pudo procesar el audio. Intenta de nuevo.';
         }
         addMessage('error', message);
-        updateStatus('Error — toca para reintentar', true);
+        updateStatus('Error — finaliza y vuelve a intentar', true);
     } finally {
         isProcessing = false;
-        micButton.disabled = false;
+        btnInterview.disabled = false;
     }
 }
 
 // Event listeners
-micButton.addEventListener('click', toggleRecording);
+btnInterview.addEventListener('click', toggleInterview);
 
 // Initialize
 init();
