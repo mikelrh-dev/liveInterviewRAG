@@ -139,12 +139,7 @@ body {
 
 .btn-interview.active {
     background: #ef4444;
-    animation: pulse 1.5s infinite;
-}
-
-.btn-interview.listening {
-    background: #3b82f6;
-    animation: pulse 1.5s infinite;
+    animation: pulse-red 1.5s infinite;
 }
 
 .btn-interview:disabled {
@@ -154,7 +149,7 @@ body {
     animation: none;
 }
 
-@keyframes pulse {
+@keyframes pulse-red {
     0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
     50% { box-shadow: 0 0 0 12px rgba(239, 68, 68, 0); }
 }
@@ -163,14 +158,6 @@ body {
     width: 28px;
     height: 28px;
     position: absolute;
-}
-
-.btn-interview.active .play-icon {
-    display: none;
-}
-
-.btn-interview.listening .play-icon {
-    display: none;
 }
 
 .hidden {
@@ -192,6 +179,10 @@ body {
 
 .status.processing {
     color: #fbbf24;
+}
+
+.status.listening {
+    color: #60a5fa;
 }
 
 .status.error {
