@@ -51,17 +51,17 @@ Chain strategy: stacked-to-main
 
 ## Phase 3: API Layer + Frontend
 
-- [ ] 3.1 Create `backend/main.py` — FastAPI app with CORS, static file serving
-- [ ] 3.2 Implement `POST /api/conversation` endpoint — create conversation ID, return welcome message
-- [ ] 3.3 Implement `POST /api/conversation/{id}/message` — accept audio FormData, orchestrate STT→RAG→LLM→TTS pipeline
-- [ ] 3.4 Implement `GET /api/health` — return status and model loading state
-- [ ] 3.5 Add conversation state management (in-memory dict with conversation IDs)
-- [ ] 3.6 Create `frontend/index.html` — microphone button, audio playback, conversation display
-- [ ] 3.7 Create `frontend/style.css` — responsive design, professional tone
-- [ ] 3.8 Create `frontend/app.js` — MediaRecorder API, fetch calls, audio playback logic
-- [ ] 3.9 Add error handling: STT failure (422), LLM failure (503), frontend retry UX
-- [ ] 3.10 Write integration tests: full pipeline audio in → audio out
-- [ ] 3.11 Verify: Total latency under 8 seconds for full pipeline
+- [x] 3.1 Create `backend/main.py` — FastAPI app with CORS, static file serving
+- [x] 3.2 Implement `POST /api/conversation` endpoint — create conversation ID, return welcome message
+- [x] 3.3 Implement `POST /api/conversation/{id}/message` — accept audio FormData, orchestrate STT→RAG→LLM→TTS pipeline
+- [x] 3.4 Implement `GET /api/health` — return status and model loading state
+- [x] 3.5 Add conversation state management (in-memory dict with conversation IDs)
+- [x] 3.6 Create `frontend/index.html` — microphone button, audio playback, conversation display
+- [x] 3.7 Create `frontend/style.css` — responsive design, professional tone
+- [x] 3.8 Create `frontend/app.js` — MediaRecorder API, fetch calls, audio playback logic
+- [x] 3.9 Add error handling: STT failure (422), LLM failure (503), frontend retry UX
+- [x] 3.10 Write integration tests: full pipeline audio in → audio out
+- [x] 3.11 Verify: Total latency under 8 seconds for full pipeline
 
 ## Phase 4: Deployment + Polish
 
