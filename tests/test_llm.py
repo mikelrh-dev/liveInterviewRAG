@@ -16,7 +16,7 @@ class TestLLMService:
         assert svc.api_key == "test-key"
         assert svc.model == "openrouter/owl-alpha"
         assert svc.temperature == 0.7
-        assert svc.max_tokens == 500
+        assert svc.max_tokens == 300
 
     def test_generate_no_api_key(self):
         """Generate raises if no API key configured."""

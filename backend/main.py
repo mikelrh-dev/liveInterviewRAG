@@ -1,18 +1,20 @@
 """InterviewTTS — FastAPI application with voice interview pipeline."""
 
 import asyncio
+import json
 import logging
 import os
 import time
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -21,13 +23,48 @@ load_dotenv()
 
 from backend.config import config
 from backend.services.candidate import CandidateProfile
-from backend.services.llm import LLMService
+from backend.services.llm import LLMService, SentenceBuffer
 from backend.services.rag import RAGPipeline
 from backend.services.stt import STTService
 from backend.services.tts import TTSService
-from backend.prompts.candidate import build_system_prompt
+from backend.prompts.candidate import build_system_prompt, sanitize_for_tts
 
 logger = logging.getLogger(__name__)
+
+# ─── SSE format helper ────────────────────────────────────
+def sse_format(event: str, data: dict) -> str:
+    """Format as Server-Sent Event data line.
+
+    Produces::
+        data: {"event": "<event>", "data": <json>}\n\n
+    """
+    payload = json.dumps({"event": event, "data": data}, ensure_ascii=False)
+    return f"data: {payload}\n\n"
+
+
+# ─── Farewell detection ─────────────────────────────────
+import re
+
+_FAREWELL_PATTERNS = [
+    r"\bgracias\b.*\b(eso es todo|terminamos|finalizamos|nos vemos|adiós|chao)\b",
+    r"\b(eso es todo|nada más|no tengo más preguntas)\b",
+    r"\bno (tengo|hay) (más |ninguna )?(preguntas|dudas|cosas)\b",
+    r"\bya (está|terminé|acabé|estamos)\b",
+    r"\b(terminamos|finalizamos|cerramos) (la entrevista|por hoy|aquí|acá)\b",
+    r"\b(gracias|muchas gracias).*(por tu tiempo|por la entrevista|ha sido un placer)\b",
+    r"\bfue un placer\b",
+    r"\b(adiós|chao|nos vemos|hasta luego)\b",
+]
+
+
+def detect_farewell(text: str) -> bool:
+    """Check if the user is indicating the interview should end."""
+    lower = text.lower().strip()
+    for pattern in _FAREWELL_PATTERNS:
+        if re.search(pattern, lower):
+            return True
+    return False
+
 
 # In-memory conversation store
 conversations: Dict[str, Dict] = {}
@@ -77,6 +114,14 @@ async def lifespan(app: FastAPI):
         stt_service.load_model()
     except Exception as e:
         logger.warning("Could not load Whisper model: %s (STT will fail)", e)
+
+    # Pre-warm LLM connection so first call is faster
+    try:
+        logger.info("Pre-warming LLM connection...")
+        llm_service.generate(prompt="ping", context="", system_prompt="")
+        logger.info("LLM connection pre-warmed")
+    except Exception as e:
+        logger.warning("LLM pre-warm failed (first call may be slower): %s", e)
 
     # Ensure audio directory exists
     config.AUDIO_DIR.mkdir(parents=True, exist_ok=True)
@@ -213,18 +258,22 @@ async def send_message(conversation_id: str, audio: UploadFile = File(...)):
     temp_audio = config.AUDIO_DIR / f"input_{conversation_id}_{uuid.uuid4().hex}.webm"
     temp_audio.write_bytes(audio_bytes)
 
+    _t = [time.time()]  # t0
+
     try:
         # Step 1: STT — transcribe audio
         try:
             user_text = stt_service.transcribe(temp_audio)
         except Exception as e:
             raise HTTPException(status_code=422, detail=f"Could not transcribe audio: {e}")
+        _t.append(time.time())
 
         if not user_text.strip():
             raise HTTPException(status_code=422, detail="No speech detected in audio")
 
         # Step 2: RAG — retrieve relevant context
         context = rag_pipeline.get_context_string(user_text, top_k=config.RAG_TOP_K)
+        _t.append(time.time())
 
         # Step 3: LLM — generate response as candidate
         system_prompt = build_system_prompt(context)
@@ -237,14 +286,26 @@ async def send_message(conversation_id: str, audio: UploadFile = File(...)):
             )
         except RuntimeError as e:
             raise HTTPException(status_code=503, detail=f"Response generation temporarily unavailable: {e}")
+        _t.append(time.time())
 
         # Step 4: TTS — synthesize audio response
         message_id = uuid.uuid4().hex
         output_audio = config.AUDIO_DIR / f"{conversation_id}/{message_id}.mp3"
         try:
-            audio_path = await tts_service.synthesize(response_text, output_path=output_audio)
+            clean_text = sanitize_for_tts(response_text)
+            audio_path = await tts_service.synthesize(clean_text, output_path=output_audio)
         except RuntimeError as e:
             raise HTTPException(status_code=503, detail=f"TTS synthesis failed: {e}")
+        _t.append(time.time())
+
+        # Log pipeline timing
+        t_stt = _t[1] - _t[0]
+        t_rag = _t[2] - _t[1]
+        t_llm = _t[3] - _t[2]
+        t_tts = _t[4] - _t[3]
+        t_total = _t[4] - _t[0]
+        logger.info("Pipeline: STT=%.2fs RAG=%.2fs LLM=%.2fs TTS=%.2fs TOTAL=%.2fs",
+                     t_stt, t_rag, t_llm, t_tts, t_total)
 
         # Store message in conversation
         conversations[conversation_id]["messages"].append({
@@ -263,6 +324,175 @@ async def send_message(conversation_id: str, audio: UploadFile = File(...)):
         # Clean up temp audio
         if temp_audio.exists():
             temp_audio.unlink(missing_ok=True)
+
+
+@app.post("/api/conversation/{conversation_id}/message/stream")
+async def send_message_stream(conversation_id: str, audio: UploadFile = File(...)):
+    """Streaming version: STT + RAG + LLM (SSE tokens) + TTS + audio URL.
+
+    Events:
+      - transcription: {"text": "..."}
+      - token: {"text": "..."}        (one per LLM chunk)
+      - audio_url: {"url": "..."}
+      - error: {"detail": "..."}
+      - done: {}
+    """
+    if conversation_id not in conversations:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    if not audio.content_type or not audio.content_type.startswith("audio/"):
+        raise HTTPException(status_code=422, detail="Invalid audio format")
+
+    audio_bytes = await audio.read()
+    if len(audio_bytes) == 0:
+        raise HTTPException(status_code=422, detail="Empty audio file")
+
+    MAX_AUDIO_SIZE = 5 * 1024 * 1024
+    if len(audio_bytes) > MAX_AUDIO_SIZE:
+        raise HTTPException(status_code=422, detail="Audio too long (max 30 seconds)")
+
+    temp_audio = config.AUDIO_DIR / f"input_{conversation_id}_{uuid.uuid4().hex}.webm"
+    temp_audio.write_bytes(audio_bytes)
+
+    async def event_generator():
+        queue: asyncio.Queue = asyncio.Queue()
+        full_response = ""
+        _t_start = time.time()
+
+        try:
+            # ── Step 1: STT ──────────────────────────────────────
+            user_text = await asyncio.to_thread(stt_service.transcribe, temp_audio)
+            _t_stt = time.time()
+            logger.info("Stream STT: %.2fs", _t_stt - _t_start)
+            yield sse_format("transcription", {"text": user_text})
+
+            if not user_text.strip():
+                yield sse_format("error", {"detail": "No se detectó voz en el audio"})
+                return
+
+            # ── Farewell check ──────────────────────────────────
+            if detect_farewell(user_text):
+                farewell = "¡Gracias a ti! Ha sido un placer. Si tenés más preguntas en el futuro, acá estoy. ¡Éxito en tu búsqueda!"
+                logger.info("Farewell detected, ending interview")
+                for token in farewell.split(" "):
+                    yield sse_format("token", {"text": token + " "})
+                yield sse_format("interview_end", {"message": farewell})
+                # Store the farewell in conversation
+                conversations[conversation_id]["messages"].append({
+                    "user_text": user_text,
+                    "response_text": farewell,
+                    "audio_url": "",
+                })
+                return
+
+            # ── Step 2: RAG ──────────────────────────────────────
+            context = rag_pipeline.get_context_string(user_text, top_k=config.RAG_TOP_K)
+            _t_rag = time.time()
+
+            # ── Step 3: LLM streaming + sentence detection ──────
+            system_prompt = build_system_prompt(context)
+            loop = asyncio.get_running_loop()
+            sentence_buf = SentenceBuffer()
+            tts_futures: dict[asyncio.Task, int] = {}  # task → sentence_id
+            sentence_id = 0
+            listening_to_llm = True
+
+            def run_llm_stream():
+                try:
+                    for token in llm_service.generate_stream(
+                        prompt=user_text, context=context, system_prompt=system_prompt,
+                    ):
+                        loop.call_soon_threadsafe(queue.put_nowait, ("token", token))
+                        sentences = sentence_buf.add_token(token)
+                        for s in sentences:
+                            loop.call_soon_threadsafe(queue.put_nowait, ("sentence", s))
+                    for s in sentence_buf.flush():
+                        loop.call_soon_threadsafe(queue.put_nowait, ("sentence", s))
+                    loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
+                except Exception as e:
+                    loop.call_soon_threadsafe(queue.put_nowait, ("error", str(e)))
+
+            loop.run_in_executor(None, run_llm_stream)
+
+            # ── Step 4: Event loop — LLM tokens + TTS completions ──
+            queue_task = None
+            while listening_to_llm or tts_futures:
+                pending = list(tts_futures.keys())
+                if listening_to_llm:
+                    # Reuse queue_task if it wasn't consumed
+                    if queue_task is None or queue_task.done():
+                        queue_task = asyncio.create_task(queue.get())
+                    pending.append(queue_task)
+
+                if not pending:
+                    break
+
+                done_set, _ = await asyncio.wait(
+                    pending, return_when=asyncio.FIRST_COMPLETED,
+                )
+
+                for done in done_set:
+                    if listening_to_llm and done is queue_task:
+                        kind, data = done.result()
+                        queue_task = None  # Reset so next iteration creates a new one
+
+                        if kind == "done":
+                            listening_to_llm = False
+
+                        elif kind == "error":
+                            logger.error("LLM streaming error: %s", data)
+                            yield sse_format("error", {"detail": f"Error en respuesta: {data}"})
+                            return
+
+                        elif kind == "token":
+                            full_response += data
+                            yield sse_format("token", {"text": data})
+
+                        elif kind == "sentence":
+                            # Sanitize before TTS (remove markdown/emoji)
+                            clean_sentence = sanitize_for_tts(data)
+                            if not clean_sentence:
+                                continue
+                            # Launch TTS for this sentence — runs in parallel with LLM
+                            task = asyncio.create_task(
+                                tts_service.synthesize_sentence(
+                                    clean_sentence, sentence_id,
+                                    output_dir=config.AUDIO_DIR / conversation_id,
+                                )
+                            )
+                            tts_futures[task] = sentence_id
+                            sentence_id += 1
+                    else:
+                        # A TTS task completed — yield the audio chunk immediately
+                        sid, audio_path = done.result()
+                        yield sse_format("audio_chunk", {
+                            "id": sid,
+                            "url": f"/audio/{conversation_id}/{audio_path.name}"
+                        })
+                        del tts_futures[done]
+
+            _t_llm = time.time()
+            logger.info("Stream LLM + TTS interleaved: %.2fs total, %d sentences",
+                         _t_llm - _t_rag, sentence_id)
+
+            # Store full message
+            conversations[conversation_id]["messages"].append({
+                "user_text": user_text,
+                "response_text": full_response,
+                "audio_url": f"/audio/{conversation_id}/",  # multiple chunks
+            })
+
+            yield sse_format("done", {})
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error("Stream pipeline error: %s", e, exc_info=True)
+            yield sse_format("error", {"detail": str(e)})
+        finally:
+            if temp_audio.exists():
+                temp_audio.unlink(missing_ok=True)
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 # Serve frontend static files

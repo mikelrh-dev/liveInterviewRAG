@@ -52,12 +52,13 @@ body {
     gap: 16px;
 }
 
+/* ─── Chat bubbles layout ─────────────────────────────── */
+
 .message {
-    max-width: 85%;
-    padding: 12px 16px;
-    border-radius: 12px;
-    line-height: 1.5;
-    font-size: 0.95rem;
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+    max-width: 100%;
     animation: fadeIn 0.3s ease;
 }
 
@@ -66,6 +67,17 @@ body {
     to { opacity: 1; transform: translateY(0); }
 }
 
+/* User bubble: avatar right, blue bubble */
+.message.user {
+    flex-direction: row-reverse;
+}
+
+/* Candidate bubble: avatar left, slate bubble */
+.message.candidate {
+    flex-direction: row;
+}
+
+/* System message: centered, no avatar */
 .message.system {
     align-self: center;
     text-align: center;
@@ -73,20 +85,7 @@ body {
     color: #64748b;
     font-size: 0.875rem;
     max-width: 100%;
-}
-
-.message.user {
-    align-self: flex-end;
-    background: #3b82f6;
-    color: white;
-    border-bottom-right-radius: 4px;
-}
-
-.message.candidate {
-    align-self: flex-start;
-    background: #334155;
-    color: #e2e8f0;
-    border-bottom-left-radius: 4px;
+    justify-content: center;
 }
 
 .message.error {
@@ -95,20 +94,156 @@ body {
     color: #fca5a5;
     text-align: center;
     font-size: 0.875rem;
+    max-width: 100%;
+    justify-content: center;
+    padding: 12px 16px;
+    border-radius: 12px;
 }
 
-/* Audio Player */
-.audio-player {
-    margin-top: 8px;
-}
+/* ─── Avatar ──────────────────────────────────────────── */
 
-.audio-player audio {
-    width: 100%;
+.avatar {
+    width: 36px;
     height: 36px;
-    border-radius: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.8rem;
+    font-weight: 600;
 }
 
-/* Controls */
+.avatar.user-avatar {
+    background: linear-gradient(135deg, #3b82f6, #2563eb);
+    color: white;
+}
+
+.avatar.candidate-avatar {
+    background: linear-gradient(135deg, #6366f1, #4f46e5);
+    color: white;
+}
+
+.message.system .avatar,
+.message.error .avatar {
+    display: none;
+}
+
+/* ─── Bubble ──────────────────────────────────────────── */
+
+.bubble {
+    max-width: 75%;
+    padding: 10px 14px;
+    line-height: 1.5;
+    font-size: 0.95rem;
+    position: relative;
+}
+
+.bubble p {
+    word-wrap: break-word;
+    white-space: pre-wrap;
+}
+
+/* User bubble */
+.message.user .bubble {
+    background: linear-gradient(135deg, #3b82f6, #2563eb);
+    color: white;
+    border-radius: 18px 18px 4px 18px;
+    box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+}
+
+/* Candidate bubble */
+.message.candidate .bubble {
+    background: linear-gradient(135deg, #334155, #293548);
+    color: #e2e8f0;
+    border-radius: 18px 18px 18px 4px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+/* ─── Typing indicator ──────────────────────────────────── */
+
+.typing-indicator {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    align-self: flex-start;
+    animation: fadeIn 0.3s ease;
+}
+
+.typing-indicator .avatar {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(135deg, #6366f1, #4f46e5);
+}
+
+.typing-indicator .avatar svg {
+    width: 18px;
+    height: 18px;
+    color: white;
+}
+
+.typing-bubble {
+    background: #334155;
+    border-radius: 18px 18px 18px 4px;
+    padding: 14px 20px;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.typing-bubble .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #94a3b8;
+    animation: typingBounce 1.4s ease-in-out infinite;
+}
+
+.typing-bubble .dot:nth-child(2) { animation-delay: 0.2s; }
+.typing-bubble .dot:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes typingBounce {
+    0%, 60%, 100% { transform: translateY(0); }
+    30% { transform: translateY(-8px); }
+}
+
+/* ─── Audio playback indicator ────────────────────────── */
+
+.audio-indicator {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    height: 24px;
+    margin-top: 6px;
+    padding-left: 2px;
+}
+
+.audio-indicator .bar {
+    width: 3px;
+    background: #60a5fa;
+    border-radius: 2px;
+    animation: audioPlay 0.5s ease-in-out infinite alternate;
+}
+
+.audio-indicator .bar:nth-child(1) { height: 8px;  animation-delay: 0s; }
+.audio-indicator .bar:nth-child(2) { height: 14px; animation-delay: 0.15s; }
+.audio-indicator .bar:nth-child(3) { height: 10px; animation-delay: 0.3s; }
+.audio-indicator .bar:nth-child(4) { height: 18px; animation-delay: 0.1s; }
+.audio-indicator .bar:nth-child(5) { height: 12px; animation-delay: 0.2s; }
+
+@keyframes audioPlay {
+    from { transform: scaleY(0.4); }
+    to { transform: scaleY(1); }
+}
+
+/* ─── Controls ────────────────────────────────────────── */
+
 .controls {
     padding: 24px;
     display: flex;
@@ -199,7 +334,7 @@ body {
         font-size: 1.25rem;
     }
 
-    .message {
-        max-width: 90%;
+    .bubble {
+        max-width: 85%;
     }
 }

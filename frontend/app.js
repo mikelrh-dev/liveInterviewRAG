@@ -1,6 +1,6 @@
 /**
  * InterviewTTS — Frontend voice chat logic
- * Interview loop: click "Iniciar" → speak naturally (VAD) → response → auto-continue → click "Finalizar"
+ * Interview loop: click "Iniciar" → speak (VAD) → see text live (SSE) → hear response → auto-loop
  */
 
 const API_BASE = '';
@@ -10,15 +10,19 @@ let audioChunks = [];
 let isRecording = false;
 let isProcessing = false;
 let isInterviewActive = false;
+let isUserScrolledUp = false;  // smart scroll
 
 // VAD state
 let audioContext = null;
 let vadAnalyser = null;
 let vadAnimationId = null;
 let silenceStart = null;
-let hasSpoken = false;          // true once user has spoken in current recording
-const SILENCE_TIMEOUT_MS = 1800;
+let hasSpoken = false;
+const SILENCE_TIMEOUT_MS = 1200;
 const RMS_THRESHOLD = 0.03;
+
+// Reusable media stream (avoids getUserMedia latency between turns)
+let mediaStream = null;
 
 // DOM
 const btn = document.getElementById('btnInterview');
@@ -28,9 +32,24 @@ const conversation = document.getElementById('conversation');
 const playIcon = btn.querySelector('.play-icon');
 const stopIcon = btn.querySelector('.stop-icon');
 
+// Current candidate message (for inline updates + audio indicator)
+let currentCandidateDiv = null;
+
 function init() {
     addMessage('system', 'Presiona "Iniciar entrevista" para empezar.');
     setStatus('Preparado');
+
+    // Smart scroll: detect if user scrolled up manually
+    conversation.addEventListener('scroll', () => {
+        const threshold = 50;
+        isUserScrolledUp = conversation.scrollHeight - conversation.scrollTop - conversation.clientHeight > threshold;
+    });
+}
+
+function scrollToBottom() {
+    if (!isUserScrolledUp) {
+        conversation.scrollTop = conversation.scrollHeight;
+    }
 }
 
 // ─── Button actions ───────────────────────────────────────
@@ -68,6 +87,12 @@ async function startInterview() {
 function stopInterview() {
     isInterviewActive = false;
     if (isRecording) stopRecording();
+    
+    // Clean up media stream
+    if (mediaStream) {
+        mediaStream.getTracks().forEach(t => t.stop());
+        mediaStream = null;
+    }
 
     btn.classList.remove('active');
     playIcon.classList.remove('hidden');
@@ -86,25 +111,28 @@ function startListening() {
 
 async function startRecording() {
     try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        // Reuse existing media stream if available and active
+        if (!mediaStream || mediaStream.getTracks().some(t => t.readyState === 'ended')) {
+            mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        }
+        
         audioChunks = [];
 
-        mediaRecorder = new MediaRecorder(stream, {
+        mediaRecorder = new MediaRecorder(mediaStream, {
             mimeType: MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
                 ? 'audio/webm;codecs=opus' : 'audio/webm',
         });
 
         mediaRecorder.ondataavailable = e => { if (e.data.size > 0) audioChunks.push(e.data); };
         mediaRecorder.onstop = () => {
-            stream.getTracks().forEach(t => t.stop());
             stopVad();
-            processRecording();
+            processRecordingStream();
         };
 
         mediaRecorder.start();
         isRecording = true;
         hasSpoken = false;
-        startVad(stream);
+        startVad(mediaStream);
         setStatus('Escuchando...', 'listening');
 
     } catch (e) {
@@ -132,12 +160,10 @@ function vadLoop() {
     if (!isRecording || !vadAnalyser) return;
     const rms = calculateRms(vadAnalyser);
 
-    // Track whether user has spoken at least once
     if (rms >= RMS_THRESHOLD) {
         hasSpoken = true;
         silenceStart = null;
     } else if (hasSpoken) {
-        // Only start silence timeout after user has spoken
         if (silenceStart === null) silenceStart = Date.now();
         else if (Date.now() - silenceStart >= SILENCE_TIMEOUT_MS) {
             setStatus('Procesando...', 'processing');
@@ -145,7 +171,6 @@ function vadLoop() {
             return;
         }
     }
-    // If !hasSpoken and rms < threshold: do nothing, keep listening
 
     vadAnimationId = requestAnimationFrame(vadLoop);
 }
@@ -167,53 +192,173 @@ function stopVad() {
     vadAnalyser = null; silenceStart = null;
 }
 
-// ─── Backend call ─────────────────────────────────────────
+// ─── Audio chunk queue (sequential playback) ────────────
 
-async function processRecording() {
+let audioQueue = [];        // {id, url}[]
+let nextChunkId = 0;        // expected ID for next chunk
+let isAudioPlaying = false;
+let allChunksReceived = false;
+
+function resetAudioQueue() {
+    audioQueue = [];
+    nextChunkId = 0;
+    isAudioPlaying = false;
+    allChunksReceived = false;
+}
+
+function addAudioIndicator() {
+    if (!currentCandidateDiv) return;
+    const bubble = currentCandidateDiv.querySelector('.bubble');
+    if (!bubble || bubble.querySelector('.audio-indicator')) return;
+    const indicator = document.createElement('div');
+    indicator.className = 'audio-indicator';
+    for (let i = 0; i < 5; i++) {
+        const bar = document.createElement('span');
+        bar.className = 'bar';
+        indicator.appendChild(bar);
+    }
+    bubble.appendChild(indicator);
+}
+
+function removeAudioIndicator() {
+    if (currentCandidateDiv) {
+        const indicator = currentCandidateDiv.querySelector('.audio-indicator');
+        if (indicator) indicator.remove();
+    }
+}
+
+function tryPlayNextChunk() {
+    if (isAudioPlaying) return;
+
+    const idx = audioQueue.findIndex(c => c.id === nextChunkId);
+    if (idx === -1) return; // next chunk not available yet
+
+    const chunk = audioQueue.splice(idx, 1)[0];
+    isAudioPlaying = true;
+    setStatus('Reproduciendo...');
+    addAudioIndicator();
+
+    const audio = new Audio(chunk.url);
+    audio.addEventListener('ended', () => {
+        nextChunkId++;
+        isAudioPlaying = false;
+        tryPlayNextChunk();
+        checkAllDone();
+    }, { once: true });
+    audio.addEventListener('error', () => {
+        console.error('Audio playback error for chunk', chunk.id);
+        nextChunkId++;
+        isAudioPlaying = false;
+        tryPlayNextChunk();
+        checkAllDone();
+    }, { once: true });
+    audio.play().catch(e => {
+        console.error('Audio play() failed:', e);
+        nextChunkId++;
+        isAudioPlaying = false;
+        tryPlayNextChunk();
+        checkAllDone();
+    });
+}
+
+function checkAllDone() {
+    if (allChunksReceived && audioQueue.length === 0 && !isAudioPlaying) {
+        removeAudioIndicator();
+        if (isInterviewActive) startListening();
+    }
+}
+
+// ─── SSE streaming ───────────────────────────────────────
+
+async function processRecordingStream() {
     if (audioChunks.length === 0) return;
     isProcessing = true;
     btn.disabled = true;
-    setStatus('Procesando...', 'processing');
+    setStatus('Enviando audio...', 'processing');
+    resetAudioQueue();
+    currentCandidateDiv = null;
+    showTyping();
 
     const blob = new Blob(audioChunks, { type: 'audio/webm' });
     const fd = new FormData();
     fd.append('audio', blob, 'recording.webm');
 
+    let fullText = '';
+
     try {
-        const res = await fetch(`${API_BASE}/api/conversation/${conversationId}/message`, {
+        const res = await fetch(`${API_BASE}/api/conversation/${conversationId}/message/stream`, {
             method: 'POST', body: fd,
         });
 
-        // Try to extract detail from error body
-        let detail = null;
         if (!res.ok) {
-            try { detail = (await res.json()).detail; } catch (_) {}
-            throw new Error(detail || `Error del servidor (HTTP ${res.status})`);
+            let detail = `HTTP ${res.status}`;
+            try { detail = (await res.json()).detail || detail; } catch (_) {}
+            throw new Error(detail);
         }
 
-        const data = await res.json();
-        addMessage('user', data.user_text);
-        addMessage('candidate', data.response_text, data.audio_url);
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
 
-        // Auto-restart listening when audio finishes
-        const audioEl = conversation.querySelector('.message:last-child audio');
-        if (audioEl && isInterviewActive) {
-            setStatus('Reproduciendo...');
-            audioEl.addEventListener('ended', () => {
-                if (isInterviewActive) startListening();
-            }, { once: true });
-        } else if (isInterviewActive) {
-            setTimeout(() => startListening(), 1000);
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+                const trimmed = line.trim();
+                if (!trimmed || !trimmed.startsWith('data: ')) continue;
+
+                let event;
+                try { event = JSON.parse(trimmed.slice(6)); } catch (_) { continue; }
+
+                const type = event.event || '';
+
+                if (type === 'transcription') {
+                    addMessage('user', event.data.text);
+                } else if (type === 'token') {
+                    fullText += event.data.text;
+                    if (!currentCandidateDiv) {
+                        currentCandidateDiv = addMessage('candidate', '');
+                        hideTyping();
+                    }
+                    const p = currentCandidateDiv.querySelector('.bubble p');
+                    if (p) p.textContent = fullText;
+                    scrollToBottom();
+                } else if (type === 'audio_chunk') {
+                    audioQueue.push({ id: event.data.id, url: event.data.url });
+                    tryPlayNextChunk();
+                } else if (type === 'done') {
+                    allChunksReceived = true;
+                    // If no audio was received at all, restart directly
+                    if (audioQueue.length === 0 && !isAudioPlaying) {
+                        if (isInterviewActive) startListening();
+                    }
+                } else if (type === 'interview_end') {
+                    // Farewell detected — don't restart listening
+                    if (currentCandidateDiv) {
+                        const indicator = currentCandidateDiv.querySelector('.audio-indicator');
+                        if (indicator) indicator.remove();
+                    }
+                    stopInterview();
+                } else if (type === 'error') {
+                    throw new Error(event.data.detail || 'Error del servidor');
+                }
+            }
         }
     } catch (e) {
-        console.error('Pipeline error:', e);
-        const msg = e.message || 'Algo salió mal.';
-        addMessage('error', msg);
-        setStatus('Error — toca "Finalizar" y vuelve a empezar', true);
+        console.error('SSE pipeline error:', e);
+        hideTyping();
+        addMessage('error', e.message || 'Algo salió mal.');
+        setStatus('Error', true);
         stopInterview();
     } finally {
         isProcessing = false;
         btn.disabled = false;
+        checkAllDone();
     }
 }
 
@@ -224,20 +369,72 @@ function setStatus(text, className) {
     statusEl.className = 'status' + (className ? ' ' + className : '');
 }
 
-function addMessage(type, text, audioUrl) {
+function showTyping() {
+    if (document.querySelector('.typing-indicator')) return;
+    const div = document.createElement('div');
+    div.className = 'typing-indicator';
+    div.innerHTML = `
+        <div class="avatar">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+                <circle cx="12" cy="7" r="4"/>
+            </svg>
+        </div>
+        <div class="typing-bubble">
+            <span class="dot"></span>
+            <span class="dot"></span>
+            <span class="dot"></span>
+        </div>`;
+    conversation.appendChild(div);
+    scrollToBottom();
+}
+
+function hideTyping() {
+    const el = document.querySelector('.typing-indicator');
+    if (el) el.remove();
+}
+
+function addMessage(type, text) {
     const div = document.createElement('div');
     div.className = `message ${type}`;
-    div.innerHTML = `<p>${escapeHtml(text)}</p>`;
-    if (audioUrl) {
-        const player = document.createElement('div');
-        player.className = 'audio-player';
-        const audio = document.createElement('audio');
-        audio.src = audioUrl; audio.controls = true; audio.autoplay = true;
-        player.appendChild(audio);
-        div.appendChild(player);
+
+    if (type === 'user' || type === 'candidate') {
+        // Avatar
+        const avatar = document.createElement('div');
+        avatar.className = `avatar ${type}-avatar`;
+        if (type === 'candidate') {
+            avatar.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+                <circle cx="12" cy="7" r="4"/>
+            </svg>`;
+        } else {
+            avatar.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+                <circle cx="12" cy="7" r="4"/>
+            </svg>`;
+        }
+
+        // Bubble
+        const bubble = document.createElement('div');
+        bubble.className = 'bubble';
+        bubble.innerHTML = `<p>${escapeHtml(text || '')}</p>`;
+
+        // Order: avatar + bubble for candidate, bubble + avatar for user
+        if (type === 'candidate') {
+            div.appendChild(avatar);
+            div.appendChild(bubble);
+        } else {
+            div.appendChild(bubble);
+            div.appendChild(avatar);
+        }
+    } else {
+        // System or error — simple text
+        div.innerHTML = `<p>${escapeHtml(text || '')}</p>`;
     }
+
     conversation.appendChild(div);
-    conversation.scrollTop = conversation.scrollHeight;
+    scrollToBottom();
+    return div;
 }
 
 function escapeHtml(text) {

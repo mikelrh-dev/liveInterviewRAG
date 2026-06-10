@@ -1,5 +1,6 @@
 """Text-to-Speech service using Edge TTS."""
 
+import asyncio
 import logging
 import uuid
 from pathlib import Path
@@ -49,6 +50,15 @@ class TTSService:
         except Exception as e:
             logger.error("TTS synthesis failed: %s", e)
             raise RuntimeError(f"Could not synthesize speech: {e}") from e
+
+    async def synthesize_sentence(self, text: str, sentence_id: int,
+                                    output_dir: Path | None = None) -> tuple[int, Path]:
+        """Synthesize a single sentence for parallel streaming. Returns (id, path)."""
+        out_dir = output_dir or self.output_dir
+        filename = f"sentence_{sentence_id}_{uuid.uuid4().hex}.mp3"
+        output_path = out_dir / filename
+        await self.synthesize(text, output_path=output_path)
+        return sentence_id, output_path
 
     def get_audio_url(self, audio_path: Path) -> str:
         """Convert an audio file path to a URL path for serving.

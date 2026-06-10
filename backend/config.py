@@ -22,7 +22,7 @@ class Config:
         # LLM settings
         self.LLM_MODEL: str = os.getenv("LLM_MODEL", "openrouter/owl-alpha")
         self.LLM_TEMPERATURE: float = float(os.getenv("LLM_TEMPERATURE", "0.7"))
-        self.LLM_MAX_TOKENS: int = int(os.getenv("LLM_MAX_TOKENS", "500"))
+        self.LLM_MAX_TOKENS: int = int(os.getenv("LLM_MAX_TOKENS", "200"))
 
         # RAG settings
         self.EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
