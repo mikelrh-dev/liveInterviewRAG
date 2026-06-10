@@ -65,19 +65,19 @@ Chain strategy: stacked-to-main
 
 ## Phase 4: Deployment + Polish
 
-- [ ] 4.1 Create `nginx/interview.conf` — reverse proxy /api to FastAPI, serve frontend static files
-- [ ] 4.2 Create systemd service file for FastAPI (auto-restart, logging)
-- [ ] 4.3 Add audio cleanup: delete temporary files after processing
-- [ ] 4.4 Add rate limiting: 10 requests per minute per IP (in-memory counter)
-- [ ] 4.5 Add input validation: audio format check, max 30s recording
-- [ ] 4.6 Update README with setup instructions, environment variables, demo screenshots
-- [ ] 4.7 Write E2E test script (manual or Playwright) for browser recording flow
-- [ ] 4.8 Verify: Deploy on Oracle Free Tier, accessible via Nginx, iframe embeddable
+- [x] 4.1 Create `nginx/interview.conf` — reverse proxy /api to FastAPI, serve frontend static files
+- [x] 4.2 Create systemd service file for FastAPI (auto-restart, logging)
+- [x] 4.3 Add audio cleanup: delete temporary files after processing
+- [x] 4.4 Add rate limiting: 10 requests per minute per IP (in-memory counter)
+- [x] 4.5 Add input validation: audio format check, max 30s recording
+- [x] 4.6 Update README with setup instructions, environment variables, demo screenshots
+- [x] 4.7 Write E2E test script (manual or Playwright) for browser recording flow
+- [x] 4.8 Verify: Deploy on Oracle Free Tier, accessible via Nginx, iframe embeddable
 
 ## Verification Checklist
 
-- [ ] Recruiter can ask question and receive voice response "from" candidate
-- [ ] Responses reference real CV/projects (not generic)
-- [ ] Total response latency < 8s (STT→LLM→TTS)
-- [ ] Deployed on Oracle Free Tier, accessible via Nginx
-- [ ] README with setup instructions and demo screenshots
+- [x] Recruiter can ask question and receive voice response "from" candidate
+- [x] Responses reference real CV/projects (not generic)
+- [x] Total response latency < 8s (STT→LLM→TTS)
+- [x] Deployed on Oracle Free Tier, accessible via Nginx
+- [x] README with setup instructions and demo screenshots

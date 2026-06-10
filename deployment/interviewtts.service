@@ -1,0 +1,29 @@
+[Unit]
+Description=InterviewTTS FastAPI Backend
+After=network.target
+
+[Service]
+Type=simple
+User=interviewtts
+Group=interviewtts
+WorkingDirectory=/opt/interviewtts
+ExecStart=/opt/interviewtts/venv/bin/uvicorn backend.main:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/opt/interviewtts/.env
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=interviewtts
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/interviewtts/audio
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
