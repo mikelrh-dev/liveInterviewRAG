@@ -1,6 +1,3 @@
-<<<<<<< HEAD
-# liveInterviewRAG
-=======
 # InterviewTTS
 
 Voice-based AI interview digital twin. Let recruiters have voice conversations with a candidate's digital twin.
@@ -144,4 +141,3 @@ python -m pytest tests/test_rag.py -v
 ## License
 
 MIT
->>>>>>> 2f45895 (chore: deployment config and documentation)

@@ -7,9 +7,9 @@ def test_build_system_prompt_no_context():
     """System prompt without context is valid."""
     prompt = build_system_prompt()
     assert "Mikel" in prompt
-    assert "Junior DAM Developer" in prompt
-    assert "first-person" in prompt
-    assert "Context from candidate's profile" not in prompt
+    assert "desarrollador junior DAM" in prompt
+    assert "primera persona" in prompt
+    assert "información relevante" not in prompt
 
 
 def test_build_system_prompt_with_context():
@@ -17,7 +17,7 @@ def test_build_system_prompt_with_context():
     context = "I built InterviewTTS using Python and FastAPI."
     prompt = build_system_prompt(context)
     assert context in prompt
-    assert "relevant information" in prompt.lower()
+    assert "información relevante" in prompt.lower()
 
 
 def test_system_prompt_template_has_placeholders():

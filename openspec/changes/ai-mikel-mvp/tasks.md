@@ -27,6 +27,7 @@ Chain strategy: stacked-to-main
 
 ## Phase 1: Backend Foundation (Infrastructure)
 
+- [ ] 1.0 Set up test infrastructure: install pytest, create tests/ directory, add pytest.ini, configure coverage reporting
 - [x] 1.1 Create `backend/` directory structure: `services/`, `prompts/`, `__init__.py` files
 - [x] 1.2 Create `backend/requirements.txt` with FastAPI, uvicorn, faster-whisper, edge-tts, sentence-transformers, pydub, numpy
 - [x] 1.3 Create `backend/config.py` with environment variable loading (OWL_API_KEY, WHISPER_MODEL, TTS_VOICE)

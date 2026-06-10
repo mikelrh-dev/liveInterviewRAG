@@ -196,9 +196,20 @@ Oracle Free Tier ARM64
 
 No migration required — greenfield build. Deploy directly to Oracle Free Tier.
 
-## Open Questions
+## Resolved Questions
 
-- [ ] Should we accept webm directly or always convert to WAV?
-- [ ] How to handle Owl API rate limits in production?
-- [ ] Should audio files be cleaned up periodically?
-- [ ] Portfolio integration: iframe src URL or embed code?
+### Question: Should we accept webm directly or always convert to WAV?
+**Decision**: Convert browser webm/ogg to WAV via pydub  
+**Rationale**: Browsers record webm/ogg natively. pydub with ffmpeg handles conversion. WAV is Whisper's preferred format and provides better compatibility. Alternative (accept webm directly) was considered but WAV conversion ensures consistent behavior across browsers.
+
+### Question: How to handle Owl API rate limits in production?
+**Decision**: In-memory rate limiting (10 requests/min/IP) with graceful error handling  
+**Rationale**: Simple counter-based approach is sufficient for MVP. When rate limit is hit, return 429 with friendly message. Owl API failures return 503 with retry suggestion. No external rate limiting service needed for single-candidate app.
+
+### Question: Should audio files be cleaned up periodically?
+**Decision**: Yes, delete temporary audio files after processing  
+**Rationale**: Audio files are transient artifacts. Keeping them wastes disk space and could expose sensitive data. Cleanup happens immediately after TTS generation and audio delivery. No retention period needed for MVP.
+
+### Question: Portfolio integration: iframe src URL or embed code?
+**Decision**: iframe with src URL  
+**Rationale**: Simplest integration. User adds `<iframe src="https://tudominio.com/interview">` to portfolio. Standalone app preserves independence. Embed code adds complexity without benefit for single-candidate use case.

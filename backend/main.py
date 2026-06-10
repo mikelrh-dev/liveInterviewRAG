@@ -2,15 +2,17 @@
 
 import logging
 import os
+import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from backend.config import config
 from backend.services.candidate import CandidateProfile
@@ -24,6 +26,9 @@ logger = logging.getLogger(__name__)
 
 # In-memory conversation store
 conversations: Dict[str, Dict] = {}
+
+# Rate limiting store: {ip: [timestamps]}
+_rate_limit_store: Dict[str, list] = {}
 
 # Services (initialized at startup)
 stt_service = STTService(
@@ -70,12 +75,59 @@ async def lifespan(app: FastAPI):
     # Ensure audio directory exists
     config.AUDIO_DIR.mkdir(parents=True, exist_ok=True)
 
+    # Clean up stale audio files from previous runs
+    cleanup_stale_audio()
+
     logger.info("InterviewTTS backend started")
     yield
 
     # Shutdown
     await llm_service.close()
     logger.info("InterviewTTS backend stopped")
+
+
+def cleanup_stale_audio():
+    """Clean up audio files older than 1 hour from previous runs."""
+    from datetime import datetime, timedelta
+    cutoff = datetime.utcnow() - timedelta(hours=1)
+    for f in config.AUDIO_DIR.rglob("*"):
+        if f.is_file() and f.suffix in (".mp3", ".webm", ".wav"):
+            mtime = datetime.fromtimestamp(f.stat().st_mtime)
+            if mtime < cutoff:
+                f.unlink(missing_ok=True)
+                logger.info("Cleaned up stale audio: %s", f.name)
+
+
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    """Simple in-memory rate limiter: N requests per minute per IP."""
+
+    def __init__(self, app, max_requests: int = 10, window: int = 60):
+        super().__init__(app)
+        self.max_requests = max_requests
+        self.window = window
+
+    async def dispatch(self, request: Request, call_next):
+        # Only rate-limit API endpoints
+        if request.url.path.startswith("/api/"):
+            client_ip = request.client.host if request.client else "unknown"
+            now = time.time()
+            timestamps = _rate_limit_store.get(client_ip, [])
+
+            # Remove old entries outside the window
+            timestamps = [t for t in timestamps if now - t < self.window]
+
+            if len(timestamps) >= self.max_requests:
+                logger.warning("Rate limit hit for IP: %s", client_ip)
+                return JSONResponse(
+                    status_code=429,
+                    content={"detail": "Too many requests. Please wait before trying again."},
+                )
+
+            timestamps.append(now)
+            _rate_limit_store[client_ip] = timestamps
+
+        response = await call_next(request)
+        return response
 
 
 app = FastAPI(
@@ -85,10 +137,14 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS — allow portfolio embedding
+# Rate limiting middleware
+app.add_middleware(RateLimitMiddleware, max_requests=config.RATE_LIMIT_PER_MINUTE)
+
+# CORS — restricted in production, configurable via env var
+cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:8000")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=cors_origins.split(","),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -113,13 +169,14 @@ async def health_check():
 async def create_conversation():
     """Create a new conversation session."""
     conversation_id = uuid.uuid4().hex
-    welcome = "Hi! I'm Mikel, a Junior DAM Developer. Feel free to ask me about my experience, projects, or skills."
+    welcome = "¡Hola! Soy Mikel, desarrollador junior DAM. Pregúntame sobre mi experiencia, proyectos o habilidades."
 
     conversations[conversation_id] = {
         "id": conversation_id,
         "messages": [],
         "created_at": __import__("datetime").datetime.utcnow().isoformat(),
     }
+    logger.info("Created conversation: %s", conversation_id)
 
     return {
         "conversation_id": conversation_id,
@@ -142,6 +199,11 @@ async def send_message(conversation_id: str, audio: UploadFile = File(...)):
     audio_bytes = await audio.read()
     if len(audio_bytes) == 0:
         raise HTTPException(status_code=422, detail="Empty audio file")
+
+    # File size check (proxy for duration — ~5MB max)
+    MAX_AUDIO_SIZE = 5 * 1024 * 1024  # 5MB
+    if len(audio_bytes) > MAX_AUDIO_SIZE:
+        raise HTTPException(status_code=422, detail="Audio too long (max 30 seconds)")
 
     temp_audio = config.AUDIO_DIR / f"input_{conversation_id}_{uuid.uuid4().hex}.webm"
     temp_audio.write_bytes(audio_bytes)

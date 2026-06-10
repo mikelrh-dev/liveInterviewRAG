@@ -17,7 +17,7 @@ class Config:
         self.WHISPER_COMPUTE_TYPE: str = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
 
         # TTS settings
-        self.TTS_VOICE: str = os.getenv("TTS_VOICE", "en-US-GuyNeural")
+        self.TTS_VOICE: str = os.getenv("TTS_VOICE", "es-ES-AlvaroNeural")
 
         # LLM settings
         self.OWL_API_URL: str = os.getenv("OWL_API_URL", "https://api.owl.ai/v1/chat/completions")

@@ -12,7 +12,7 @@ def test_config_defaults():
     assert cfg.WHISPER_MODEL == "base"
     assert cfg.WHISPER_DEVICE == "cpu"
     assert cfg.WHISPER_COMPUTE_TYPE == "int8"
-    assert cfg.TTS_VOICE == "en-US-GuyNeural"
+    assert cfg.TTS_VOICE == "es-ES-AlvaroNeural"
     assert cfg.RAG_TOP_K == 3
     assert cfg.CHUNK_SIZE == 400
     assert cfg.CHUNK_OVERLAP == 50

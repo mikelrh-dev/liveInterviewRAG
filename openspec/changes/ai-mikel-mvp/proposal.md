@@ -17,13 +17,14 @@ The original PLAN.md assumed an AI that interviews the user. Direction 2 inverts
 - Vanilla HTML/CSS/JS frontend with mic input + audio playback
 - Candidate profile system (CV, projects, stories)
 - Nginx + Oracle Free Tier ARM64 deploy
+- Rate limiting (10 requests/min/IP) and error handling
 
 ### Out of Scope
 - Voice cloning (OpenVoice — future phase)
 - Real phone call integration
 - Multi-language support
 - Session persistence / conversation history
-- Rate limiting, error handling, auth
+- Authentication / authorization
 
 ## Capabilities
 

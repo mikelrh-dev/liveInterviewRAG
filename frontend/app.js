@@ -26,10 +26,10 @@ async function init() {
         const data = await response.json();
         conversationId = data.conversation_id;
         addMessage('system', data.welcome_message);
-        updateStatus('Ready to listen');
+        updateStatus('Preparado para escuchar');
     } catch (error) {
         console.error('Failed to create conversation:', error);
-        updateStatus('Connection error — please refresh', true);
+        updateStatus('Error de conexión — recarga la página', true);
     }
 }
 
@@ -44,7 +44,11 @@ function addMessage(type, text, audioUrl = null) {
     if (audioUrl) {
         const playerDiv = document.createElement('div');
         playerDiv.className = 'audio-player';
-        playerDiv.innerHTML = `<audio controls src="${audioUrl}"></audio>`;
+        const audioEl = document.createElement('audio');
+        audioEl.src = audioUrl;
+        audioEl.controls = true;
+        audioEl.autoplay = true;
+        playerDiv.appendChild(audioEl);
         messageDiv.appendChild(playerDiv);
     }
 
@@ -113,11 +117,11 @@ async function startRecording() {
         micButton.classList.add('recording');
         micIcon.classList.add('hidden');
         stopIcon.classList.remove('hidden');
-        updateStatus('Listening...');
+        updateStatus('Escuchando...');
 
     } catch (error) {
         console.error('Microphone access denied:', error);
-        updateStatus('Microphone access denied', true);
+        updateStatus('Acceso al micrófono denegado', true);
     }
 }
 
@@ -144,7 +148,7 @@ async function processRecording() {
 
     isProcessing = true;
     micButton.disabled = true;
-    updateStatus('Processing...');
+    updateStatus('Procesando...');
 
     const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
     const formData = new FormData();
@@ -172,20 +176,20 @@ async function processRecording() {
         // Display candidate's response with audio
         addMessage('candidate', data.response_text, data.audio_url);
 
-        updateStatus('Ready to listen');
+        updateStatus('Preparado para escuchar');
 
     } catch (error) {
         console.error('Pipeline error:', error);
-        let message = 'Something went wrong. Please try again.';
+        let message = 'Algo salió mal. Intenta de nuevo.';
         if (error.message.includes('transcribe')) {
-            message = 'Could not understand the audio. Please try speaking more clearly.';
+            message = 'No se pudo entender el audio. Habla más claro, por favor.';
         } else if (error.message.includes('503') || error.message.includes('unavailable')) {
-            message = 'Service temporarily unavailable. Please try again in a moment.';
+            message = 'Servicio temporalmente no disponible. Intenta de nuevo en un momento.';
         } else if (error.message.includes('422')) {
-            message = 'Could not process the audio. Please try again.';
+            message = 'No se pudo procesar el audio. Intenta de nuevo.';
         }
         addMessage('error', message);
-        updateStatus('Error — tap to retry', true);
+        updateStatus('Error — toca para reintentar', true);
     } finally {
         isProcessing = false;
         micButton.disabled = false;

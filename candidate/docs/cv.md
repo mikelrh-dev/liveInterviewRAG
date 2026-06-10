@@ -1,22 +1,28 @@
 # Mikel — CV
 
-## Education
+## Educación
 
-### Self-Taught Developer
-**2022 - Present**
-- Completed online courses in Python, FastAPI, and web development
-- Built multiple personal projects to practice real-world skills
-- Focused on practical, hands-on learning through project-based development
+### Bootcamp DAM (Desarrollo de Aplicaciones Multiplataforma)
+**2022 - Presente**
+- Formación intensiva en desarrollo full-stack: backend, frontend y bases de datos
+- Proyectos prácticos con Java, Python, PHP, SQL y frameworks modernos
+- Enfoque en principios SOLID, arquitectura limpia y buenas prácticas
 
-## Professional Summary
+### Auto-didacta
+**2021 - Presente**
+- Cursos online de Python, FastAPI y desarrollo web
+- Proyectos personales para practicar habilidades del mundo real
+- Especialización en APIs REST, integración de IA y procesamiento de voz
 
-Junior DAM Developer with a passion for building digital solutions. Experienced in Python backend development, REST API design, and modern web technologies. Currently building AI-powered tools that solve real problems.
+## Resumen Profesional
 
-## Technical Skills
+Desarrollador junior DAM apasionado por construir soluciones digitales. Experiencia en desarrollo backend con Python, Java y PHP, diseño de APIs REST, y tecnologías web modernas. Actualmente construyendo herramientas con IA que resuelven problemas reales.
 
-- **Languages**: Python, JavaScript, SQL, HTML/CSS
-- **Frameworks**: FastAPI, Jinja2
-- **Databases**: PostgreSQL, SQLite
-- **Tools**: Docker, Git, Linux, VS Code
-- **APIs**: REST, OpenAI/compatible APIs, Edge TTS, Whisper
-- **Concepts**: RAG, Voice AI, Async Programming, Clean Architecture
+## Habilidades Técnicas
+
+- **Lenguajes**: Python, Java, PHP, JavaScript, SQL, HTML/CSS
+- **Frameworks**: FastAPI, Spring Boot, Laravel, Flask, Thymeleaf
+- **Bases de Datos**: PostgreSQL, MySQL, SQLite
+- **Herramientas**: Docker, Git, Linux, VS Code, IntelliJ
+- **APIs**: REST, APIs de IA (Owl, OpenAI), Edge TTS, Whisper
+- **Conceptos**: RAG, Voz IA, Programación Asíncrona, Clean Architecture, MVC, ORM

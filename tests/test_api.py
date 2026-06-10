@@ -6,6 +6,9 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+# Import rate limit store so we can reset it between tests
+from backend.main import _rate_limit_store
+
 
 @pytest.fixture
 def mock_services():
@@ -46,6 +49,12 @@ def mock_services():
             "rag": mock_rag,
             "profile": mock_profile,
         }
+
+
+@pytest.fixture(autouse=True)
+def clear_rate_limits():
+    """Clear rate limit store before each test."""
+    _rate_limit_store.clear()
 
 
 @pytest.fixture
