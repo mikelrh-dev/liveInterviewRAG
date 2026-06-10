@@ -1,0 +1,83 @@
+# Tasks: AI Mikel — Digital Twin MVP
+
+## Review Workload Forecast
+
+| Field | Value |
+|-------|-------|
+| Estimated changed lines | 1200-1800 |
+| 400-line budget risk | High |
+| Chained PRs recommended | Yes |
+| Suggested split | PR 1: Backend foundation → PR 2: RAG + Candidate → PR 3: API + Frontend → PR 4: Deploy |
+| Delivery strategy | ask-on-risk |
+| Chain strategy | stacked-to-main |
+
+Decision needed before apply: Yes
+Chained PRs recommended: Yes
+Chain strategy: stacked-to-main
+400-line budget risk: High
+
+### Suggested Work Units
+
+| Unit | Goal | Likely PR | Notes |
+|------|------|-----------|-------|
+| 1 | Backend foundation: config, STT, LLM, TTS services | PR 1 | Base branch: main; tests included |
+| 2 | RAG pipeline + candidate profile system | PR 2 | Depends on PR 1; base: PR 1 branch |
+| 3 | FastAPI endpoints + frontend UI | PR 3 | Depends on PR 2; base: PR 2 branch |
+| 4 | Deployment config + testing | PR 4 | Depends on PR 3; base: PR 3 branch |
+
+## Phase 1: Backend Foundation (Infrastructure)
+
+- [x] 1.1 Create `backend/` directory structure: `services/`, `prompts/`, `__init__.py` files
+- [x] 1.2 Create `backend/requirements.txt` with FastAPI, uvicorn, faster-whisper, edge-tts, sentence-transformers, pydub, numpy
+- [x] 1.3 Create `backend/config.py` with environment variable loading (OWL_API_KEY, WHISPER_MODEL, TTS_VOICE)
+- [x] 1.4 Create `backend/services/stt.py` — Faster Whisper wrapper: load model at startup, `transcribe(audio_path) -> str` method
+- [x] 1.5 Create `backend/services/llm.py` — Owl API client: `generate(prompt, context) -> str` with rate limit error handling
+- [x] 1.6 Create `backend/services/tts.py` — Edge TTS wrapper: `synthesize(text, output_path) -> str` with voice selection
+- [x] 1.7 Create `backend/prompts/candidate.py` — System prompt template positioning LLM as the candidate
+- [x] 1.8 Write unit tests for STT/LLM/TTS services with mocked external APIs
+- [x] 1.9 Verify: Each service handles errors gracefully and returns expected types
+
+## Phase 2: RAG Pipeline + Candidate Profile
+
+- [ ] 2.1 Create `candidate/` directory with `profile.json` (CV, projects, stories schema)
+- [ ] 2.2 Create `candidate/docs/` with sample Markdown files (cv.md, projects.md, skills.md, stories.md)
+- [ ] 2.3 Create `backend/services/candidate.py` — Load JSON + Markdown files from `candidate/` directory
+- [ ] 2.4 Create `backend/services/rag.py` — Document chunking (200-500 tokens with overlap)
+- [ ] 2.5 Implement embedding computation using sentence-transformers or TF-IDF fallback
+- [ ] 2.6 Implement cosine similarity retrieval: `retrieve(query, top_k=3) -> List[Chunk]`
+- [ ] 2.7 Add ingestion logging and empty directory warning
+- [ ] 2.8 Write unit tests for RAG with known documents, verify retrieval relevance
+- [ ] 2.9 Verify: Embedding + retrieval completes within 500ms for 50 chunks
+
+## Phase 3: API Layer + Frontend
+
+- [ ] 3.1 Create `backend/main.py` — FastAPI app with CORS, static file serving
+- [ ] 3.2 Implement `POST /api/conversation` endpoint — create conversation ID, return welcome message
+- [ ] 3.3 Implement `POST /api/conversation/{id}/message` — accept audio FormData, orchestrate STT→RAG→LLM→TTS pipeline
+- [ ] 3.4 Implement `GET /api/health` — return status and model loading state
+- [ ] 3.5 Add conversation state management (in-memory dict with conversation IDs)
+- [ ] 3.6 Create `frontend/index.html` — microphone button, audio playback, conversation display
+- [ ] 3.7 Create `frontend/style.css` — responsive design, professional tone
+- [ ] 3.8 Create `frontend/app.js` — MediaRecorder API, fetch calls, audio playback logic
+- [ ] 3.9 Add error handling: STT failure (422), LLM failure (503), frontend retry UX
+- [ ] 3.10 Write integration tests: full pipeline audio in → audio out
+- [ ] 3.11 Verify: Total latency under 8 seconds for full pipeline
+
+## Phase 4: Deployment + Polish
+
+- [ ] 4.1 Create `nginx/interview.conf` — reverse proxy /api to FastAPI, serve frontend static files
+- [ ] 4.2 Create systemd service file for FastAPI (auto-restart, logging)
+- [ ] 4.3 Add audio cleanup: delete temporary files after processing
+- [ ] 4.4 Add rate limiting: 10 requests per minute per IP (in-memory counter)
+- [ ] 4.5 Add input validation: audio format check, max 30s recording
+- [ ] 4.6 Update README with setup instructions, environment variables, demo screenshots
+- [ ] 4.7 Write E2E test script (manual or Playwright) for browser recording flow
+- [ ] 4.8 Verify: Deploy on Oracle Free Tier, accessible via Nginx, iframe embeddable
+
+## Verification Checklist
+
+- [ ] Recruiter can ask question and receive voice response "from" candidate
+- [ ] Responses reference real CV/projects (not generic)
+- [ ] Total response latency < 8s (STT→LLM→TTS)
+- [ ] Deployed on Oracle Free Tier, accessible via Nginx
+- [ ] README with setup instructions and demo screenshots
