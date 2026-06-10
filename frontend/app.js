@@ -16,8 +16,9 @@ let audioContext = null;
 let vadAnalyser = null;
 let vadAnimationId = null;
 let silenceStart = null;
-const SILENCE_TIMEOUT_MS = 1500;
-const RMS_THRESHOLD = 0.025;
+let hasSpoken = false;          // true once user has spoken in current recording
+const SILENCE_TIMEOUT_MS = 1800;
+const RMS_THRESHOLD = 0.03;
 
 // DOM
 const btn = document.getElementById('btnInterview');
@@ -44,6 +45,7 @@ async function startInterview() {
 
     try {
         const res = await fetch(`${API_BASE}/api/conversation`, { method: 'POST' });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         conversationId = data.conversation_id;
         addMessage('system', data.welcome_message);
@@ -101,6 +103,7 @@ async function startRecording() {
 
         mediaRecorder.start();
         isRecording = true;
+        hasSpoken = false;
         startVad(stream);
         setStatus('Escuchando...', 'listening');
 
@@ -129,16 +132,21 @@ function vadLoop() {
     if (!isRecording || !vadAnalyser) return;
     const rms = calculateRms(vadAnalyser);
 
-    if (rms < RMS_THRESHOLD) {
+    // Track whether user has spoken at least once
+    if (rms >= RMS_THRESHOLD) {
+        hasSpoken = true;
+        silenceStart = null;
+    } else if (hasSpoken) {
+        // Only start silence timeout after user has spoken
         if (silenceStart === null) silenceStart = Date.now();
         else if (Date.now() - silenceStart >= SILENCE_TIMEOUT_MS) {
             setStatus('Procesando...', 'processing');
             stopRecording();
             return;
         }
-    } else {
-        silenceStart = null;
     }
+    // If !hasSpoken and rms < threshold: do nothing, keep listening
+
     vadAnimationId = requestAnimationFrame(vadLoop);
 }
 
@@ -149,6 +157,7 @@ function startVad(stream) {
     vadAnalyser.fftSize = 256;
     src.connect(vadAnalyser);
     silenceStart = null;
+    hasSpoken = false;
     vadAnimationId = requestAnimationFrame(vadLoop);
 }
 
@@ -174,7 +183,13 @@ async function processRecording() {
         const res = await fetch(`${API_BASE}/api/conversation/${conversationId}/message`, {
             method: 'POST', body: fd,
         });
-        if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || `HTTP ${res.status}`);
+
+        // Try to extract detail from error body
+        let detail = null;
+        if (!res.ok) {
+            try { detail = (await res.json()).detail; } catch (_) {}
+            throw new Error(detail || `Error del servidor (HTTP ${res.status})`);
+        }
 
         const data = await res.json();
         addMessage('user', data.user_text);
@@ -192,11 +207,9 @@ async function processRecording() {
         }
     } catch (e) {
         console.error('Pipeline error:', e);
-        let msg = 'Algo salió mal. Intenta de nuevo.';
-        if (e.message.includes('transcribe')) msg = 'No se pudo entender el audio.';
-        else if (e.message.includes('503') || e.message.includes('unavailable')) msg = 'Servicio temporalmente no disponible.';
+        const msg = e.message || 'Algo salió mal.';
         addMessage('error', msg);
-        setStatus('Error', true);
+        setStatus('Error — toca "Finalizar" y vuelve a empezar', true);
         stopInterview();
     } finally {
         isProcessing = false;
