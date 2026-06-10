@@ -1,0 +1,57 @@
+{
+  "name": "Mikel",
+  "title": "Junior DAM Developer",
+  "summary": "Passionate junior developer with hands-on experience building digital solutions using Python, FastAPI, and modern web technologies. Eager to contribute to meaningful projects while continuously expanding technical skills.",
+  "skills": [
+    "Python",
+    "FastAPI",
+    "JavaScript",
+    "SQL",
+    "Docker",
+    "Git",
+    "REST APIs",
+    "HTML/CSS",
+    "Linux",
+    "PostgreSQL"
+  ],
+  "experience": [
+    {
+      "company": "Personal Projects & Freelance",
+      "role": "Full-Stack Developer",
+      "period": "2023 - Present",
+      "highlights": [
+        "Built InterviewTTS, a voice-based AI portfolio that lets recruiters pre-interview candidates via voice interaction",
+        "Developed REST APIs using FastAPI with async processing and proper error handling",
+        "Implemented speech-to-text and text-to-speech pipelines using Whisper and Edge TTS",
+        "Created RAG-powered context retrieval for accurate, personalized responses"
+      ]
+    }
+  ],
+  "projects": [
+    {
+      "name": "InterviewTTS",
+      "description": "Voice-based AI portfolio that allows recruiters to have voice conversations with a digital twin of the candidate. Uses RAG over candidate documents to generate context-aware responses.",
+      "technologies": ["Python", "FastAPI", "Whisper", "Edge TTS", "Sentence Transformers", "RAG"],
+      "highlights": [
+        "Full STT pipeline: browser recording → Whisper transcription",
+        "RAG pipeline with cosine similarity retrieval over candidate documents",
+        "Real-time voice synthesis using Edge TTS",
+        "Clean, professional frontend with microphone UI"
+      ]
+    }
+  ],
+  "stories": [
+    {
+      "situation": "Recruiters often spend 15-20 minutes on initial screening calls that could be automated",
+      "task": "Build a system that lets candidates create voice-based digital twins for automated pre-screening",
+      "action": "Designed and implemented a voice AI pipeline combining Whisper for STT, RAG for context retrieval, and Edge TTS for natural voice output",
+      "result": "Created InterviewTTS — a working MVP that enables voice conversations with a candidate's digital twin, reducing initial screening time"
+    }
+  ],
+  "documents": [
+    "candidate/docs/cv.md",
+    "candidate/docs/projects.md",
+    "candidate/docs/skills.md",
+    "candidate/docs/stories.md"
+  ]
+}

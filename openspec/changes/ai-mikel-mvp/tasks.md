@@ -39,15 +39,15 @@ Chain strategy: stacked-to-main
 
 ## Phase 2: RAG Pipeline + Candidate Profile
 
-- [ ] 2.1 Create `candidate/` directory with `profile.json` (CV, projects, stories schema)
-- [ ] 2.2 Create `candidate/docs/` with sample Markdown files (cv.md, projects.md, skills.md, stories.md)
-- [ ] 2.3 Create `backend/services/candidate.py` — Load JSON + Markdown files from `candidate/` directory
-- [ ] 2.4 Create `backend/services/rag.py` — Document chunking (200-500 tokens with overlap)
-- [ ] 2.5 Implement embedding computation using sentence-transformers or TF-IDF fallback
-- [ ] 2.6 Implement cosine similarity retrieval: `retrieve(query, top_k=3) -> List[Chunk]`
-- [ ] 2.7 Add ingestion logging and empty directory warning
-- [ ] 2.8 Write unit tests for RAG with known documents, verify retrieval relevance
-- [ ] 2.9 Verify: Embedding + retrieval completes within 500ms for 50 chunks
+- [x] 2.1 Create `candidate/` directory with `profile.json` (CV, projects, stories schema)
+- [x] 2.2 Create `candidate/docs/` with sample Markdown files (cv.md, projects.md, skills.md, stories.md)
+- [x] 2.3 Create `backend/services/candidate.py` — Load JSON + Markdown files from `candidate/` directory
+- [x] 2.4 Create `backend/services/rag.py` — Document chunking (200-500 tokens with overlap)
+- [x] 2.5 Implement embedding computation using sentence-transformers or TF-IDF fallback
+- [x] 2.6 Implement cosine similarity retrieval: `retrieve(query, top_k=3) -> List[Chunk]`
+- [x] 2.7 Add ingestion logging and empty directory warning
+- [x] 2.8 Write unit tests for RAG with known documents, verify retrieval relevance
+- [x] 2.9 Verify: Embedding + retrieval completes within 500ms for 50 chunks
 
 ## Phase 3: API Layer + Frontend
 
