@@ -14,7 +14,7 @@ class TestSTTService:
     def test_init_defaults(self):
         """STT service initializes with default parameters."""
         svc = STTService()
-        assert svc.model_name == "tiny"
+        assert svc.model_name == "small"
         assert svc.device == "cpu"
         assert svc.compute_type == "int8"
         assert not svc.is_loaded

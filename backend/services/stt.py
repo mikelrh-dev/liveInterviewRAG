@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 class STTService:
     """Faster Whisper wrapper for speech-to-text transcription."""
 
-    def __init__(self, model_name: str = "tiny", device: str = "cpu", compute_type: str = "int8"):
+    def __init__(self, model_name: str = "small", device: str = "cpu", compute_type: str = "int8"):
         self.model_name = model_name
         self.device = device
         self.compute_type = compute_type
