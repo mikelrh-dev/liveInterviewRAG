@@ -1424,7 +1424,7 @@ git commit -m "feat: Three.js pulsating orb with CSS fallback"
 
 This is the largest task. The file is split into logical sections.
 
-- [ ] **Step 1: Replace `frontend/app.js` with complete refactored version**
+- [x] **Step 1: Replace `frontend/app.js` with complete refactored version**
 
 ```javascript
 /**
@@ -2196,7 +2196,7 @@ function escapeHtml(text) {
 init();
 ```
 
-- [ ] **Step 2: Commit**
+- [x] **Step 2: Commit**
 
 ```bash
 git add frontend/app.js
@@ -2210,7 +2210,7 @@ git commit -m "feat: refactor app.js with shared analyser, state machine, typing
 **Files:**
 - Modify: `frontend/app.js` (already mostly covered in Task 7, this task adds remaining handlers)
 
-- [ ] **Step 1: Add explicit error handlers for remaining scenarios**
+- [x] **Step 1: Add explicit error handlers for remaining scenarios**
 
 The following scenarios are already handled in Task 7's code:
 1. ✅ Mic permission denied → `startRecording()` catch block
@@ -2256,7 +2256,7 @@ Replace the `fetch` call in `processRecordingStream` with `fetchWithBackoff`:
         );
 ```
 
-- [ ] **Step 2: Commit**
+- [x] **Step 2: Commit**
 
 ```bash
 git add frontend/app.js
@@ -2271,7 +2271,7 @@ git commit -m "feat: add exponential backoff for network errors"
 - Modify: `backend/main.py` (ensure turn tracking works with non-streaming endpoint too)
 - Modify: `frontend/index.html` (verify script load order)
 
-- [ ] **Step 1: Add turn tracking to non-streaming endpoint**
+- [x] **Step 1: Add turn tracking to non-streaming endpoint**
 
 In `send_message()` (non-streaming endpoint), after `# Store message in conversation`, add:
 
@@ -2291,16 +2291,16 @@ In `send_message()` (non-streaming endpoint), after `# Store message in conversa
         })
 ```
 
-- [ ] **Step 2: Verify script load order in `index.html`**
+- [x] **Step 2: Verify script load order in `index.html`**
 
 Ensure `avatar.js` loads before `app.js` (it already does in Task 4's HTML). The `defer` attributes on CDN scripts ensure Three.js and tsparticles are available before inline scripts run.
 
-- [ ] **Step 3: Run full test suite**
+- [x] **Step 3: Run full test suite**
 
 Run: `pytest tests/ -v`
 Expected: All tests pass (50+ existing + new tests from Tasks 1-3).
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add backend/main.py frontend/index.html
