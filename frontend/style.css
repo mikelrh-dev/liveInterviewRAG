@@ -405,6 +405,15 @@ body {
     100% { transform: rotate(360deg); }
 }
 
+.avatar-head {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
 .avatar-image {
     width: 96%;
     height: 96%;
@@ -415,6 +424,39 @@ body {
     -webkit-mask-image: radial-gradient(circle, black 70%, transparent 100%);
     position: relative;
     z-index: 1;
+    animation: avatar-life 4s ease-in-out infinite;
+    transform-origin: center bottom;
+    will-change: transform;
+}
+
+.avatar-image::before,
+.avatar-image::after {
+    content: '';
+    position: absolute;
+    width: 13%;
+    height: 4px;
+    background: #071326;
+    top: 38%;
+    pointer-events: none;
+    transform: scaleY(0);
+    transform-origin: center;
+    animation: eye-blink 5s infinite;
+    z-index: 2;
+    border-radius: 2px;
+}
+.avatar-image::before { left: 33%; }
+.avatar-image::after  { right: 33%; }
+
+@keyframes avatar-life {
+    0%, 100% { transform: scale(1.0) translate(0, 0) rotate(0deg); }
+    25%      { transform: scale(1.015) translate(-1px, -1px) rotate(0.4deg); }
+    50%      { transform: scale(1.025) translate(0, -2px) rotate(0deg); }
+    75%      { transform: scale(1.015) translate(1px, -1px) rotate(-0.4deg); }
+}
+
+@keyframes eye-blink {
+    0%, 92%, 100% { transform: scaleY(0); }
+    94%, 96%      { transform: scaleY(1); }
 }
 
 .avatar-orb {
@@ -425,6 +467,30 @@ body {
     z-index: 2;
     pointer-events: none;
     mix-blend-mode: screen;
+}
+
+.mouth-glow {
+    position: absolute;
+    left: 50%;
+    top: 68%;
+    width: 50px;
+    height: 16px;
+    background: radial-gradient(ellipse, rgba(0, 212, 255, 0.85), rgba(0, 212, 255, 0) 70%);
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.8);
+    pointer-events: none;
+    z-index: 3;
+    transition: opacity 0.2s ease;
+}
+
+.mouth-glow.speaking {
+    opacity: 1;
+    animation: mouth-pulse 0.32s ease-in-out infinite alternate;
+}
+
+@keyframes mouth-pulse {
+    0%   { opacity: 0.5; transform: translate(-50%, -50%) scale(0.9); }
+    100% { opacity: 1.0; transform: translate(-50%, -50%) scale(1.4); }
 }
 
 /* ─── Orbital ring ──────────────────────────────────── */

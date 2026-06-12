@@ -51,6 +51,7 @@ const contextPanel = document.getElementById('context-panel');
 const contextClose = document.getElementById('context-close');
 const contextContent = document.getElementById('context-content');
 const audioOverlay = document.getElementById('audio-blocked-overlay');
+const mouthGlow = document.getElementById('mouth-glow');
 
 // Current candidate message
 let currentCandidateDiv = null;
@@ -262,6 +263,15 @@ function startVisualizationLoop() {
 
 function setState(state) {
     currentState = state;
+
+    // Toggle mouth glow
+    if (mouthGlow) {
+        if (state === 'speaking') {
+            mouthGlow.classList.add('speaking');
+        } else {
+            mouthGlow.classList.remove('speaking');
+        }
+    }
 
     // Update ring
     orbitalRing.className = 'orbital-ring';
