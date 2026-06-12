@@ -243,7 +243,7 @@ function startVisualizationLoop() {
                 sum += v * v;
             }
             const rms = Math.sqrt(sum / timeData.length);
-            const volume = Math.min(1, rms / 0.5);
+            const volume = Math.min(1, Math.pow(rms / 0.15, 0.7));
 
             // Update orb
             if (window.AvatarOrb && window.AvatarOrb.isInitialized()) {
