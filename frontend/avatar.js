@@ -175,7 +175,7 @@
 
         // Idle breathing: ±5% scale (more visible than before)
         idlePhase += 0.025;
-        const idleScale = 1.0 + Math.sin(idlePhase) * 0.10;
+        const idleScale = 1.0 + Math.sin(idlePhase) * 0.05;
 
         // ── Inner orb ──
         const volScale = idleScale + vol * 0.15;
