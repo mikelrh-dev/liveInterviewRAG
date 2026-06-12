@@ -18,7 +18,7 @@ let vadAnalyser = null;
 let vadAnimationId = null;
 let silenceStart = null;
 let hasSpoken = false;
-const SILENCE_TIMEOUT_MS = 1200;
+const SILENCE_TIMEOUT_MS = 800;
 const RMS_THRESHOLD = 0.03;
 
 // Reusable media stream (avoids getUserMedia latency between turns)
