@@ -499,6 +499,28 @@ function checkAllDone() {
     }
 }
 
+// ─── Fetch with backoff ────────────────────────────────
+
+/**
+ * Fetch with exponential backoff.
+ * Retries: 1s, 2s, 4s, 8s, max 30s.
+ */
+async function fetchWithBackoff(url, options, maxRetries = 5) {
+    let delay = 1000;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+            const res = await fetch(url, options);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            return res;
+        } catch (e) {
+            if (attempt === maxRetries) throw e;
+            setStatus('Sin conexión — reintentando...', 'error');
+            await new Promise(r => setTimeout(r, delay));
+            delay = Math.min(delay * 2, 30000);
+        }
+    }
+}
+
 // ─── SSE pipeline ──────────────────────────────────────
 
 async function processRecordingStream() {
@@ -519,9 +541,10 @@ async function processRecordingStream() {
     let lastTurnNumber = -1;
 
     try {
-        const res = await fetch(`${API_BASE}/api/conversation/${conversationId}/message/stream`, {
-            method: 'POST', body: fd,
-        });
+        const res = await fetchWithBackoff(
+            `${API_BASE}/api/conversation/${conversationId}/message/stream`,
+            { method: 'POST', body: fd },
+        );
 
         if (!res.ok) {
             let detail = `HTTP ${res.status}`;
