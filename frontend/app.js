@@ -1,6 +1,13 @@
 /**
- * InterviewTTS — Frontend voice chat logic
- * Interview loop: click "Iniciar" → speak (VAD) → see text live (SSE) → hear response → auto-loop
+ * InterviewTTS — HUD frontend
+ * Voice interview loop with HUD visualizations.
+ *
+ * Architecture:
+ * - Shared AudioContext + AnalyserNode (shared between MediaRecorder and visualizations)
+ * - State machine for orb/ring: idle | listening | speaking | processing
+ * - Waveform: 32 bars from FFT
+ * - Typing animation: 30ms per char reveal
+ * - Context panel: fetches from GET /api/conversation/{id}/context?turn=N
  */
 
 const API_BASE = '';
@@ -10,49 +17,271 @@ let audioChunks = [];
 let isRecording = false;
 let isProcessing = false;
 let isInterviewActive = false;
-let isUserScrolledUp = false;  // smart scroll
+let isUserScrolledUp = false;
 
-// VAD state
+// ─── Shared Audio setup ────────────────────────────────
+
 let audioContext = null;
-let vadAnalyser = null;
+let analyserNode = null;
+let mediaStream = null;
+let audioBlocked = false;
+
+// VAD state (uses same analyser)
 let vadAnimationId = null;
 let silenceStart = null;
 let hasSpoken = false;
 const SILENCE_TIMEOUT_MS = 800;
 const RMS_THRESHOLD = 0.03;
 
-// Reusable media stream (avoids getUserMedia latency between turns)
-let mediaStream = null;
+// Visualization state
+let currentState = 'idle'; // idle | listening | speaking | processing
+let waveformBars = [];
+let waveformAnimationId = null;
 
 // DOM
-const btn = document.getElementById('btnInterview');
-const btnLabel = document.getElementById('btnLabel');
+const btnMic = document.getElementById('btn-mic');
 const statusEl = document.getElementById('status');
 const conversation = document.getElementById('conversation');
-const playIcon = btn.querySelector('.play-icon');
-const stopIcon = btn.querySelector('.stop-icon');
+const micIcon = btnMic.querySelector('.mic-icon');
+const stopIconEl = btnMic.querySelector('.stop-icon');
+const orbitalRing = document.getElementById('orbital-ring');
+const waveformSvg = document.getElementById('waveform');
+const contextToggle = document.getElementById('context-toggle');
+const contextPanel = document.getElementById('context-panel');
+const contextClose = document.getElementById('context-close');
+const contextContent = document.getElementById('context-content');
+const audioOverlay = document.getElementById('audio-blocked-overlay');
 
-// Current candidate message (for inline updates + audio indicator)
+// Current candidate message
 let currentCandidateDiv = null;
 
-function init() {
-    addMessage('system', 'Presiona "Iniciar entrevista" para empezar.');
-    setStatus('Preparado');
+// Audio queue
+let audioQueue = [];
+let nextChunkId = 0;
+let isAudioPlaying = false;
+let allChunksReceived = false;
 
-    // Smart scroll: detect if user scrolled up manually
+// Typing animation
+let typingIntervals = [];
+
+// ─── Initialization ────────────────────────────────────
+
+function init() {
+    initWaveformBars();
+    initParticles();
+    initAvatarOrb();
+
+    // Smart scroll
     conversation.addEventListener('scroll', () => {
         const threshold = 50;
         isUserScrolledUp = conversation.scrollHeight - conversation.scrollTop - conversation.clientHeight > threshold;
     });
+
+    // Context panel toggle
+    contextToggle.addEventListener('click', toggleContextPanel);
+    contextClose.addEventListener('click', () => contextPanel.classList.remove('open'));
+
+    // Close context panel on outside click
+    document.addEventListener('click', (e) => {
+        if (contextPanel.classList.contains('open') &&
+            !contextPanel.contains(e.target) &&
+            e.target !== contextToggle &&
+            !contextToggle.contains(e.target)) {
+            contextPanel.classList.remove('open');
+        }
+    });
+
+    // Audio blocked overlay — resume on click
+    audioOverlay.addEventListener('click', resumeAudioContext);
+
+    // Mic button
+    btnMic.addEventListener('click', toggleInterview);
+
+    addMessage('system', 'Presioná el micrófono para empezar.');
+    setStatus('Preparado');
 }
 
-function scrollToBottom() {
-    if (!isUserScrolledUp) {
-        conversation.scrollTop = conversation.scrollHeight;
+/**
+ * Initialize AudioContext and AnalyserNode. Handles autoplay blocking.
+ */
+async function initAudio() {
+    if (audioContext) return;
+
+    try {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioContext.state === 'suspended') {
+            throw new Error('AudioContext blocked');
+        }
+
+        analyserNode = audioContext.createAnalyser();
+        analyserNode.fftSize = 64; // 32 frequency bins
+        waveformBars = new Uint8Array(analyserNode.frequencyBinCount);
+    } catch (e) {
+        console.warn('AudioContext init failed:', e.message);
+        audioBlocked = true;
+        audioOverlay.classList.remove('hidden');
     }
 }
 
-// ─── Button actions ───────────────────────────────────────
+/**
+ * Resume AudioContext on user interaction.
+ */
+async function resumeAudioContext() {
+    if (audioContext && audioContext.state === 'suspended') {
+        await audioContext.resume();
+    }
+    if (audioContext && audioContext.state === 'running') {
+        audioBlocked = false;
+        audioOverlay.classList.add('hidden');
+    }
+}
+
+// ─── Particles ─────────────────────────────────────────
+
+function initParticles() {
+    if (typeof tsParticles === 'undefined') {
+        console.warn('tsparticles not loaded — skipping particles');
+        return;
+    }
+
+    tsParticles.load('particles-bg', {
+        fullScreen: { enable: false },
+        particles: {
+            number: { value: 60, density: { enable: true, value_area: 800 } },
+            color: { value: '#00d4ff' },
+            opacity: { value: 0.15, random: true },
+            size: { value: 2, random: true },
+            move: {
+                enable: true,
+                speed: 0.5,
+                direction: 'top',
+                out_mode: 'out',
+            },
+            line_linked: {
+                enable: true,
+                distance: 100,
+                color: '#00d4ff',
+                opacity: 0.1,
+                width: 0.5,
+            },
+        },
+        interactivity: {
+            events: {
+                onhover: { enable: false },
+                onclick: { enable: true, mode: 'repulse' },
+            },
+            modes: {
+                repulse: { distance: 100, duration: 0.4 },
+            },
+        },
+    });
+}
+
+// ─── Avatar Orb ────────────────────────────────────────
+
+function initAvatarOrb() {
+    if (typeof window.AvatarOrb === 'undefined') {
+        console.warn('AvatarOrb not available');
+        return;
+    }
+
+    const success = window.AvatarOrb.init();
+    if (success) {
+        startVisualizationLoop();
+    }
+}
+
+// ─── Waveform bars ─────────────────────────────────────
+
+function initWaveformBars() {
+    const barCount = 32;
+    const barWidth = 4;
+    const gap = 2;
+
+    for (let i = 0; i < barCount; i++) {
+        const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        rect.setAttribute('x', i * (barWidth + gap));
+        rect.setAttribute('y', 20);
+        rect.setAttribute('width', barWidth);
+        rect.setAttribute('height', 0);
+        rect.setAttribute('rx', '1');
+        waveformSvg.appendChild(rect);
+    }
+}
+
+function updateWaveform() {
+    if (!analyserNode || currentState === 'idle' || currentState === 'processing') {
+        waveformSvg.classList.remove('visible');
+        return;
+    }
+
+    waveformSvg.classList.add('visible');
+    analyserNode.getByteFrequencyData(waveformBars);
+
+    const rects = waveformSvg.querySelectorAll('rect');
+    for (let i = 0; i < rects.length && i < waveformBars.length; i++) {
+        const value = waveformBars[i];
+        const height = Math.max(1, (value / 255) * 36);
+        rects[i].setAttribute('height', height);
+        rects[i].setAttribute('y', 20 - height / 2);
+    }
+}
+
+// ─── Visualization loop ────────────────────────────────
+
+function startVisualizationLoop() {
+    function loop() {
+        waveformAnimationId = requestAnimationFrame(loop);
+
+        // Get RMS from analyser for orb
+        if (analyserNode) {
+            const timeData = new Uint8Array(analyserNode.fftSize);
+            analyserNode.getByteTimeDomainData(timeData);
+            let sum = 0;
+            for (let i = 0; i < timeData.length; i++) {
+                const v = (timeData[i] - 128) / 128;
+                sum += v * v;
+            }
+            const rms = Math.sqrt(sum / timeData.length);
+            const volume = Math.min(1, rms / 0.5);
+
+            // Update orb
+            if (window.AvatarOrb && window.AvatarOrb.isInitialized()) {
+                window.AvatarOrb.setVolume(volume);
+            }
+        }
+
+        // Update waveform
+        updateWaveform();
+    }
+
+    loop();
+}
+
+// ─── State machine ─────────────────────────────────────
+
+function setState(state) {
+    currentState = state;
+
+    // Update ring
+    orbitalRing.className = 'orbital-ring';
+    if (state !== 'idle') {
+        orbitalRing.classList.add(`state-${state}`);
+    }
+
+    // Update orb state
+    if (window.AvatarOrb && window.AvatarOrb.isInitialized()) {
+        window.AvatarOrb.setState(state);
+    }
+
+    // Update status text class
+    statusEl.className = 'hud-status';
+    if (state !== 'idle') {
+        statusEl.classList.add(state);
+    }
+}
+
+// ─── Interview toggle ──────────────────────────────────
 
 function toggleInterview() {
     if (isInterviewActive) stopInterview();
@@ -61,6 +290,9 @@ function toggleInterview() {
 
 async function startInterview() {
     if (isInterviewActive) return;
+
+    // Init audio on first user interaction
+    await initAudio();
 
     try {
         const res = await fetch(`${API_BASE}/api/conversation`, { method: 'POST' });
@@ -75,11 +307,10 @@ async function startInterview() {
     }
 
     isInterviewActive = true;
-    btn.classList.add('active');
-    playIcon.classList.add('hidden');
-    stopIcon.classList.remove('hidden');
-    btnLabel.textContent = 'Finalizar';
-    setStatus('Escuchando...', 'listening');
+    btnMic.classList.add('active');
+    micIcon.classList.add('hidden');
+    stopIconEl.classList.remove('hidden');
+    setState('listening');
 
     startListening();
 }
@@ -87,22 +318,21 @@ async function startInterview() {
 function stopInterview() {
     isInterviewActive = false;
     if (isRecording) stopRecording();
-    
-    // Clean up media stream
+
     if (mediaStream) {
         mediaStream.getTracks().forEach(t => t.stop());
         mediaStream = null;
     }
 
-    btn.classList.remove('active');
-    playIcon.classList.remove('hidden');
-    stopIcon.classList.add('hidden');
-    btnLabel.textContent = 'Iniciar entrevista';
+    btnMic.classList.remove('active');
+    micIcon.classList.remove('hidden');
+    stopIconEl.classList.add('hidden');
+    setState('idle');
     setStatus('Entrevista finalizada');
     addMessage('system', 'Entrevista finalizada.');
 }
 
-// ─── Recording + VAD ──────────────────────────────────────
+// ─── Recording + VAD ───────────────────────────────────
 
 function startListening() {
     if (!isInterviewActive || isProcessing || isRecording) return;
@@ -111,11 +341,16 @@ function startListening() {
 
 async function startRecording() {
     try {
-        // Reuse existing media stream if available and active
         if (!mediaStream || mediaStream.getTracks().some(t => t.readyState === 'ended')) {
             mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
         }
-        
+
+        // Connect to analyser for visualization
+        if (audioContext && analyserNode && mediaStream) {
+            const source = audioContext.createMediaStreamSource(mediaStream);
+            source.connect(analyserNode);
+        }
+
         audioChunks = [];
 
         mediaRecorder = new MediaRecorder(mediaStream, {
@@ -132,12 +367,14 @@ async function startRecording() {
         mediaRecorder.start();
         isRecording = true;
         hasSpoken = false;
-        startVad(mediaStream);
-        setStatus('Escuchando...', 'listening');
+        startVad();
+        setStatus('Escuchando...');
+        setState('listening');
 
     } catch (e) {
         console.error('Mic denied:', e);
-        setStatus('Acceso al micrófono denegado', true);
+        setStatus('Acceso al micrófono denegado — revisá permisos del navegador', true);
+        setState('idle');
     }
 }
 
@@ -146,19 +383,26 @@ function stopRecording() {
     isRecording = false;
 }
 
-// ─── VAD ──────────────────────────────────────────────────
+// ─── VAD ───────────────────────────────────────────────
 
-function calculateRms(analyser) {
-    const buf = new Uint8Array(analyser.fftSize);
-    analyser.getByteTimeDomainData(buf);
-    let sum = 0;
-    for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; sum += v * v; }
-    return Math.sqrt(sum / buf.length);
+function startVad() {
+    if (!analyserNode) return;
+    silenceStart = null;
+    hasSpoken = false;
+    vadAnimationId = requestAnimationFrame(vadLoop);
 }
 
 function vadLoop() {
-    if (!isRecording || !vadAnalyser) return;
-    const rms = calculateRms(vadAnalyser);
+    if (!isRecording || !analyserNode) return;
+
+    const buf = new Uint8Array(analyserNode.fftSize);
+    analyserNode.getByteTimeDomainData(buf);
+    let sum = 0;
+    for (let i = 0; i < buf.length; i++) {
+        const v = (buf[i] - 128) / 128;
+        sum += v * v;
+    }
+    const rms = Math.sqrt(sum / buf.length);
 
     if (rms >= RMS_THRESHOLD) {
         hasSpoken = true;
@@ -166,7 +410,8 @@ function vadLoop() {
     } else if (hasSpoken) {
         if (silenceStart === null) silenceStart = Date.now();
         else if (Date.now() - silenceStart >= SILENCE_TIMEOUT_MS) {
-            setStatus('Procesando...', 'processing');
+            setStatus('Procesando...');
+            setState('processing');
             stopRecording();
             return;
         }
@@ -175,29 +420,12 @@ function vadLoop() {
     vadAnimationId = requestAnimationFrame(vadLoop);
 }
 
-function startVad(stream) {
-    audioContext = new AudioContext();
-    const src = audioContext.createMediaStreamSource(stream);
-    vadAnalyser = audioContext.createAnalyser();
-    vadAnalyser.fftSize = 256;
-    src.connect(vadAnalyser);
-    silenceStart = null;
-    hasSpoken = false;
-    vadAnimationId = requestAnimationFrame(vadLoop);
-}
-
 function stopVad() {
     if (vadAnimationId) { cancelAnimationFrame(vadAnimationId); vadAnimationId = null; }
-    if (audioContext) { audioContext.close().catch(() => {}); audioContext = null; }
-    vadAnalyser = null; silenceStart = null;
+    silenceStart = null;
 }
 
-// ─── Audio chunk queue (sequential playback) ────────────
-
-let audioQueue = [];        // {id, url}[]
-let nextChunkId = 0;        // expected ID for next chunk
-let isAudioPlaying = false;
-let allChunksReceived = false;
+// ─── Audio queue ───────────────────────────────────────
 
 function resetAudioQueue() {
     audioQueue = [];
@@ -231,17 +459,19 @@ function tryPlayNextChunk() {
     if (isAudioPlaying) return;
 
     const idx = audioQueue.findIndex(c => c.id === nextChunkId);
-    if (idx === -1) return; // next chunk not available yet
+    if (idx === -1) return;
 
     const chunk = audioQueue.splice(idx, 1)[0];
     isAudioPlaying = true;
     setStatus('Reproduciendo...');
+    setState('speaking');
     addAudioIndicator();
 
     const audio = new Audio(chunk.url);
     audio.addEventListener('ended', () => {
         nextChunkId++;
         isAudioPlaying = false;
+        removeAudioIndicator();
         tryPlayNextChunk();
         checkAllDone();
     }, { once: true });
@@ -249,6 +479,7 @@ function tryPlayNextChunk() {
         console.error('Audio playback error for chunk', chunk.id);
         nextChunkId++;
         isAudioPlaying = false;
+        removeAudioIndicator();
         tryPlayNextChunk();
         checkAllDone();
     }, { once: true });
@@ -256,6 +487,7 @@ function tryPlayNextChunk() {
         console.error('Audio play() failed:', e);
         nextChunkId++;
         isAudioPlaying = false;
+        removeAudioIndicator();
         tryPlayNextChunk();
         checkAllDone();
     });
@@ -263,18 +495,18 @@ function tryPlayNextChunk() {
 
 function checkAllDone() {
     if (allChunksReceived && audioQueue.length === 0 && !isAudioPlaying) {
-        removeAudioIndicator();
         if (isInterviewActive) startListening();
     }
 }
 
-// ─── SSE streaming ───────────────────────────────────────
+// ─── SSE pipeline ──────────────────────────────────────
 
 async function processRecordingStream() {
     if (audioChunks.length === 0) return;
     isProcessing = true;
-    btn.disabled = true;
-    setStatus('Enviando audio...', 'processing');
+    btnMic.disabled = true;
+    setStatus('Enviando audio...');
+    setState('processing');
     resetAudioQueue();
     currentCandidateDiv = null;
     showTyping();
@@ -284,6 +516,7 @@ async function processRecordingStream() {
     fd.append('audio', blob, 'recording.webm');
 
     let fullText = '';
+    let lastTurnNumber = -1;
 
     try {
         const res = await fetch(`${API_BASE}/api/conversation/${conversationId}/message/stream`, {
@@ -325,20 +558,23 @@ async function processRecordingStream() {
                         currentCandidateDiv = addMessage('candidate', '');
                         hideTyping();
                     }
-                    const p = currentCandidateDiv.querySelector('.bubble p');
-                    if (p) p.textContent = fullText;
+                    // Typing animation: append character by character
+                    appendTypingText(currentCandidateDiv, event.data.text);
                     scrollToBottom();
                 } else if (type === 'audio_chunk') {
                     audioQueue.push({ id: event.data.id, url: event.data.url });
                     tryPlayNextChunk();
                 } else if (type === 'done') {
                     allChunksReceived = true;
-                    // If no audio was received at all, restart directly
+                    // Fetch context for this turn
+                    lastTurnNumber = getCurrentTurnNumber();
+                    if (lastTurnNumber >= 0) {
+                        fetchContext(lastTurnNumber);
+                    }
                     if (audioQueue.length === 0 && !isAudioPlaying) {
                         if (isInterviewActive) startListening();
                     }
                 } else if (type === 'interview_end') {
-                    // Farewell detected — don't restart listening
                     if (currentCandidateDiv) {
                         const indicator = currentCandidateDiv.querySelector('.audio-indicator');
                         if (indicator) indicator.remove();
@@ -357,16 +593,110 @@ async function processRecordingStream() {
         stopInterview();
     } finally {
         isProcessing = false;
-        btn.disabled = false;
+        btnMic.disabled = false;
         checkAllDone();
     }
 }
 
-// ─── Helpers ──────────────────────────────────────────────
+/**
+ * Get current turn number from conversation state.
+ */
+function getCurrentTurnNumber() {
+    // Count messages to estimate turn number (user+candidate pairs)
+    const messages = conversation.querySelectorAll('.message.user, .message.candidate');
+    // Each pair = 1 turn, so divide by 2 and subtract 1 (0-indexed)
+    return Math.floor(messages.length / 2) - 1;
+}
+
+// ─── Typing animation ──────────────────────────────────
+
+function appendTypingText(messageDiv, text) {
+    const bubble = messageDiv.querySelector('.bubble');
+    if (!bubble) return;
+
+    let p = bubble.querySelector('p');
+    if (!p) {
+        p = document.createElement('p');
+        bubble.appendChild(p);
+    }
+
+    // Remove existing cursor if any
+    const existingCursor = p.querySelector('.typing-cursor');
+    if (existingCursor) existingCursor.remove();
+
+    // Append text
+    p.textContent += text;
+
+    // Add blinking cursor
+    const cursor = document.createElement('span');
+    cursor.className = 'typing-cursor';
+    p.appendChild(cursor);
+}
+
+// ─── Context panel ─────────────────────────────────────
+
+function toggleContextPanel() {
+    contextPanel.classList.toggle('open');
+}
+
+async function fetchContext(turnNumber) {
+    if (!conversationId || turnNumber < 0) return;
+
+    try {
+        const res = await fetch(`${API_BASE}/api/conversation/${conversationId}/context?turn=${turnNumber}`);
+        if (!res.ok) {
+            // Context endpoint fails silently — hide panel, no error
+            return;
+        }
+
+        const chunks = await res.json();
+        renderContext(chunks);
+
+        // Auto-close after 5s
+        setTimeout(() => {
+            contextPanel.classList.remove('open');
+        }, 5000);
+    } catch (e) {
+        // Silently fail — interview unaffected
+        console.warn('Context fetch failed:', e.message);
+    }
+}
+
+function renderContext(chunks) {
+    if (!chunks || chunks.length === 0) {
+        contextContent.innerHTML = '<p class="context-empty">No se recuperó contexto para esta respuesta</p>';
+        return;
+    }
+
+    contextContent.innerHTML = chunks.map((chunk, i) => `
+        <div class="chunk-pill" data-index="${i}" onclick="toggleChunk(this)">
+            <span class="chunk-score">${chunk.score.toFixed(2)}</span>
+            <span class="chunk-preview">${escapeHtml(chunk.text.substring(0, 100))}${chunk.text.length > 100 ? '...' : ''}</span>
+            <div class="chunk-full">
+                <p>${escapeHtml(chunk.text)}</p>
+                <p class="chunk-source">Fuente: ${escapeHtml(chunk.source)}</p>
+            </div>
+        </div>
+    `).join('');
+}
+
+function toggleChunk(el) {
+    el.classList.toggle('expanded');
+}
+// Make it global for onclick
+window.toggleChunk = toggleChunk;
+
+// ─── Helpers ───────────────────────────────────────────
 
 function setStatus(text, className) {
     statusEl.textContent = text;
-    statusEl.className = 'status' + (className ? ' ' + className : '');
+    statusEl.className = 'hud-status' + (className ? ' ' + className : '');
+}
+
+function scrollToBottom() {
+    if (!isUserScrolledUp) {
+        conversation.scrollTop = conversation.scrollHeight;
+    }
 }
 
 function showTyping() {
@@ -375,7 +705,7 @@ function showTyping() {
     div.className = 'typing-indicator';
     div.innerHTML = `
         <div class="avatar">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
                 <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
                 <circle cx="12" cy="7" r="4"/>
             </svg>
@@ -399,27 +729,17 @@ function addMessage(type, text) {
     div.className = `message ${type}`;
 
     if (type === 'user' || type === 'candidate') {
-        // Avatar
         const avatar = document.createElement('div');
         avatar.className = `avatar ${type}-avatar`;
-        if (type === 'candidate') {
-            avatar.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
-                <circle cx="12" cy="7" r="4"/>
-            </svg>`;
-        } else {
-            avatar.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
-                <circle cx="12" cy="7" r="4"/>
-            </svg>`;
-        }
+        avatar.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+            <circle cx="12" cy="7" r="4"/>
+        </svg>`;
 
-        // Bubble
         const bubble = document.createElement('div');
         bubble.className = 'bubble';
         bubble.innerHTML = `<p>${escapeHtml(text || '')}</p>`;
 
-        // Order: avatar + bubble for candidate, bubble + avatar for user
         if (type === 'candidate') {
             div.appendChild(avatar);
             div.appendChild(bubble);
@@ -428,7 +748,6 @@ function addMessage(type, text) {
             div.appendChild(avatar);
         }
     } else {
-        // System or error — simple text
         div.innerHTML = `<p>${escapeHtml(text || '')}</p>`;
     }
 
@@ -438,10 +757,11 @@ function addMessage(type, text) {
 }
 
 function escapeHtml(text) {
-    const d = document.createElement('div'); d.textContent = text; return d.innerHTML;
+    const d = document.createElement('div');
+    d.textContent = text;
+    return d.innerHTML;
 }
 
-// ─── Bootstrap ────────────────────────────────────────────
+// ─── Bootstrap ─────────────────────────────────────────
 
-btn.addEventListener('click', toggleInterview);
 init();
