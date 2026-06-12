@@ -8,7 +8,8 @@ from backend.config import Config
 
 def test_config_defaults():
     """Config loads with sensible defaults."""
-    cfg = Config()
+    with patch.dict(os.environ, {"GOOGLE_API_KEY": ""}, clear=False):
+        cfg = Config()
     assert cfg.WHISPER_MODEL == "tiny"
     assert cfg.WHISPER_DEVICE == "cpu"
     assert cfg.WHISPER_COMPUTE_TYPE == "int8"

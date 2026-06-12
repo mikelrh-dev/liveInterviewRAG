@@ -89,29 +89,6 @@ class TestConversationEndpoint:
         assert "welcome_message" in data
         assert len(data["conversation_id"]) > 0
 
-    def test_create_conversation_includes_audio_url(self, client, mock_services):
-        """POST /api/conversation returns welcome_audio_url string when TTS succeeds."""
-        response = client.post("/api/conversation")
-        assert response.status_code == 200
-        data = response.json()
-        assert "welcome_audio_url" in data
-        assert isinstance(data["welcome_audio_url"], str)
-        assert data["welcome_audio_url"].startswith("/audio/")
-        assert len(data["welcome_message"]) > 0
-
-    def test_create_conversation_tts_failure_fallback(self, client, mock_services):
-        """When TTS fails, welcome_audio_url is null and status stays 200."""
-        async def failing_synthesize(text, output_path=None):
-            raise RuntimeError("Simulated TTS failure")
-        mock_services["tts"].synthesize = failing_synthesize
-
-        response = client.post("/api/conversation")
-        assert response.status_code == 200
-        data = response.json()
-        assert "welcome_audio_url" in data
-        assert data["welcome_audio_url"] is None
-        assert len(data["welcome_message"]) > 0
-
 
 class TestMessageEndpoint:
     """Tests for POST /api/conversation/{id}/message"""

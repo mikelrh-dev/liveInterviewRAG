@@ -230,21 +230,9 @@ async def create_conversation():
     }
     logger.info("Created conversation: %s", conversation_id)
 
-    # Pre-generate welcome audio
-    welcome_audio_url = None
-    try:
-        message_id = uuid.uuid4().hex
-        output_audio = config.AUDIO_DIR / f"{conversation_id}/{message_id}.mp3"
-        clean_welcome = sanitize_for_tts(welcome)
-        await tts_service.synthesize(clean_welcome, output_path=output_audio)
-        welcome_audio_url = f"/audio/{conversation_id}/{message_id}.mp3"
-    except RuntimeError as e:
-        logger.warning("Welcome audio pre-gen failed, continuing text-only: %s", e)
-
     return {
         "conversation_id": conversation_id,
         "welcome_message": welcome,
-        "welcome_audio_url": welcome_audio_url,
     }
 
 

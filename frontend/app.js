@@ -68,22 +68,6 @@ async function startInterview() {
         const data = await res.json();
         conversationId = data.conversation_id;
         addMessage('system', data.welcome_message);
-
-        // Pre-load and play welcome audio if available
-        // Wait for it to finish before starting to listen — avoids
-        // the mic picking up the speaker audio and triggering VAD.
-        if (data.welcome_audio_url) {
-            await new Promise((resolve) => {
-                const audio = new Audio(`${API_BASE}${data.welcome_audio_url}`);
-                audio.addEventListener('ended', resolve);
-                audio.addEventListener('error', resolve);
-                audio.play().catch(() => {
-                    // Autoplay blocked by browser — resolve immediately
-                    console.log('Welcome audio autoplay blocked (browser policy)');
-                    resolve();
-                });
-            });
-        }
     } catch (e) {
         console.error('Failed to create conversation:', e);
         setStatus('Error de conexión — recarga la página', true);
