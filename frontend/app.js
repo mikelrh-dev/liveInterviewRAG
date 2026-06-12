@@ -30,8 +30,8 @@ let audioBlocked = false;
 let vadAnimationId = null;
 let silenceStart = null;
 let hasSpoken = false;
-const SILENCE_TIMEOUT_MS = 800;
-const RMS_THRESHOLD = 0.03;
+const SILENCE_TIMEOUT_MS = 1200;
+const RMS_THRESHOLD = 0.015;
 
 // Visualization state
 let currentState = 'idle'; // idle | listening | speaking | processing
@@ -356,6 +356,7 @@ async function startRecording() {
         mediaRecorder = new MediaRecorder(mediaStream, {
             mimeType: MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
                 ? 'audio/webm;codecs=opus' : 'audio/webm',
+            audioBitsPerSecond: 128000,
         });
 
         mediaRecorder.ondataavailable = e => { if (e.data.size > 0) audioChunks.push(e.data); };
