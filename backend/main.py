@@ -310,7 +310,14 @@ async def send_message(conversation_id: str, audio: UploadFile = File(...)):
         logger.info("Pipeline: STT=%.2fs RAG=%.2fs LLM=%.2fs TTS=%.2fs TOTAL=%.2fs",
                      t_stt, t_rag, t_llm, t_tts, t_total)
 
-        # Store message in conversation
+        # Store message in conversation with turn tracking
+        turn_number = len(conversations[conversation_id].get("turns", []))
+        conversations[conversation_id]["turns"].append({
+            "n": turn_number,
+            "user_text": user_text,
+            "assistant_text": response_text,
+            "chunks_used": [],  # Non-streaming doesn't track chunks yet
+        })
         conversations[conversation_id]["messages"].append({
             "user_text": user_text,
             "response_text": response_text,
