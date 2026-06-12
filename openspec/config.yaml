@@ -1,0 +1,82 @@
+# openspec/config.yaml
+# InterviewTTS — SDD configuration
+# Detected by sdd-init on 2026-06-12
+
+schema: spec-driven
+artifact_store: openspec
+pr_strategy: ask-always
+review_budget_lines: 400
+
+context: |
+  Tech stack: Python 3.10+, FastAPI 0.104+, faster-whisper (int8 CPU), Edge TTS,
+             sentence-transformers (all-MiniLM-L6-v2), OpenRouter LLM (Owl).
+  Architecture: Service-oriented monolith — STT → RAG → LLM → TTS pipeline,
+                in-memory conversation store, FastAPI lifespan loads services
+                at startup. Frontend is vanilla HTML/CSS/JS served by FastAPI
+                static mount; Nginx reverse-proxies in production.
+  Testing: pytest 7.4+ with pytest-asyncio (asyncio_mode="auto"). 8 test
+           files covering api, candidate, config, llm, prompt, rag, stt, tts.
+           Heavy use of unittest.mock.patch for external services.
+  Style: Pydantic-like Config class reading from os.getenv; .env loaded via
+         python-dotenv. RFC 2119 keywords in specs (SHALL/SHOULD/MAY).
+         Spanish conversational voice (es-ES-AlvaroNeural).
+
+testing:
+  strict_tdd: true
+  rationale: "pytest-asyncio with full unit + integration coverage exists; no pre-commit/test-first hooks, but test runner is reliable. Defaulting to strict per SDD decision gate (test runner present, no opposing marker)."
+  test_command: "python -m pytest tests/ -v"
+  framework: pytest
+  test_dirs:
+    - tests
+  layers:
+    unit: true
+    integration: true
+    e2e: false
+  coverage:
+    available: false
+    command: ""
+  quality:
+    linter: false
+    type_checker: false
+    formatter: false
+
+rules:
+  proposal:
+    - Include rollback plan for risky changes (model swaps, env-only deploys)
+    - Reference affected specs (candidate-profile, conversation-engine, rag-pipeline)
+  specs:
+    - Use Given/When/Then for every scenario
+    - Use RFC 2119 keywords (SHALL for MUST, SHOULD for SHOULD, MAY for optional)
+    - One requirement per logical capability; keep under ~80 lines per spec.md
+  design:
+    - Include sequence diagrams for any pipeline change (STT/RAG/LLM/TTS)
+    - Document architecture decisions with rationale and tradeoffs
+    - Identify which service module is affected (backend/services/*)
+  tasks:
+    - Group by phase (scaffold, implement, test, document)
+    - Hierarchical numbering: 1, 1.1, 1.2
+    - Each task completable in one session
+  apply:
+    tdd: true
+    test_command: "python -m pytest tests/ -v"
+    - Follow existing service module patterns (backend/services/*.py)
+    - Mock external services (whisper, openrouter, edge-tts) in tests
+    - Update candidate/docs/*.md if RAG content changes
+  verify:
+    test_command: "python -m pytest tests/ -v"
+    build_command: ""
+    coverage_threshold: 0
+    - Confirm all 4 pipeline stages still work end-to-end with mocks
+  archive:
+    - Warn before merging destructive deltas (REMOVED requirements)
+    - Update openspec/specs/{domain}/spec.md when archiving
+
+git:
+  default_branch: main
+  remote: https://github.com/mikelrh-dev/liveInterviewRAG.git
+  working_tree: clean
+
+specs:
+  - candidate-profile
+  - conversation-engine
+  - rag-pipeline

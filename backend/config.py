@@ -10,6 +10,8 @@ class Config:
     def __init__(self):
         # API Keys
         self.OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "")
+        self.GOOGLE_API_KEY: str = os.getenv("GOOGLE_API_KEY", "")
+        self.GOOGLE_MODEL: str = os.getenv("GOOGLE_MODEL", "gemini-3.1-flash-lite")
 
         # Whisper settings
         self.WHISPER_MODEL: str = os.getenv("WHISPER_MODEL", "tiny")

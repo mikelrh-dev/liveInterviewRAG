@@ -83,6 +83,8 @@ llm_service = LLMService(
     model=config.LLM_MODEL,
     temperature=config.LLM_TEMPERATURE,
     max_tokens=config.LLM_MAX_TOKENS,
+    google_api_key=config.GOOGLE_API_KEY,
+    google_model=config.GOOGLE_MODEL,
 )
 tts_service = TTSService(
     voice=config.TTS_VOICE,

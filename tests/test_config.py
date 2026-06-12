@@ -9,7 +9,7 @@ from backend.config import Config
 def test_config_defaults():
     """Config loads with sensible defaults."""
     cfg = Config()
-    assert cfg.WHISPER_MODEL == "base"
+    assert cfg.WHISPER_MODEL == "tiny"
     assert cfg.WHISPER_DEVICE == "cpu"
     assert cfg.WHISPER_COMPUTE_TYPE == "int8"
     assert cfg.TTS_VOICE == "es-ES-AlvaroNeural"
@@ -18,6 +18,8 @@ def test_config_defaults():
     assert cfg.CHUNK_OVERLAP == 50
     assert cfg.RATE_LIMIT_PER_MINUTE == 10
     assert cfg.MAX_AUDIO_DURATION == 30
+    assert cfg.GOOGLE_API_KEY == ""
+    assert cfg.GOOGLE_MODEL == "gemini-3.1-flash-lite"
 
 
 def test_config_env_override():
