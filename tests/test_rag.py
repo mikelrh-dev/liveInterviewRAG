@@ -134,3 +134,31 @@ Second section content."""
 
         avg_ms = (elapsed / 10) * 1000
         assert avg_ms < 500, f"Average retrieval time {avg_ms:.1f}ms exceeds 500ms budget"
+
+
+class TestGetChunksWithScores:
+    """Tests for retrieve returning chunks with scores."""
+
+    def test_retrieve_returns_chunk_score_tuples(self):
+        """retrieve() returns list of (Chunk, score) tuples."""
+        pipeline = RAGPipeline()
+        pipeline.ingest_documents({"test.md": "# Section One\nThis is test content for retrieval."})
+        results = pipeline.retrieve("test content")
+        assert len(results) > 0
+        chunk, score = results[0]
+        assert isinstance(chunk, Chunk)
+        assert isinstance(score, float)
+        assert 0.0 <= score <= 1.0
+
+    def test_get_chunks_with_scores_returns_serializable(self):
+        """get_chunks_with_scores() returns list of dicts suitable for JSON."""
+        pipeline = RAGPipeline()
+        pipeline.ingest_documents({"cv.md": "# Experience\nBuilt web apps with Python."})
+        chunks = pipeline.get_chunks_with_scores("web apps", top_k=2)
+        assert isinstance(chunks, list)
+        if len(chunks) > 0:
+            first = chunks[0]
+            assert "text" in first
+            assert "score" in first
+            assert "source" in first
+            assert isinstance(first["score"], float)

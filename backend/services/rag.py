@@ -204,3 +204,19 @@ class RAGPipeline:
             parts.append(f"[Source: {chunk.source}] {chunk.content}")
 
         return "\n\n".join(parts)
+
+    def get_chunks_with_scores(self, query: str, top_k: int = 3) -> List[dict]:
+        """Retrieve chunks with similarity scores as serializable dicts.
+
+        Args:
+            query: User's question.
+            top_k: Number of chunks to return.
+
+        Returns:
+            List of dicts: [{"text": "...", "score": 0.82, "source": "cv.md"}, ...]
+        """
+        results = self.retrieve(query, top_k=top_k)
+        return [
+            {"text": chunk.content, "score": round(score, 3), "source": chunk.source}
+            for chunk, score in results
+        ]
