@@ -226,6 +226,7 @@ async def create_conversation():
     conversations[conversation_id] = {
         "id": conversation_id,
         "messages": [],
+        "turns": [],
         "created_at": __import__("datetime").datetime.utcnow().isoformat(),
     }
     logger.info("Created conversation: %s", conversation_id)
@@ -387,6 +388,7 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
                 return
 
             # ── Step 2: RAG ──────────────────────────────────────
+            context_chunks = rag_pipeline.get_chunks_with_scores(user_text, top_k=config.RAG_TOP_K)
             context = rag_pipeline.get_context_string(user_text, top_k=config.RAG_TOP_K)
             _t_rag = time.time()
 
@@ -400,9 +402,10 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
 
             def run_llm_stream():
                 try:
-                    for token in llm_service.generate_stream(
+                    for token in llm_service.generate_stream_with_context(
                         prompt=user_text, context=context, system_prompt=system_prompt,
-                    ):
+                        context_chunks=context_chunks,
+                    )[0]:
                         loop.call_soon_threadsafe(queue.put_nowait, ("token", token))
                         sentences = sentence_buf.add_token(token)
                         for s in sentences:
@@ -476,7 +479,14 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
             logger.info("Stream LLM + TTS interleaved: %.2fs total, %d sentences",
                          _t_llm - _t_rag, sentence_id)
 
-            # Store full message
+            # Store full message and turn with chunks_used
+            turn_number = len(conversations[conversation_id].get("turns", []))
+            conversations[conversation_id]["turns"].append({
+                "n": turn_number,
+                "user_text": user_text,
+                "assistant_text": full_response,
+                "chunks_used": context_chunks,
+            })
             conversations[conversation_id]["messages"].append({
                 "user_text": user_text,
                 "response_text": full_response,
@@ -495,6 +505,22 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
                 temp_audio.unlink(missing_ok=True)
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+@app.get("/api/conversation/{conversation_id}/context")
+async def get_conversation_context(conversation_id: str, turn: int = 0):
+    """Return the RAG chunks used for a specific conversation turn."""
+    if conversation_id not in conversations:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    conv = conversations[conversation_id]
+    turns = conv.get("turns", [])
+    matching_turn = next((t for t in turns if t["n"] == turn), None)
+
+    if matching_turn is None:
+        raise HTTPException(status_code=404, detail=f"Turn {turn} not found")
+
+    return matching_turn.get("chunks_used", [])
 
 
 # Serve frontend static files

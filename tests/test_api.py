@@ -173,3 +173,64 @@ class TestMessageEndpoint:
         )
         assert response.status_code == 503
         assert "unavailable" in response.json()["detail"].lower()
+
+
+class TestContextEndpoint:
+    """Tests for GET /api/conversation/{id}/context?turn=N"""
+
+    def test_context_returns_chunks_for_turn(self, client, mock_services):
+        """Context endpoint returns chunks_used for a specific turn."""
+        conv = client.post("/api/conversation")
+        conv_id = conv.json()["conversation_id"]
+
+        client.post(
+            f"/api/conversation/{conv_id}/message",
+            files={"audio": ("test.webm", b"fake audio", "audio/webm")},
+        )
+
+        from backend.main import conversations
+        if conv_id in conversations:
+            conversations[conv_id]["turns"] = [
+                {
+                    "n": 0,
+                    "user_text": "What technologies did you use?",
+                    "assistant_text": "I built InterviewTTS using Python and FastAPI.",
+                    "chunks_used": [
+                        {"text": "Built with Python", "score": 0.85, "source": "cv.md"}
+                    ],
+                }
+            ]
+
+        response = client.get(f"/api/conversation/{conv_id}/context?turn=0")
+        assert response.status_code == 200
+        data = response.json()
+        assert isinstance(data, list)
+        assert len(data) > 0
+        assert data[0]["source"] == "cv.md"
+
+    def test_context_404_missing_conversation(self, client):
+        """Context endpoint returns 404 for non-existent conversation."""
+        response = client.get("/api/conversation/nonexistent/context?turn=0")
+        assert response.status_code == 404
+
+    def test_context_404_missing_turn(self, client, mock_services):
+        """Context endpoint returns 404 for valid conversation but missing turn."""
+        conv = client.post("/api/conversation")
+        conv_id = conv.json()["conversation_id"]
+
+        response = client.get(f"/api/conversation/{conv_id}/context?turn=0")
+        assert response.status_code == 404
+
+    def test_context_empty_chunks(self, client, mock_services):
+        """Context endpoint returns empty list when turn has no chunks."""
+        conv = client.post("/api/conversation")
+        conv_id = conv.json()["conversation_id"]
+
+        from backend.main import conversations
+        conversations[conv_id]["turns"] = [
+            {"n": 0, "user_text": "Hi", "assistant_text": "Hello", "chunks_used": []}
+        ]
+
+        response = client.get(f"/api/conversation/{conv_id}/context?turn=0")
+        assert response.status_code == 200
+        assert response.json() == []
