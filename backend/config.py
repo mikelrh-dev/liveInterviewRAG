@@ -12,7 +12,7 @@ class Config:
         self.OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "")
 
         # Whisper settings
-        self.WHISPER_MODEL: str = os.getenv("WHISPER_MODEL", "base")
+        self.WHISPER_MODEL: str = os.getenv("WHISPER_MODEL", "tiny")
         self.WHISPER_DEVICE: str = os.getenv("WHISPER_DEVICE", "cpu")
         self.WHISPER_COMPUTE_TYPE: str = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
 
