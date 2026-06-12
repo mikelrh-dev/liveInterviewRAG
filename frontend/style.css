@@ -353,35 +353,78 @@ body {
     min-height: 0;
 }
 
-/* ─── Orb container ─────────────────────────────────── */
+/* ─── Avatar Wrapper (Option 3: Stitch image + translucent orb) ─── */
 
-.orb-container {
+.avatar-wrapper {
     position: relative;
-    width: 160px;
-    height: 160px;
+    width: 500px;
+    height: 500px;
     display: flex;
     align-items: center;
     justify-content: center;
+    margin: 0 auto;
 }
 
-#orb-canvas {
-    width: 160px;
-    height: 160px;
-}
-
-/* CSS fallback orb */
-.css-orb {
-    width: 120px;
-    height: 120px;
+.portal-ring {
+    position: relative;
+    width: 100%;
+    height: 100%;
     border-radius: 50%;
-    background: radial-gradient(circle at 40% 40%, var(--cyan), rgba(0, 212, 255, 0.2));
-    box-shadow: 0 0 30px var(--cyan-glow), 0 0 60px rgba(0, 212, 255, 0.1);
-    animation: cssOrbPulse 3s ease-in-out infinite;
+    border: 2px solid transparent;
+    background:
+        linear-gradient(#071326, #071326) padding-box,
+        linear-gradient(180deg, #00f2ff, rgba(0, 242, 255, 0.1)) border-box;
+    box-shadow: 0 0 30px rgba(0, 242, 255, 0.3);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: visible;
 }
 
-@keyframes cssOrbPulse {
-    0%, 100% { transform: scale(1); opacity: 0.8; }
-    50% { transform: scale(1.05); opacity: 1; }
+.portal-ring::before {
+    content: '';
+    position: absolute;
+    inset: -10px;
+    border-radius: 50%;
+    border: 1px dashed rgba(0, 242, 255, 0.5);
+    animation: portal-rotate 20s linear infinite;
+    pointer-events: none;
+}
+
+.portal-ring::after {
+    content: '';
+    position: absolute;
+    inset: -20px;
+    border-radius: 50%;
+    border: 1px solid rgba(0, 242, 255, 0.2);
+    animation: portal-rotate 30s linear infinite reverse;
+    pointer-events: none;
+}
+
+@keyframes portal-rotate {
+    100% { transform: rotate(360deg); }
+}
+
+.avatar-image {
+    width: 96%;
+    height: 96%;
+    object-fit: cover;
+    object-position: center bottom;
+    border-radius: 50%;
+    mask-image: radial-gradient(circle, black 70%, transparent 100%);
+    -webkit-mask-image: radial-gradient(circle, black 70%, transparent 100%);
+    position: relative;
+    z-index: 1;
+}
+
+.avatar-orb {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 2;
+    pointer-events: none;
+    mix-blend-mode: screen;
 }
 
 /* ─── Orbital ring ──────────────────────────────────── */
@@ -659,14 +702,9 @@ body {
         height: 30vh;
     }
 
-    .orb-container {
-        width: 120px;
-        height: 120px;
-    }
-
-    #orb-canvas {
-        width: 120px;
-        height: 120px;
+    .avatar-wrapper {
+        width: 400px;
+        height: 400px;
     }
 
     .orbital-ring {
@@ -683,6 +721,11 @@ body {
 @media (max-width: 360px) {
     .hud-header h1 {
         font-size: 0.6rem;
+    }
+
+    .avatar-wrapper {
+        width: 280px;
+        height: 280px;
     }
 
     .btn-mic {

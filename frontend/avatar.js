@@ -1,20 +1,20 @@
 /**
- * InterviewTTS — Three.js 3D pulsating orb avatar.
- * Renders a glowing cyan sphere that pulses in sync with mic volume.
- * Gracefully falls back to CSS orb if Three.js or WebGL fails.
+ * InterviewTTS — Three.js translucent additive orb over Stitch avatar image.
+ * Renders a glowing cyan sphere that pulses with mic volume and overlays
+ * the avatar image via screen blend. The image is always visible (graceful
+ * degradation if Three.js fails).
  */
 
 (function () {
     'use strict';
 
-    let scene, camera, renderer, orb, pointLight;
+    let scene, camera, renderer, orb;
     let isInitialized = false;
     let currentVolume = 0;
     let targetScale = 1.0;
     let idlePhase = 0;
 
     const canvas = document.getElementById('orb-canvas');
-    const cssFallback = document.getElementById('css-orb-fallback');
 
     /**
      * Initialize the Three.js scene. Returns true on success, false on failure.
@@ -36,56 +36,45 @@
             scene = new THREE.Scene();
 
             camera = new THREE.PerspectiveCamera(50, 1, 0.1, 100);
-            camera.position.z = 3;
+            camera.position.z = 5;
 
             renderer = new THREE.WebGLRenderer({
                 canvas: canvas,
                 alpha: true,
                 antialias: true,
             });
-            renderer.setSize(160, 160);
+            renderer.setSize(500, 500);
             renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 
-            // Orb geometry
-            const geometry = new THREE.SphereGeometry(0.8, 32, 32);
-            const material = new THREE.MeshStandardMaterial({
-                color: 0x0a0e1a,
-                emissive: 0x00d4ff,
-                emissiveIntensity: 0.4,
-                metalness: 0.3,
-                roughness: 0.4,
+            // Translucent additive sphere — overlays the image as a glow
+            const geometry = new THREE.SphereGeometry(1.2, 48, 48);
+            const material = new THREE.MeshBasicMaterial({
+                color: 0x00d4ff,
+                transparent: true,
+                opacity: 0.4,
+                blending: THREE.AdditiveBlending,
+                depthWrite: false,
             });
             orb = new THREE.Mesh(geometry, material);
             scene.add(orb);
 
-            // Point light
-            pointLight = new THREE.PointLight(0x00d4ff, 1, 10);
-            pointLight.position.set(0, 0, 2);
-            scene.add(pointLight);
-
-            // Ambient light
-            const ambient = new THREE.AmbientLight(0x404060, 0.5);
-            scene.add(ambient);
-
             isInitialized = true;
-            cssFallback.classList.add('hidden');
             canvas.classList.remove('hidden');
 
             animate();
             return true;
         } catch (e) {
-            console.warn('Three.js orb init failed, using CSS fallback:', e.message);
+            console.warn('Three.js orb init failed, using image fallback:', e.message);
             showFallback();
             return false;
         }
     }
 
     /**
-     * Show CSS fallback orb.
+     * Graceful fallback — hides the canvas, the image is always visible.
      */
     function showFallback() {
         canvas.classList.add('hidden');
-        cssFallback.classList.remove('hidden');
     }
 
     /**
@@ -111,8 +100,8 @@
         const newScale = s + (targetScale - s) * 0.15;
         orb.scale.setScalar(newScale);
 
-        // Emissive intensity driven by volume
-        orb.material.emissiveIntensity = 0.4 + volume * 0.8;
+        // Opacity driven by volume (0.3–0.6 range)
+        orb.material.opacity = 0.3 + volume * 0.3;
 
         // Gentle rotation
         orb.rotation.y += 0.005;
@@ -135,11 +124,9 @@
         if (!isInitialized || !orb) return;
 
         if (state === 'processing') {
-            orb.material.emissive.setHex(0xfbbf24);
-            pointLight.color.setHex(0xfbbf24);
+            orb.material.color.setHex(0xfbbf24);
         } else {
-            orb.material.emissive.setHex(0x00d4ff);
-            pointLight.color.setHex(0x00d4ff);
+            orb.material.color.setHex(0x00d4ff);
         }
     }
 
@@ -148,8 +135,10 @@
      */
     function resize(width, height) {
         if (!isInitialized || !renderer) return;
-        renderer.setSize(width, height);
-        camera.aspect = width / height;
+        const w = width || 500;
+        const h = height || 500;
+        renderer.setSize(w, h);
+        camera.aspect = w / h;
         camera.updateProjectionMatrix();
     }
 

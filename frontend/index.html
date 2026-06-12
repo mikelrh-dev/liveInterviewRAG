@@ -43,11 +43,12 @@
 
         <!-- Hero center: orb + ring + mic + waveform -->
         <div class="hero-center">
-            <!-- 3D orb container -->
-            <div id="orb-container" class="orb-container">
-                <canvas id="orb-canvas"></canvas>
-                <!-- CSS fallback orb (shown if Three.js fails) -->
-                <div id="css-orb-fallback" class="css-orb hidden"></div>
+            <!-- Avatar wrapper (Option 3: Stitch image + translucent orb) -->
+            <div class="avatar-wrapper">
+                <div class="portal-ring">
+                    <img src="/assets/avatar-stitch.png" class="avatar-image" alt="Avatar">
+                    <canvas id="orb-canvas" class="avatar-orb"></canvas>
+                </div>
             </div>
 
             <!-- Orbital ring SVG -->
