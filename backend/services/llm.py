@@ -120,6 +120,28 @@ class LLMService:
                 logger.warning("Google AI stream failed, falling back to OpenRouter: %s", e)
         yield from self._openrouter_generate_stream(prompt, context, system_prompt)
 
+    def generate_stream_with_context(
+        self,
+        prompt: str,
+        context: str = "",
+        system_prompt: str = "",
+        context_chunks: Optional[List[dict]] = None,
+    ) -> tuple:
+        """Generate stream + return the context chunks used.
+
+        Args:
+            prompt: User's question.
+            context: RAG context string.
+            system_prompt: System-level instructions.
+            context_chunks: List of chunk dicts used for this response.
+
+        Returns:
+            (Generator[str, None, None], List[dict]): token iterator and chunks_used list.
+        """
+        if context_chunks is None:
+            context_chunks = []
+        return self.generate_stream(prompt, context, system_prompt), context_chunks
+
     # ── OpenRouter provider ──────────────────────────────────
 
     def _openrouter_generate(self, prompt: str, context: str = "", system_prompt: str = "") -> str:
