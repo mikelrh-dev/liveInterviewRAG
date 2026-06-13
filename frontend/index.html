@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Mikel — Gemelo Digital</title>
     <link rel="stylesheet" href="/style.css">
+    <!-- Inline data URI favicon to prevent 404 in console -->
+    <link rel="icon" href="data:,">
     <!-- Three.js for 3D orb -->
     <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js" defer></script>
     <!-- tsparticles for background particles -->
@@ -114,7 +116,7 @@
         </div>
     </aside>
 
-    <script src="/avatar.js"></script>
-    <script src="/app.js"></script>
+    <script src="/avatar.js" defer></script>
+    <script src="/app.js" defer></script>
 </body>
 </html>
