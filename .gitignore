@@ -31,3 +31,8 @@ audio/
 .pytest_cache/
 htmlcov/
 .coverage
+
+# Sensitive — personal data, never commit
+RAGraw/
+wiki/
+candidate/
