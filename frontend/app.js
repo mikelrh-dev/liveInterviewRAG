@@ -70,18 +70,123 @@ let allChunksReceived = false;
 // Typing animation
 let typingIntervals = [];
 
+// ─── Sidebar data population ─────────────────────────────
+
+let sessionStartTime = null;
+
+function setText(id, text) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text;
+}
+
+/**
+ * Populate the left sidebar with real data from the backend.
+ * - Model names come from GET /api/config
+ * - VU meter is driven by mic RMS via startVisualizationLoop
+ * - Session ID and turn count update when interview starts
+ */
+async function populateStaticSidebar() {
+    try {
+        const res = await fetch(`${API_BASE}/api/config`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const cfg = await res.json();
+        if (cfg.tts_voice)   setText('sidebar-tts',    `TTS: ${cfg.tts_voice}`);
+        if (cfg.stt_model)   setText('sidebar-stt',    `STT: ${cfg.stt_model} (${cfg.stt_device || 'cpu'})`);
+        if (cfg.llm_model)   setText('sidebar-llm',    `LLM: ${cfg.llm_model.split('/').pop()}`);
+        if (cfg.google_model) setText('sidebar-google', `Google: ${cfg.google_model}`);
+    } catch (e) {
+        console.warn('Could not load /api/config:', e);
+        setText('sidebar-tts', 'TTS: —');
+        setText('sidebar-stt', 'STT: —');
+        setText('sidebar-llm', 'LLM: —');
+        setText('sidebar-google', 'Google: —');
+    }
+}
+
+/**
+ * Live session timer. Starts at 00:00, ticks every second.
+ * Resets whenever a new conversation is created.
+ */
+function startSessionTimer() {
+    const el = document.getElementById('sidebar-timer');
+    if (!el) return;
+    if (!sessionStartTime) sessionStartTime = Date.now();
+    setInterval(() => {
+        const s = Math.floor((Date.now() - sessionStartTime) / 1000);
+        const mm = String(Math.floor(s / 60)).padStart(2, '0');
+        const ss = String(s % 60).padStart(2, '0');
+        el.textContent = `⏱ ${mm}:${ss}`;
+    }, 1000);
+}
+
+/**
+ * Update session ID and turn count when a new interview starts.
+ * Called from startInterview() after the conversation is created.
+ */
+function updateSessionInfo(conversationId) {
+    sessionStartTime = Date.now();
+    const shortId = conversationId ? conversationId.slice(0, 6) : '---';
+    setText('sidebar-session-id', `ID: ${shortId}`);
+    setText('sidebar-turns', 'Turnos: 0');
+}
+
+function updateTurnCount(turnCount) {
+    setText('sidebar-turns', `Turnos: ${turnCount}`);
+}
+
+// Cached VU bar elements (lazy)
+let vuBarsCache = null;
+function getVuBars() {
+    if (!vuBarsCache) {
+        vuBarsCache = document.querySelectorAll('#sidebar-vu .vu-bar');
+    }
+    return vuBarsCache;
+}
+
+/**
+ * Update the sidebar VU meter from current mic volume (0..1).
+ * Lights up bars proportional to volume (more bars = louder).
+ */
+function updateVuMeter(volume) {
+    const bars = getVuBars();
+    if (!bars.length) return;
+    const activeCount = Math.round(volume * bars.length);
+    bars.forEach((bar, i) => {
+        if (i < activeCount) {
+            bar.classList.add('active');
+        } else {
+            bar.classList.remove('active');
+        }
+    });
+}
+
 // ─── Initialization ────────────────────────────────────
 
 function init() {
     initWaveformBars();
-    initParticles();
     initAvatarOrb();
+    populateStaticSidebar();
+    startSessionTimer();
 
     // Smart scroll
     conversation.addEventListener('scroll', () => {
         const threshold = 50;
         isUserScrolledUp = conversation.scrollHeight - conversation.scrollTop - conversation.clientHeight > threshold;
     });
+
+    // Sidebar End Session button
+    const endBtn = document.getElementById('sidebar-end-btn');
+    if (endBtn) {
+        endBtn.addEventListener('click', () => {
+            if (isInterviewActive) {
+                stopInterview();
+                setText('sidebar-session-id', 'ID: ---');
+                setText('sidebar-turns', 'Turnos: 0');
+                sessionStartTime = null;
+                startSessionTimer();  // reset to 00:00
+            }
+        });
+    }
 
     // Context panel toggle
     contextToggle.addEventListener('click', toggleContextPanel);
@@ -248,7 +353,8 @@ function startVisualizationLoop() {
     function loop() {
         waveformAnimationId = requestAnimationFrame(loop);
 
-        // Get RMS from analyser for orb
+        // Mic RMS (shared by orb and VU meter)
+        let micVolume = 0;
         if (analyserNode) {
             const timeData = new Uint8Array(analyserNode.fftSize);
             analyserNode.getByteTimeDomainData(timeData);
@@ -258,11 +364,11 @@ function startVisualizationLoop() {
                 sum += v * v;
             }
             const rms = Math.sqrt(sum / timeData.length);
-            const volume = Math.min(1, Math.pow(rms / 0.15, 0.7));
+            micVolume = Math.min(1, Math.pow(rms / 0.15, 0.7));
 
             // Update orb
             if (window.AvatarOrb && window.AvatarOrb.isInitialized()) {
-                window.AvatarOrb.setVolume(volume);
+                window.AvatarOrb.setVolume(micVolume);
             }
         }
 
@@ -287,6 +393,9 @@ function startVisualizationLoop() {
 
         // Update waveform
         updateWaveform();
+
+        // Update sidebar VU meter from mic volume
+        updateVuMeter(micVolume);
     }
 
     loop();
@@ -359,6 +468,7 @@ async function startInterview() {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         conversationId = data.conversation_id;
+        updateSessionInfo(conversationId);
         addMessage('system', data.welcome_message);
     } catch (e) {
         console.error('Failed to create conversation:', e);
@@ -661,6 +771,8 @@ async function processRecordingStream() {
                     tryPlayNextChunk();
                 } else if (type === 'done') {
                     allChunksReceived = true;
+                    // Update sidebar turn count
+                    updateTurnCount(Math.max(0, getCurrentTurnNumber() + 1));
                     // Fetch context for this turn
                     lastTurnNumber = getCurrentTurnNumber();
                     if (lastTurnNumber >= 0) {

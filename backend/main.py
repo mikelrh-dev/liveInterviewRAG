@@ -217,6 +217,20 @@ async def health_check():
     }
 
 
+@app.get("/api/config")
+async def get_config():
+    """Return active model configuration for the sidebar UI."""
+    return {
+        "tts_voice": config.TTS_VOICE,
+        "stt_model": config.WHISPER_MODEL,
+        "stt_device": config.WHISPER_DEVICE,
+        "llm_model": config.LLM_MODEL,
+        "google_model": config.GOOGLE_MODEL,
+        "rag_top_k": config.RAG_TOP_K,
+        "max_tokens": config.LLM_MAX_TOKENS,
+    }
+
+
 @app.post("/api/conversation")
 async def create_conversation():
     """Create a new conversation session."""
