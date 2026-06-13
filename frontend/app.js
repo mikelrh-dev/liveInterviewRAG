@@ -51,6 +51,8 @@ const contextPanel = document.getElementById('context-panel');
 const contextClose = document.getElementById('context-close');
 const contextContent = document.getElementById('context-content');
 const audioOverlay = document.getElementById('audio-blocked-overlay');
+const avatarNeutralVideo = document.getElementById('avatar-neutral-video');
+const avatarTalkingVideo = document.getElementById('avatar-talking-video');
 
 // Current candidate message
 let currentCandidateDiv = null;
@@ -278,6 +280,23 @@ function setState(state) {
     statusEl.className = 'hud-status';
     if (state !== 'idle') {
         statusEl.classList.add(state);
+    }
+
+    // Avatar video crossfade: show talking when speaking, neutral otherwise
+    if (avatarTalkingVideo) {
+        if (state === 'speaking') {
+            avatarTalkingVideo.currentTime = 0;
+            avatarTalkingVideo.play().catch(() => {});
+            avatarTalkingVideo.classList.add('active');
+        } else {
+            avatarTalkingVideo.classList.remove('active');
+            // After crossfade completes, pause the talking video to save CPU
+            setTimeout(() => {
+                if (currentState !== 'speaking') {
+                    avatarTalkingVideo.pause();
+                }
+            }, 300);
+        }
     }
 }
 

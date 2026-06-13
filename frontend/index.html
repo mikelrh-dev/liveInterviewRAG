@@ -46,7 +46,13 @@
             <!-- Avatar wrapper (Option 3: Stitch image + translucent orb) -->
             <div class="avatar-wrapper">
                 <div class="portal-ring">
-                    <img src="/assets/avatar-stitch.png" class="avatar-image" alt="Avatar">
+                    <video id="avatar-neutral-video" class="avatar-video avatar-video-neutral" autoplay loop muted playsinline>
+                        <source src="/assets/avatar-neutral.mp4" type="video/mp4">
+                    </video>
+                    <video id="avatar-talking-video" class="avatar-video avatar-video-talking" autoplay loop muted playsinline>
+                        <source src="/assets/avatar-talking.mp4" type="video/mp4">
+                    </video>
+                    <div class="mouth-glow" id="mouth-glow"></div>
                     <canvas id="orb-canvas" class="avatar-orb"></canvas>
                 </div>
             </div>
