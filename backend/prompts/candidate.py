@@ -24,24 +24,34 @@ Reglas:
 Al responder, sé natural y conversacional — como si estuvieras hablando con un reclutador en una entrevista por voz."""
 
 
-def build_system_prompt(retrieved_context: str = "") -> str:
-    """Build the system prompt with optional RAG context.
+def build_system_prompt(retrieved_context: str = "", conversation_context: str = None) -> str:
+    """Build the system prompt with optional RAG context and conversation memory.
 
     Args:
         retrieved_context: Context chunks from RAG retrieval.
+        conversation_context: Rolling summary + recent turns from prior conversation
+            (built by build_conversation_context in main.py). Injected as the second
+            section of the "context" placeholder so the LLM can refer back to earlier
+            turns in the same interview.
 
     Returns:
         Formatted system prompt.
     """
-    context_section = ""
+    context_sections = []
     if retrieved_context:
-        context_section = f"""
+        context_sections.append(f"""
 Aquí hay información relevante de tu perfil:
 ---
 {retrieved_context}
 ---
-Usa esta información para responder la pregunta del reclutador con precisión."""
+Usa esta información para responder la pregunta del reclutador con precisión.""")
+    if conversation_context:
+        context_sections.append(f"""
+{conversation_context}
+---
+Usa esta memoria de la conversación para mantener coherencia con turnos anteriores. Si el reclutador se refiere a algo que ya discutieron, retómalo desde donde quedaste. No inventes cosas que no se dijeron antes — si no estás seguro, pedí que te lo recuerden.""")
 
+    context_section = "\n".join(context_sections)
     return CANDIDATE_SYSTEM_PROMPT.format(context=context_section)
 
 

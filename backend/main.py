@@ -231,6 +231,71 @@ async def get_config():
     }
 
 
+# ─── Conversation memory (rolling summary) ────────────────
+
+MAX_SUMMARY_CHARS = 1500  # ~300 tokens for the rolling summary
+MAX_TURN_TEXT_CHARS = 200  # Truncate each turn's text in the prompt
+
+
+def update_conversation_summary(conversation_id: str, new_turn: dict) -> None:
+    """Append a compressed entry for the new turn to the rolling summary.
+
+    Older entries are dropped if the summary exceeds MAX_SUMMARY_CHARS.
+    """
+    if conversation_id not in conversations:
+        return
+
+    summary = conversations[conversation_id].get("summary", "")
+    user_brief = (new_turn.get("user_text") or "")[:80]
+    assist_brief = (new_turn.get("assistant_text") or "")[:120]
+    new_line = f"- P: {user_brief} → R: {assist_brief}\n"
+
+    combined = summary + new_line
+    if len(combined) > MAX_SUMMARY_CHARS:
+        # Drop oldest lines until it fits, keep at least the most recent
+        lines = combined.split("\n")
+        while len("\n".join(lines)) > MAX_SUMMARY_CHARS and len(lines) > 1:
+            lines.pop(0)
+        combined = "[Resumen — turnos más antiguos omitidos por longitud]\n" + "\n".join(lines)
+
+    conversations[conversation_id]["summary"] = combined
+
+
+def build_conversation_context(conversation_id: str, recent_count: int = 3) -> str:
+    """Build the conversation history to inject into the system prompt.
+
+    Combines:
+    - Rolling summary of older turns (compressed)
+    - Recent turns in full text (truncated to MAX_TURN_TEXT_CHARS)
+
+    Returns empty string if no turns exist.
+    """
+    if conversation_id not in conversations:
+        return ""
+
+    turns = conversations[conversation_id].get("turns", [])
+    if not turns:
+        return ""
+
+    summary = conversations[conversation_id].get("summary", "")
+    recent = turns[-recent_count:] if len(turns) >= recent_count else turns
+    older_count = len(turns) - len(recent)
+
+    parts = []
+    if summary and older_count > 0:
+        parts.append(f"[Resumen de la conversación — {older_count} turnos anteriores]")
+        parts.append(summary)
+    if recent:
+        parts.append(f"\n[Últimos {len(recent)} turnos — texto completo]")
+        for turn in recent:
+            user_t = (turn.get("user_text") or "")[:MAX_TURN_TEXT_CHARS]
+            assist_t = (turn.get("assistant_text") or "")[:MAX_TURN_TEXT_CHARS]
+            parts.append(f"- P: {user_t}")
+            parts.append(f"  R: {assist_t}")
+
+    return "\n".join(parts)
+
+
 @app.post("/api/conversation")
 async def create_conversation():
     """Create a new conversation session."""
@@ -241,6 +306,7 @@ async def create_conversation():
         "id": conversation_id,
         "messages": [],
         "turns": [],
+        "summary": "",  # Rolling summary of older turns (for memory beyond recent_count)
         "created_at": __import__("datetime").datetime.utcnow().isoformat(),
     }
     logger.info("Created conversation: %s", conversation_id)
@@ -293,7 +359,9 @@ async def send_message(conversation_id: str, audio: UploadFile = File(...)):
         _t.append(time.time())
 
         # Step 3: LLM — generate response as candidate
-        system_prompt = build_system_prompt(context)
+        # Build conversation context (rolling summary + recent turns) for memory
+        conversation_context = build_conversation_context(conversation_id, recent_count=3)
+        system_prompt = build_system_prompt(context, conversation_context=conversation_context)
         try:
             response_text = await asyncio.to_thread(
                 llm_service.generate,
@@ -326,12 +394,15 @@ async def send_message(conversation_id: str, audio: UploadFile = File(...)):
 
         # Store message in conversation with turn tracking
         turn_number = len(conversations[conversation_id].get("turns", []))
-        conversations[conversation_id]["turns"].append({
+        new_turn = {
             "n": turn_number,
             "user_text": user_text,
             "assistant_text": response_text,
             "chunks_used": [],  # Non-streaming doesn't track chunks yet
-        })
+        }
+        conversations[conversation_id]["turns"].append(new_turn)
+        # Update rolling summary for conversation memory
+        update_conversation_summary(conversation_id, new_turn)
         conversations[conversation_id]["messages"].append({
             "user_text": user_text,
             "response_text": response_text,
@@ -414,7 +485,9 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
             _t_rag = time.time()
 
             # ── Step 3: LLM streaming + sentence detection ──────
-            system_prompt = build_system_prompt(context)
+            # Build conversation context (rolling summary + recent turns) for memory
+            conversation_context = build_conversation_context(conversation_id, recent_count=3)
+            system_prompt = build_system_prompt(context, conversation_context=conversation_context)
             loop = asyncio.get_running_loop()
             sentence_buf = SentenceBuffer()
             tts_futures: dict[asyncio.Task, int] = {}  # task → sentence_id
@@ -502,12 +575,15 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
 
             # Store full message and turn with chunks_used
             turn_number = len(conversations[conversation_id].get("turns", []))
-            conversations[conversation_id]["turns"].append({
+            new_turn = {
                 "n": turn_number,
                 "user_text": user_text,
                 "assistant_text": full_response,
                 "chunks_used": context_chunks,
-            })
+            }
+            conversations[conversation_id]["turns"].append(new_turn)
+            # Update rolling summary for conversation memory
+            update_conversation_summary(conversation_id, new_turn)
             conversations[conversation_id]["messages"].append({
                 "user_text": user_text,
                 "response_text": full_response,
