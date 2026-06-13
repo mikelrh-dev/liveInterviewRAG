@@ -14,6 +14,7 @@
     let isInitialized = false;
     let currentVolume = 0;
     let idlePhase = 0;
+    let currentBoost = 1.0;
 
     const canvas = document.getElementById('orb-canvas');
 
@@ -183,12 +184,12 @@
         innerOrb.scale.setScalar(orbS + (volScale - orbS) * 0.2);
         orbMaterial.uniforms.time.value = t;
         orbMaterial.uniforms.volume.value = vol;
-        orbMaterial.uniforms.intensity.value = 0.5 + Math.sin(idlePhase * 0.5) * 0.1;
+        orbMaterial.uniforms.intensity.value = (0.5 + Math.sin(idlePhase * 0.5) * 0.1) * currentBoost;
 
         // ── Outer halo: subtle pulse ──
         const haloScale = 1.0 + vol * 0.25 + Math.sin(idlePhase * 0.7) * 0.03;
         outerHalo.scale.setScalar(orbS + (haloScale - orbS) * 0.2);
-        outerHalo.material.opacity = 0.10 + vol * 0.15;
+        outerHalo.material.opacity = (0.10 + vol * 0.15) * currentBoost;
 
         // ── Energy rings: emit continuously while there is audio ──
         if (vol > 0.05) {
@@ -196,7 +197,7 @@
                 const elapsed = (t + ring.userData.phase * 0.6) % 0.6;
                 const ringScale = 1.0 + (elapsed / 0.6) * 0.8;   // 1.0 → 1.8
                 ring.scale.setScalar(ringScale);
-                ring.material.opacity = Math.max(0, 0.8 * (1.0 - elapsed / 0.6)) * (vol * 2);
+                ring.material.opacity = Math.max(0, 0.8 * (1.0 - elapsed / 0.6)) * (vol * 2) * currentBoost;
             });
         } else {
             ringGroup.children.forEach((ring) => {
@@ -247,6 +248,14 @@
     }
 
     /**
+     * Boost energy field intensity (0.5–2.0 range).
+     * Used to amplify orb/halo/rings when AI is speaking.
+     */
+    function boost(amount) {
+        currentBoost = Math.max(0.5, Math.min(2.0, amount));
+    }
+
+    /**
      * Resize handler for responsiveness.
      */
     function resize(width, height) {
@@ -264,6 +273,7 @@
         setVolume,
         setState,
         resize,
+        boost,           // NEW
         isInitialized: () => isInitialized,
     };
 })();

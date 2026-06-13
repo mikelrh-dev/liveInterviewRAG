@@ -26,6 +26,10 @@ let analyserNode = null;
 let mediaStream = null;
 let audioBlocked = false;
 
+// TTS output analyser — drives fake-sync of talking video
+let ttsAnalyser = null;
+let ttsVolumeBuffer = null;
+
 // VAD state (uses same analyser)
 let vadAnimationId = null;
 let silenceStart = null;
@@ -118,6 +122,15 @@ async function initAudio() {
         analyserNode = audioContext.createAnalyser();
         analyserNode.fftSize = 64; // 32 frequency bins
         waveformBars = new Uint8Array(analyserNode.frequencyBinCount);
+
+        // Initialize TTS analyser for fake-sync
+        if (!ttsAnalyser) {
+            ttsAnalyser = audioContext.createAnalyser();
+            ttsAnalyser.fftSize = 256;
+            ttsAnalyser.smoothingTimeConstant = 0.5;
+            ttsVolumeBuffer = new Uint8Array(ttsAnalyser.fftSize);
+            ttsAnalyser.connect(audioContext.destination);
+        }
     } catch (e) {
         console.warn('AudioContext init failed:', e.message);
         audioBlocked = true;
@@ -253,6 +266,25 @@ function startVisualizationLoop() {
             }
         }
 
+        // TTS RMS (for fake-sync)
+        let ttsVolume = 0;
+        if (ttsAnalyser) {
+            ttsAnalyser.getByteTimeDomainData(ttsVolumeBuffer);
+            let sum = 0;
+            for (let i = 0; i < ttsVolumeBuffer.length; i++) {
+                const v = (ttsVolumeBuffer[i] - 128) / 128;
+                sum += v * v;
+            }
+            const rms = Math.sqrt(sum / ttsVolumeBuffer.length);
+            ttsVolume = Math.min(1, Math.pow(rms / 0.10, 0.7));
+        }
+
+        // Drive talking video playback rate (new)
+        if (avatarTalkingVideo && currentState === 'speaking') {
+            // Map TTS volume to playback rate: 0.7x (silent) to 1.6x (loud)
+            avatarTalkingVideo.playbackRate = 0.7 + ttsVolume * 0.9;
+        }
+
         // Update waveform
         updateWaveform();
     }
@@ -276,6 +308,15 @@ function setState(state) {
         window.AvatarOrb.setState(state);
     }
 
+    // Energy field boost when AI is speaking
+    if (window.AvatarOrb && window.AvatarOrb.isInitialized()) {
+        if (state === 'speaking') {
+            window.AvatarOrb.boost(1.5);  // more intense
+        } else {
+            window.AvatarOrb.boost(1.0);  // normal
+        }
+    }
+
     // Update status text class
     statusEl.className = 'hud-status';
     if (state !== 'idle') {
@@ -285,7 +326,7 @@ function setState(state) {
     // Avatar video crossfade: show talking when speaking, neutral otherwise
     if (avatarTalkingVideo) {
         if (state === 'speaking') {
-            avatarTalkingVideo.currentTime = 0;
+            avatarTalkingVideo.currentTime = 0.3;
             avatarTalkingVideo.play().catch(() => {});
             avatarTalkingVideo.classList.add('active');
         } else {
@@ -488,6 +529,17 @@ function tryPlayNextChunk() {
     addAudioIndicator();
 
     const audio = new Audio(chunk.url);
+
+    // Connect to TTS analyser for fake-sync (only if audioContext is available)
+    if (audioContext && ttsAnalyser) {
+        try {
+            const source = audioContext.createMediaElementSource(audio);
+            source.connect(ttsAnalyser);
+        } catch (e) {
+            // Some browsers throw if the element is already connected; ignore
+        }
+    }
+
     audio.addEventListener('ended', () => {
         nextChunkId++;
         isAudioPlaying = false;
