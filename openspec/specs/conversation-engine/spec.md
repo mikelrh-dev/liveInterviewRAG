@@ -112,3 +112,60 @@ The system SHALL return meaningful error states when any pipeline stage fails. T
 - WHEN the LLM stage fails
 - THEN the API returns HTTP 503 with a message "Response generation temporarily unavailable"
 - AND the frontend allows the user to retry after a delay
+
+## Runtime Stability (2026-06-14)
+
+### Requirement: Session TTL Eviction
+
+The system SHALL track `last_activity_at` (UTC) on every successful write to a conversation (POST `/api/conversation`, `POST /api/conversation/{id}/message`, `POST /api/conversation/{id}/message/stream`). The system SHALL evict conversations idle longer than `SESSION_TTL_HOURS` (default 2) via a periodic background task every 15 minutes. Eviction SHALL be silent — no SSE event to clients, DEBUG log only. If `SESSION_TTL_HOURS < 0.1` at startup, the system SHALL log a warning and default to 2.
+
+#### Scenario: Conversation evicted after TTL expiry
+
+- GIVEN a conversation has `last_activity_at` older than `SESSION_TTL_HOURS`
+- WHEN the periodic cleanup task runs
+- THEN the conversation is removed from the in-memory store
+- AND no SSE event is emitted
+
+#### Scenario: TTL floor enforced
+
+- GIVEN the environment sets `SESSION_TTL_HOURS=0.05`
+- WHEN the system starts
+- THEN a warning is logged and the effective TTL defaults to 2
+
+### Requirement: Rate-Limit Stale Entry Eviction
+
+The system SHALL remove an IP entry from `_rate_limit_store` when all its timestamps fall outside the rate-limit window. Eviction SHALL run in the same 15-minute periodic task as session TTL eviction.
+
+#### Scenario: Stale rate-limit entry pruned
+
+- GIVEN an IP entry in `_rate_limit_store` has all timestamps outside the window
+- WHEN the periodic cleanup task runs
+- THEN the IP entry is removed
+
+### Requirement: Periodic Audio Cleanup
+
+The system SHALL invoke `cleanup_stale_audio()` every `AUDIO_CLEANUP_INTERVAL_MIN` minutes (default 30), in addition to the existing startup-only run.
+
+#### Scenario: Periodic audio cleanup fires
+
+- GIVEN the system has been running for 31 minutes with `AUDIO_CLEANUP_INTERVAL_MIN=30`
+- WHEN the periodic trigger fires
+- THEN `cleanup_stale_audio()` is invoked
+
+### Requirement: TTS Error Resilience
+
+When a TTS task raises an exception while the streaming endpoint is active, the system SHALL emit an SSE `event: error` with `data: {"detail": "...", "id": <sentence_id>}` and SHALL continue processing remaining sentences. The system SHALL catch exceptions from both `synthesize_sentence()` and `done.result()` in the done-set loop. Error payloads SHALL NOT include internal paths, stack traces, or sensitive details.
+
+#### Scenario: TTS failure emits error and continues
+
+- GIVEN a streaming TTS request with multiple sentences
+- WHEN `synthesize_sentence()` raises an exception for one sentence
+- THEN an SSE `event: error` is emitted with `detail` and `id`
+- AND the stream continues processing remaining sentences
+
+#### Scenario: Done-set failure does not abort stream
+
+- GIVEN a streaming TTS request with multiple sentences
+- WHEN `done.result()` raises an exception for a completed task
+- THEN an SSE `event: error` is emitted for the failed `sentence_id`
+- AND the event loop continues to the next sentence without aborting
