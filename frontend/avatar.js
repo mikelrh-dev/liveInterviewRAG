@@ -148,6 +148,20 @@
     }
 
     /**
+     * Set video blend factor (0-1) driven by audio volume.
+     * 0 = fully neutral, 1 = fully talking. Smoothly interpolated via CSS transition.
+     * Floor at 0.15 for subtle ambient movement even at low volume.
+     */
+    function setBlend(vol) {
+        const wrapped = Math.max(0, Math.min(1, vol));
+        const blend = Math.max(0.15, wrapped);
+        const portal = document.getElementById('portal-ring');
+        if (portal) {
+            portal.style.setProperty('--avatar-blend', blend.toFixed(3));
+        }
+    }
+
+    /**
      * Set orb state — changes glow color and ring color.
      *   idle:       cyan
      *   listening:  cyan (brighter via volume)
@@ -195,6 +209,7 @@
     window.AvatarOrb = {
         init,
         setVolume,
+        setBlend,        // NEW — drives video crossfade from TTS volume
         setState,
         resize,
         boost,           // NEW

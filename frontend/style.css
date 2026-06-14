@@ -427,11 +427,15 @@ main {
 }
 
 #avatar-talking-video {
-    opacity: 0;
+    opacity: var(--avatar-blend, 0.15);
 }
 
 #avatar-talking-video.active {
-    opacity: 1;
+    opacity: var(--avatar-blend, 0.15);
+}
+
+#avatar-neutral-video {
+    opacity: calc(1 - var(--avatar-blend, 0.15));
 }
 
 /* Three.js canvas */

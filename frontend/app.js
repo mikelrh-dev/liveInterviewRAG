@@ -385,6 +385,11 @@ function startVisualizationLoop() {
             ttsVolume = Math.min(1, Math.pow(rms / 0.10, 0.7));
         }
 
+        // Drive video crossfade from TTS volume — continuous blend, no hard cut
+        if (window.AvatarOrb && typeof window.AvatarOrb.setBlend === 'function') {
+            window.AvatarOrb.setBlend(ttsVolume);
+        }
+
         // Drive talking video playback rate (new)
         if (avatarTalkingVideo && currentState === 'speaking') {
             // Map TTS volume to playback rate: 0.7x (silent) to 1.6x (loud)
