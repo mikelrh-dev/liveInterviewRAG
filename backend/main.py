@@ -131,10 +131,19 @@ async def lifespan(app: FastAPI):
     # Clean up stale audio files from previous runs
     cleanup_stale_audio()
 
+    # Spawn periodic cleanup task
+    cleanup_interval = config.AUDIO_CLEANUP_INTERVAL_MIN * 60
+    cleanup_task = asyncio.create_task(periodic_cleanup(interval_seconds=cleanup_interval))
+
     logger.info("InterviewTTS backend started")
     yield
 
     # Shutdown
+    cleanup_task.cancel()
+    try:
+        await cleanup_task
+    except asyncio.CancelledError:
+        pass
     logger.info("InterviewTTS backend stopped")
 
 
@@ -148,6 +157,39 @@ def cleanup_stale_audio():
             if mtime < cutoff:
                 f.unlink(missing_ok=True)
                 logger.info("Cleaned up stale audio: %s", f.name)
+
+
+async def periodic_cleanup(interval_seconds: int) -> None:
+    """Periodic background task: evict stale conversations, prune rate-limit store, clean audio."""
+    from datetime import datetime, timedelta
+
+    # Initial 30s delay so first cleanup doesn't fire during first request
+    await asyncio.sleep(30)
+    while True:
+        try:
+            cutoff = datetime.utcnow() - timedelta(hours=config.SESSION_TTL_HOURS)
+            stale_ids = [
+                cid for cid, c in conversations.items()
+                if datetime.fromisoformat(c.get("last_activity_at", "")) < cutoff
+            ]
+            for cid in stale_ids:
+                logger.debug("Evicting stale conversation: %s", cid)
+                del conversations[cid]
+        except Exception as e:
+            logger.error("Conversation eviction failed: %s", e)
+        try:
+            now = time.time()
+            for ip in list(_rate_limit_store.keys()):
+                _rate_limit_store[ip] = [t for t in _rate_limit_store[ip] if now - t < 60]
+                if not _rate_limit_store[ip]:
+                    del _rate_limit_store[ip]
+        except Exception as e:
+            logger.error("Rate-limit pruning failed: %s", e)
+        try:
+            cleanup_stale_audio()
+        except Exception as e:
+            logger.error("Audio cleanup failed: %s", e)
+        await asyncio.sleep(interval_seconds)
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
@@ -302,12 +344,14 @@ async def create_conversation():
     conversation_id = uuid.uuid4().hex
     welcome = "¡Hola! Soy Mikel, desarrollador junior DAM. Pregúntame sobre mi experiencia, proyectos o habilidades."
 
+    now_iso = datetime.utcnow().isoformat()
     conversations[conversation_id] = {
         "id": conversation_id,
         "messages": [],
         "turns": [],
         "summary": "",  # Rolling summary of older turns (for memory beyond recent_count)
-        "created_at": __import__("datetime").datetime.utcnow().isoformat(),
+        "created_at": now_iso,
+        "last_activity_at": now_iso,
     }
     logger.info("Created conversation: %s", conversation_id)
 
@@ -403,6 +447,7 @@ async def send_message(conversation_id: str, audio: UploadFile = File(...)):
         conversations[conversation_id]["turns"].append(new_turn)
         # Update rolling summary for conversation memory
         update_conversation_summary(conversation_id, new_turn)
+        conversations[conversation_id]["last_activity_at"] = datetime.utcnow().isoformat()
         conversations[conversation_id]["messages"].append({
             "user_text": user_text,
             "response_text": response_text,
@@ -552,21 +597,31 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
                             if not clean_sentence:
                                 continue
                             # Launch TTS for this sentence — runs in parallel with LLM
-                            task = asyncio.create_task(
-                                tts_service.synthesize_sentence(
-                                    clean_sentence, sentence_id,
-                                    output_dir=config.AUDIO_DIR / conversation_id,
+                            try:
+                                task = asyncio.create_task(
+                                    tts_service.synthesize_sentence(
+                                        clean_sentence, sentence_id,
+                                        output_dir=config.AUDIO_DIR / conversation_id,
+                                    )
                                 )
-                            )
-                            tts_futures[task] = sentence_id
-                            sentence_id += 1
+                                tts_futures[task] = sentence_id
+                                sentence_id += 1
+                            except Exception as e:
+                                logger.error("TTS task creation failed for sentence %d: %s", sentence_id, e)
+                                yield sse_format("error", {"detail": "TTS synthesis failed", "id": sentence_id})
+                                sentence_id += 1
                     else:
                         # A TTS task completed — yield the audio chunk immediately
-                        sid, audio_path = done.result()
-                        yield sse_format("audio_chunk", {
-                            "id": sid,
-                            "url": f"/audio/{conversation_id}/{audio_path.name}"
-                        })
+                        try:
+                            sid, audio_path = done.result()
+                            yield sse_format("audio_chunk", {
+                                "id": sid,
+                                "url": f"/audio/{conversation_id}/{audio_path.name}"
+                            })
+                        except Exception as e:
+                            logger.error("TTS task %s failed: %s", done, e)
+                            sid = tts_futures.get(done, -1)
+                            yield sse_format("error", {"detail": "TTS synthesis failed", "id": sid})
                         del tts_futures[done]
 
             _t_llm = time.time()
@@ -584,6 +639,7 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
             conversations[conversation_id]["turns"].append(new_turn)
             # Update rolling summary for conversation memory
             update_conversation_summary(conversation_id, new_turn)
+            conversations[conversation_id]["last_activity_at"] = datetime.utcnow().isoformat()
             conversations[conversation_id]["messages"].append({
                 "user_text": user_text,
                 "response_text": full_response,

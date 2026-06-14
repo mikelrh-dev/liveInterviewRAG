@@ -1,7 +1,10 @@
 """Configuration management for InterviewTTS backend."""
 
+import logging
 import os
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 class Config:
@@ -44,6 +47,18 @@ class Config:
 
         # Rate limiting
         self.RATE_LIMIT_PER_MINUTE: int = int(os.getenv("RATE_LIMIT_PER_MINUTE", "10"))
+
+        # Session TTL — hours before idle conversation eviction (floor 0.1)
+        raw_ttl = float(os.getenv("SESSION_TTL_HOURS", "2"))
+        if raw_ttl < 0.1:
+            logger.warning(
+                "SESSION_TTL_HOURS=%s is below floor of 0.1; defaulting to 2", raw_ttl
+            )
+            raw_ttl = 2.0
+        self.SESSION_TTL_HOURS: float = raw_ttl
+
+        # Periodic audio cleanup interval in minutes
+        self.AUDIO_CLEANUP_INTERVAL_MIN: int = int(os.getenv("AUDIO_CLEANUP_INTERVAL_MIN", "30"))
 
         # Audio limits
         self.MAX_AUDIO_DURATION: int = int(os.getenv("MAX_AUDIO_DURATION", "30"))

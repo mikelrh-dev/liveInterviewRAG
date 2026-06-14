@@ -6,11 +6,21 @@ The conversation memory system keeps the LLM aware of prior turns:
 - This gives the LLM unlimited conversation length with bounded token cost
 """
 
+import pytest
+
+from fastapi.testclient import TestClient
+
 from backend.main import (
     update_conversation_summary,
     build_conversation_context,
     conversations,
 )
+
+
+@pytest.fixture(autouse=True)
+def clear_conversations():
+    """Clear conversations store before each test."""
+    conversations.clear()
 
 
 # ─── update_conversation_summary ────────────────────────
@@ -257,3 +267,195 @@ def test_system_prompt_without_conversation_context():
 
     prompt = build_system_prompt("")  # default behavior unchanged
     assert "Mikel" in prompt
+
+
+# ─── last_activity_at ────────────────────────────────────
+
+
+def test_last_activity_at_on_creation():
+    """Conversation creation sets last_activity_at ISO datetime."""
+    from backend.main import app
+    client = TestClient(app)
+    resp = client.post("/api/conversation")
+    assert resp.status_code == 200
+    conv_id = resp.json()["conversation_id"]
+    assert conv_id in conversations
+    assert "last_activity_at" in conversations[conv_id]
+    # Verify it's ISO 8601 (can parse fromisoformat)
+    from datetime import datetime
+    dt = datetime.fromisoformat(conversations[conv_id]["last_activity_at"])
+    assert dt.tzinfo is None  # UTC, no timezone
+
+
+def test_last_activity_at_updated_on_message():
+    """Send-message updates last_activity_at."""
+    from unittest.mock import patch, MagicMock
+    from backend.main import app
+
+    # Mock services via patch
+    with patch("backend.main.stt_service") as mock_stt, \
+         patch("backend.main.llm_service") as mock_llm, \
+         patch("backend.main.tts_service") as mock_tts, \
+         patch("backend.main.rag_pipeline") as mock_rag, \
+         patch("backend.main.candidate_profile") as mock_profile:
+        mock_stt.is_loaded = True
+        mock_stt.transcribe.return_value = "Hello"
+        mock_llm.generate.return_value = "Hi there!"
+        mock_rag.get_context_string.return_value = ""
+        mock_rag.chunks = []
+        mock_profile.profile_data = {"name": "Mikel"}
+        mock_profile.documents = {}
+
+        async def mock_synth(text, output_path=None):
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.touch()
+            return output_path
+        mock_tts.synthesize = mock_synth
+
+        client = TestClient(app)
+        conv = client.post("/api/conversation")
+        conv_id = conv.json()["conversation_id"]
+
+        original = conversations[conv_id]["last_activity_at"]
+
+        resp = client.post(
+            f"/api/conversation/{conv_id}/message",
+            files={"audio": ("test.webm", b"audio data", "audio/webm")},
+        )
+        assert resp.status_code == 200
+
+        assert conversations[conv_id]["last_activity_at"] != original
+
+
+# ─── periodic_cleanup eviction + rate-limit pruning ─────
+
+
+@pytest.mark.asyncio
+async def test_conversation_eviction():
+    """Conversation with stale last_activity_at is evicted by periodic_cleanup."""
+    import asyncio
+    from datetime import datetime, timedelta
+    from unittest.mock import patch
+    from backend.main import periodic_cleanup
+
+    conv_id = "test-evict-1"
+    conversations[conv_id] = {
+        "id": conv_id,
+        "last_activity_at": (datetime.utcnow() - timedelta(hours=3)).isoformat(),
+        "messages": [],
+        "turns": [],
+        "summary": "",
+        "created_at": "",
+    }
+
+    sleep_count = [0]
+
+    async def mock_sleep(seconds):
+        sleep_count[0] += 1
+        if sleep_count[0] >= 2:  # Let initial 30s pass, cancel at interval sleep
+            raise asyncio.CancelledError()
+
+    with patch("backend.main.asyncio.sleep", mock_sleep), \
+         patch("backend.main.config.SESSION_TTL_HOURS", 2):
+        try:
+            await periodic_cleanup(interval_seconds=999)
+        except asyncio.CancelledError:
+            pass
+
+    assert conv_id not in conversations
+
+
+@pytest.mark.asyncio
+async def test_recent_conversation_not_evicted():
+    """Active conversation with recent last_activity_at is NOT evicted."""
+    import asyncio
+    from datetime import datetime, timedelta
+    from unittest.mock import patch
+    from backend.main import periodic_cleanup
+
+    conv_id = "test-keep-1"
+    conversations[conv_id] = {
+        "id": conv_id,
+        "last_activity_at": datetime.utcnow().isoformat(),
+        "messages": [],
+        "turns": [],
+        "summary": "",
+        "created_at": "",
+    }
+
+    sleep_count = [0]
+
+    async def mock_sleep(seconds):
+        sleep_count[0] += 1
+        if sleep_count[0] >= 2:
+            raise asyncio.CancelledError()
+
+    with patch("backend.main.asyncio.sleep", mock_sleep), \
+         patch("backend.main.config.SESSION_TTL_HOURS", 2):
+        try:
+            await periodic_cleanup(interval_seconds=999)
+        except asyncio.CancelledError:
+            pass
+
+    assert conv_id in conversations
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_pruning():
+    """Rate-limit entry with all stale timestamps is pruned."""
+    import asyncio
+    import time
+    from unittest.mock import patch
+    from backend.main import periodic_cleanup, _rate_limit_store
+
+    _rate_limit_store.clear()
+
+    # Insert IP with timestamps all outside the 60s window
+    now = time.time()
+    _rate_limit_store["stale-ip"] = [now - 120, now - 90]
+
+    sleep_count = [0]
+
+    async def mock_sleep(seconds):
+        sleep_count[0] += 1
+        if sleep_count[0] >= 2:  # Let initial 30s pass, cancel at interval sleep
+            raise asyncio.CancelledError()
+
+    with patch("backend.main.asyncio.sleep", mock_sleep), \
+         patch("backend.main.time.time", return_value=now):
+        try:
+            await periodic_cleanup(interval_seconds=999)
+        except asyncio.CancelledError:
+            pass
+
+    assert "stale-ip" not in _rate_limit_store
+
+
+@pytest.mark.asyncio
+async def test_active_rate_limit_entry_not_pruned():
+    """IP with recent timestamps is NOT pruned."""
+    import asyncio
+    import time
+    from unittest.mock import patch
+    from backend.main import periodic_cleanup, _rate_limit_store
+
+    _rate_limit_store.clear()
+
+    now = time.time()
+    _rate_limit_store["active-ip"] = [now - 10, now - 5]  # Within 60s window
+
+    sleep_count = [0]
+
+    async def mock_sleep(seconds):
+        sleep_count[0] += 1
+        if sleep_count[0] >= 2:
+            raise asyncio.CancelledError()
+
+    with patch("backend.main.asyncio.sleep", mock_sleep), \
+         patch("backend.main.time.time", return_value=now):
+        try:
+            await periodic_cleanup(interval_seconds=999)
+        except asyncio.CancelledError:
+            pass
+
+    assert "active-ip" in _rate_limit_store

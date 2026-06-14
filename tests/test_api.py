@@ -234,3 +234,86 @@ class TestContextEndpoint:
         response = client.get(f"/api/conversation/{conv_id}/context?turn=0")
         assert response.status_code == 200
         assert response.json() == []
+
+
+class TestStreamingTTSErrors:
+    """Tests for TTS error resilience in /message/stream."""
+
+    def test_tts_synthesis_error_emits_sse_and_continues(self, client, mock_services):
+        """synthesize_sentence failure emits error SSE and stream continues to done."""
+        import json
+
+        conv = client.post("/api/conversation")
+        conv_id = conv.json()["conversation_id"]
+
+        # Mock LLM to produce sentences
+        mock_services["llm"].generate_stream_with_context.return_value = (
+            iter(["Hello world.", "How are you?"]),
+            [],
+        )
+
+        # Mock TTS synthesize_sentence to fail on first call, succeed on second
+        call_count = [0]
+
+        async def fake_synth(text, sid, output_dir):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise RuntimeError("TTS failed")
+            from pathlib import Path
+            return (sid, Path(f"audio/{conv_id}/sentence_{sid}.mp3"))
+
+        mock_services["tts"].synthesize_sentence = fake_synth
+
+        with client.stream(
+            "POST",
+            f"/api/conversation/{conv_id}/message/stream",
+            files={"audio": ("test.webm", b"audio data", "audio/webm")},
+        ) as response:
+            assert response.status_code == 200
+            events = []
+            for line in response.iter_lines():
+                if line and line.startswith("data: "):
+                    events.append(json.loads(line[6:]))
+
+        error_events = [e for e in events if e.get("event") == "error"]
+        done_events = [e for e in events if e.get("event") == "done"]
+        audio_chunk_events = [e for e in events if e.get("event") == "audio_chunk"]
+
+        assert len(error_events) >= 1, "Expected at least one error event"
+        assert len(audio_chunk_events) >= 1, "Expected successful audio_chunk events"
+        assert len(done_events) >= 1, "Expected done event (stream should continue)"
+        assert "detail" in error_events[0].get("data", {})
+
+    def test_tts_result_exception_emits_error_and_continues(self, client, mock_services):
+        """done.result() exception emits error SSE and event loop continues."""
+        import json
+
+        conv = client.post("/api/conversation")
+        conv_id = conv.json()["conversation_id"]
+
+        mock_services["llm"].generate_stream_with_context.return_value = (
+            iter(["Hello world.", "How are you?"]),
+            [],
+        )
+
+        async def failing_synth(text, sid, output_dir):
+            raise RuntimeError("simulated TTS failure in task")
+
+        mock_services["tts"].synthesize_sentence = failing_synth
+
+        with client.stream(
+            "POST",
+            f"/api/conversation/{conv_id}/message/stream",
+            files={"audio": ("test.webm", b"audio data", "audio/webm")},
+        ) as response:
+            assert response.status_code == 200
+            events = []
+            for line in response.iter_lines():
+                if line and line.startswith("data: "):
+                    events.append(json.loads(line[6:]))
+
+        error_events = [e for e in events if e.get("event") == "error"]
+        done_events = [e for e in events if e.get("event") == "done"]
+
+        assert len(error_events) >= 1, "Expected at least one error event"
+        assert len(done_events) >= 1, "Expected done event despite errors"

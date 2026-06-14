@@ -31,6 +31,38 @@ def test_config_env_override():
         assert cfg.RAG_TOP_K == 5
 
 
+def test_session_ttl_default():
+    """SESSION_TTL_HOURS defaults to 2 when not set."""
+    with patch.dict(os.environ, {}, clear=False):
+        cfg = Config()
+    assert cfg.SESSION_TTL_HOURS == 2
+
+
+def test_audio_cleanup_interval_default():
+    """AUDIO_CLEANUP_INTERVAL_MIN defaults to 30 when not set."""
+    with patch.dict(os.environ, {}, clear=False):
+        cfg = Config()
+    assert cfg.AUDIO_CLEANUP_INTERVAL_MIN == 30
+
+
+def test_session_ttl_floor_enforced(caplog):
+    """SESSION_TTL_HOURS below floor 0.1 defaults to 2 with warning."""
+    import logging
+    caplog.set_level(logging.WARNING)
+    with patch.dict(os.environ, {"SESSION_TTL_HOURS": "0.05"}, clear=False):
+        cfg = Config()
+    assert cfg.SESSION_TTL_HOURS == 2
+    assert "SESSION_TTL_HOURS" in caplog.text
+    assert "below floor" in caplog.text
+
+
+def test_session_ttl_respects_normal_value():
+    """SESSION_TTL_HOURS above floor is used as-is."""
+    with patch.dict(os.environ, {"SESSION_TTL_HOURS": "1.5"}, clear=False):
+        cfg = Config()
+    assert cfg.SESSION_TTL_HOURS == 1.5
+
+
 def test_config_paths():
     """Config paths are resolved correctly."""
     cfg = Config()
