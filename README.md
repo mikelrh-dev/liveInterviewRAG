@@ -7,7 +7,7 @@ Voice-based AI interview digital twin. Let recruiters have voice conversations w
 - **Voice Input**: Browser microphone recording with MediaRecorder API
 - **Speech-to-Text**: Faster Whisper for accurate transcription
 - **RAG Pipeline**: Retrieves context from candidate documents for accurate responses
-- **LLM Generation**: Owl API for natural, context-aware responses
+- **LLM Generation**: Google AI (primary) with OpenRouter fallback for natural, context-aware responses
 - **Voice Output**: Edge TTS for professional voice synthesis
 - **Clean UI**: Responsive frontend designed for professional presentation
 
@@ -43,7 +43,8 @@ pip install pytest pytest-asyncio httpx  # for development
 cp .env.example .env
 
 # Edit .env with your API keys
-# Required: OWL_API_KEY
+# Required: OPENROUTER_API_KEY (always — fallback LLM)
+# Optional: GOOGLE_API_KEY (set to use Google AI as primary LLM provider)
 ```
 
 ### Running
@@ -60,13 +61,16 @@ uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OWL_API_KEY` | (required) | API key for Owl LLM service |
-| `OWL_API_URL` | `https://api.owl.ai/v1/chat/completions` | Owl API endpoint |
-| `OWL_MODEL` | `gpt-3.5-turbo` | LLM model name |
-| `WHISPER_MODEL` | `base` | Whisper model size (tiny/base/small/medium/large) |
+| `OPENROUTER_API_KEY` | (required) | API key for OpenRouter (fallback LLM provider) |
+| `GOOGLE_API_KEY` | (optional) | API key for Google AI; when set, used as primary LLM provider |
+| `GOOGLE_MODEL` | `gemini-3.1-flash-lite` | Google AI model name (only used if `GOOGLE_API_KEY` is set) |
+| `LLM_MODEL` | `openrouter/owl-alpha` | OpenRouter model identifier |
+| `LLM_TEMPERATURE` | `0.7` | LLM sampling temperature |
+| `LLM_MAX_TOKENS` | `200` | Max tokens per LLM response |
+| `WHISPER_MODEL` | `small` | Whisper model size (tiny/base/small/medium/large) |
 | `WHISPER_DEVICE` | `cpu` | Compute device (cpu/cuda) |
 | `WHISPER_COMPUTE_TYPE` | `int8` | Compute precision |
-| `TTS_VOICE` | `en-US-GuyNeural` | Edge TTS voice |
+| `TTS_VOICE` | `es-ES-AlvaroNeural` | Edge TTS voice (Spanish) |
 | `RAG_TOP_K` | `3` | Number of context chunks to retrieve |
 | `CHUNK_SIZE` | `400` | Document chunk size in tokens |
 | `CHUNK_OVERLAP` | `50` | Overlap between chunks |
@@ -110,7 +114,7 @@ InterviewTTS/
 │   ├── config.py            # Configuration management
 │   ├── services/
 │   │   ├── stt.py           # Speech-to-Text (Whisper)
-│   │   ├── llm.py           # LLM client (Owl API)
+│   │   ├── llm.py           # LLM client (OpenRouter + Google AI)
 │   │   ├── tts.py           # Text-to-Speech (Edge TTS)
 │   │   ├── rag.py           # RAG pipeline
 │   │   └── candidate.py     # Candidate profile loader

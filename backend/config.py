@@ -17,7 +17,7 @@ class Config:
         self.GOOGLE_MODEL: str = os.getenv("GOOGLE_MODEL", "gemini-3.1-flash-lite")
 
         # Whisper settings
-        self.WHISPER_MODEL: str = os.getenv("WHISPER_MODEL", "tiny")
+        self.WHISPER_MODEL: str = os.getenv("WHISPER_MODEL", "small")
         self.WHISPER_DEVICE: str = os.getenv("WHISPER_DEVICE", "cpu")
         self.WHISPER_COMPUTE_TYPE: str = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
 

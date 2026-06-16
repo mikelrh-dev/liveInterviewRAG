@@ -36,3 +36,23 @@ htmlcov/
 RAGraw/
 wiki/
 candidate/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs / runtime
+*.log
+*.sqlite
+*.db
+nul
+
+# Local env overrides
+*.local

@@ -6,11 +6,15 @@ from unittest.mock import patch
 from backend.config import Config
 
 
-def test_config_defaults():
+def test_config_defaults(monkeypatch):
     """Config loads with sensible defaults."""
+    # Ensure WHISPER_MODEL is absent so we test the actual default,
+    # not whatever the operator has in their .env (which load_dotenv
+    # from backend.main may have injected into os.environ).
+    monkeypatch.delenv("WHISPER_MODEL", raising=False)
     with patch.dict(os.environ, {"GOOGLE_API_KEY": ""}, clear=False):
         cfg = Config()
-    assert cfg.WHISPER_MODEL == "tiny"
+    assert cfg.WHISPER_MODEL == "small"
     assert cfg.WHISPER_DEVICE == "cpu"
     assert cfg.WHISPER_COMPUTE_TYPE == "int8"
     assert cfg.TTS_VOICE == "es-ES-AlvaroNeural"
