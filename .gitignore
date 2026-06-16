@@ -37,6 +37,9 @@ RAGraw/
 wiki/
 candidate/
 
+# Working documents — not for public repo
+PLAN.md
+
 # IDEs
 .vscode/
 .idea/
