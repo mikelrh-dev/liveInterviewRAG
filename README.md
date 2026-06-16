@@ -5,10 +5,6 @@
 </p>
 
 <p align="center">
-  <img src="docs/microphone-icon.svg" alt="Microphone Icon" width="60"/>
-</p>
-
-<p align="center">
   <strong>Recruiters spend ~6 seconds on a CV. Make them listen instead.</strong>
 </p>
 
@@ -120,14 +116,6 @@ sequenceDiagram
     API-->>B: SSE: transcription, token*, audio_url
     B->>U: 🔊 Plays synthesized voice
     Note over API,LLM: SSE keeps latency perceived low:<br/>first token arrives before full response
-
-    style U fill:#1a1a2e,stroke:#00f3ff,color:#dce4e4
-    style B fill:#1a1a2e,stroke:#00f3ff,color:#dce4e4
-    style API fill:#00363d,stroke:#00f3ff,color:#c3f5ff
-    style STT fill:#0d1516,stroke:#00daf3,color:#dce4e4
-    style RAG fill:#0d1516,stroke:#00daf3,color:#dce4e4
-    style LLM fill:#0d1516,stroke:#00daf3,color:#dce4e4
-    style TTS fill:#0d1516,stroke:#00daf3,color:#dce4e4
 ```
 
 ---
