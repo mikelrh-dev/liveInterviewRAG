@@ -1,22 +1,24 @@
 # InterviewTTS
 
 <p align="center">
-  <img src="docs/interviewtts-logo.svg" alt="InterviewTTS Logo" width="400"/>
+  <img src="docs/hero-banner.png" alt="InterviewTTS - Voice-based AI Digital Twin" width="100%"/>
 </p>
 
 <p align="center">
-  <strong>Voice-based AI digital twin for recruiters</strong>
+  <img src="docs/microphone-icon.svg" alt="Microphone Icon" width="60"/>
 </p>
 
-```mermaid
-flowchart LR
-    A["🎤 Voice In"]:::in --> B["⚡ Process"]:::proc --> C["🔊 Voice Out"]:::out
-    classDef in fill:#00363d,stroke:#00f3ff,stroke-width:2px,color:#c3f5ff
-    classDef proc fill:#0d1516,stroke:#00daf3,stroke-width:2px,color:#c3f5ff
-    classDef out fill:#00363d,stroke:#ff00ff,stroke-width:2px,color:#ffd7f5
-```
+<p align="center">
+  <strong>Recruiters spend ~6 seconds on a CV. Make them listen instead.</strong>
+</p>
 
-> A voice-based AI digital twin that lets recruiters have real conversations with a candidate before scheduling a real interview.
+<p align="center">
+  A voice-based AI digital twin that lets recruiters have real conversations with a candidate before scheduling a real interview.
+</p>
+
+---
+
+## 🎯 What is this?
 
 Recruiters spend ~6 seconds on a CV before deciding whether to call. This project is an attempt to change that — a candidate's digital twin that talks, listens, and answers with context from their real work history and projects. The recruiter can pre-interview at any hour, hear stories in the candidate's own voice persona, and decide if it's worth the human conversation.
 
@@ -45,6 +47,12 @@ It's not a demo. It's a deployable system with real tradeoffs, real constraints,
 - **Rate limiting** — 10 requests per minute per IP to prevent abuse
 - **Periodic audio cleanup** — Old TTS files are pruned automatically
 - **Tested** — 84 tests covering config, RAG, LLM, STT, TTS, API endpoints, and conversation memory
+
+---
+
+<p align="center">
+  <img src="docs/hero-banner-alt.png" alt="InterviewTTS Pipeline" width="100%"/>
+</p>
 
 ---
 
