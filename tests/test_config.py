@@ -74,3 +74,12 @@ def test_config_paths():
     assert cfg.CANDIDATE_DIR.name == "candidate"
     assert cfg.AUDIO_DIR.name == "audio"
     assert cfg.FRONTEND_DIR.name == "frontend"
+
+
+def test_httpx_is_main_dependency():
+    """httpx is a runtime dependency, not only a dev extra."""
+    from pathlib import Path
+    pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
+    content = pyproject.read_text()
+    main_block = content.split("[project.optional-dependencies]")[0]
+    assert "httpx>=0.25.0" in main_block
