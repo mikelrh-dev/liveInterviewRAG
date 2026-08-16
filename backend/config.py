@@ -23,6 +23,10 @@ class Config:
 
         # TTS settings
         self.TTS_VOICE: str = os.getenv("TTS_VOICE", "es-ES-AlvaroNeural")
+        self.TTS_PRIMARY_PROVIDER: str = os.getenv("TTS_PRIMARY_PROVIDER", "microsoft")
+        self.ELEVENLABS_API_KEY: str = os.getenv("ELEVENLABS_API_KEY", "")
+        self.ELEVENLABS_VOICE_ID: str = os.getenv("ELEVENLABS_VOICE_ID", "")
+        self.TTS_ELEVENLABS_TIMEOUT: float = float(os.getenv("TTS_ELEVENLABS_TIMEOUT", "15"))
 
         # LLM settings
         self.LLM_MODEL: str = os.getenv("LLM_MODEL", "openrouter/owl-alpha")

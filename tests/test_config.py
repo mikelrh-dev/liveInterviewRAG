@@ -76,6 +76,35 @@ def test_config_paths():
     assert cfg.FRONTEND_DIR.name == "frontend"
 
 
+def test_tts_provider_defaults(monkeypatch):
+    """TTS provider config defaults to Microsoft with empty ElevenLabs credentials."""
+    monkeypatch.delenv("TTS_PRIMARY_PROVIDER", raising=False)
+    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+    monkeypatch.delenv("ELEVENLABS_VOICE_ID", raising=False)
+    monkeypatch.delenv("TTS_ELEVENLABS_TIMEOUT", raising=False)
+    with patch.dict(os.environ, {}, clear=False):
+        cfg = Config()
+    assert cfg.TTS_PRIMARY_PROVIDER == "microsoft"
+    assert cfg.ELEVENLABS_API_KEY == ""
+    assert cfg.ELEVENLABS_VOICE_ID == ""
+    assert cfg.TTS_ELEVENLABS_TIMEOUT == 15
+
+
+def test_tts_provider_env_override():
+    """TTS provider config respects environment variable overrides."""
+    with patch.dict(os.environ, {
+        "TTS_PRIMARY_PROVIDER": "elevenlabs",
+        "ELEVENLABS_API_KEY": "test-key",
+        "ELEVENLABS_VOICE_ID": "test-voice",
+        "TTS_ELEVENLABS_TIMEOUT": "30",
+    }):
+        cfg = Config()
+    assert cfg.TTS_PRIMARY_PROVIDER == "elevenlabs"
+    assert cfg.ELEVENLABS_API_KEY == "test-key"
+    assert cfg.ELEVENLABS_VOICE_ID == "test-voice"
+    assert cfg.TTS_ELEVENLABS_TIMEOUT == 30
+
+
 def test_httpx_is_main_dependency():
     """httpx is a runtime dependency, not only a dev extra."""
     from pathlib import Path
