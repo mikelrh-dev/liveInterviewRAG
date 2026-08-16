@@ -1,10 +1,12 @@
 """Tests for TTS service with mocked Edge TTS."""
 
+import httpx
 import pytest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch, MagicMock
 
 from backend.services.edge_tts_client import EdgeTTSClient
+from backend.services.elevenlabs_client import ElevenLabsClient, ElevenLabsError
 from backend.services.tts import TTSService
 
 
@@ -140,4 +142,64 @@ class TestEdgeTTSClient:
 
         client = EdgeTTSClient(voice="es-ES-AlvaroNeural")
         with pytest.raises(RuntimeError, match="Could not synthesize"):
+            await client.synthesize("Hola", Path("test_audio_el/out.mp3"))
+
+
+class TestElevenLabsClient:
+    """Tests for ElevenLabsClient with mocked httpx transport."""
+
+    @pytest.mark.asyncio
+    @patch("backend.services.elevenlabs_client.httpx.AsyncClient")
+    async def test_synthesize_success(self, mock_client_cls):
+        """Successful response writes audio bytes and returns output path."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.content = b"ID3 audio-bytes"
+        mock_client = MagicMock()
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client_cls.return_value = mock_client
+
+        client = ElevenLabsClient(api_key="test-key", voice_id="test-voice", timeout=15)
+        out_dir = Path("test_audio_el")
+        out_dir.mkdir(exist_ok=True)
+        out_path = out_dir / "el.mp3"
+        result = await client.synthesize("Hola, soy Mikel.", out_path)
+
+        assert result == out_path
+        assert out_path.read_bytes() == b"ID3 audio-bytes"
+        # The request must target the voice-specific ElevenLabs endpoint
+        assert mock_client.post.call_args.args[0] == \
+            "https://api.elevenlabs.io/v1/text-to-speech/test-voice"
+
+        out_path.unlink()
+        out_dir.rmdir()
+
+    @pytest.mark.asyncio
+    @patch("backend.services.elevenlabs_client.httpx.AsyncClient")
+    async def test_synthesize_http_error(self, mock_client_cls):
+        """Non-2xx status raises ElevenLabsError carrying the status code."""
+        mock_response = MagicMock()
+        mock_response.status_code = 401
+        mock_response.content = b"unauthorized"
+        mock_client = MagicMock()
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client_cls.return_value = mock_client
+
+        client = ElevenLabsClient(api_key="test-key", voice_id="test-voice", timeout=15)
+        with pytest.raises(ElevenLabsError, match="401"):
+            await client.synthesize("Hola", Path("test_audio_el/out.mp3"))
+
+    @pytest.mark.asyncio
+    @patch("backend.services.elevenlabs_client.httpx.AsyncClient")
+    async def test_synthesize_timeout(self, mock_client_cls):
+        """Transport timeout is wrapped in ElevenLabsError."""
+        mock_client = MagicMock()
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.post = AsyncMock(side_effect=httpx.TimeoutException("timed out"))
+        mock_client_cls.return_value = mock_client
+
+        client = ElevenLabsClient(api_key="test-key", voice_id="test-voice", timeout=15)
+        with pytest.raises(ElevenLabsError):
             await client.synthesize("Hola", Path("test_audio_el/out.mp3"))
