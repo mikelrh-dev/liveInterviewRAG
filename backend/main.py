@@ -89,6 +89,10 @@ llm_service = LLMService(
 tts_service = TTSService(
     voice=config.TTS_VOICE,
     output_dir=config.AUDIO_DIR,
+    primary_provider=config.TTS_PRIMARY_PROVIDER,
+    elevenlabs_api_key=config.ELEVENLABS_API_KEY,
+    elevenlabs_voice_id=config.ELEVENLABS_VOICE_ID,
+    elevenlabs_timeout=config.TTS_ELEVENLABS_TIMEOUT,
 )
 rag_pipeline = RAGPipeline(
     chunk_size=config.CHUNK_SIZE,
@@ -159,6 +163,22 @@ def cleanup_stale_audio():
                 logger.info("Cleaned up stale audio: %s", f.name)
 
 
+def evict_stale_conversations(cutoff: datetime) -> list:
+    """Evict conversations idle before ``cutoff`` and forget their TTS pinning.
+
+    Returns the list of evicted conversation ids.
+    """
+    stale_ids = [
+        cid for cid, c in conversations.items()
+        if datetime.fromisoformat(c.get("last_activity_at", "")) < cutoff
+    ]
+    for cid in stale_ids:
+        logger.debug("Evicting stale conversation: %s", cid)
+        del conversations[cid]
+        tts_service.forget_conversation(cid)
+    return stale_ids
+
+
 async def periodic_cleanup(interval_seconds: int) -> None:
     """Periodic background task: evict stale conversations, prune rate-limit store, clean audio."""
     from datetime import datetime, timedelta
@@ -168,13 +188,7 @@ async def periodic_cleanup(interval_seconds: int) -> None:
     while True:
         try:
             cutoff = datetime.utcnow() - timedelta(hours=config.SESSION_TTL_HOURS)
-            stale_ids = [
-                cid for cid, c in conversations.items()
-                if datetime.fromisoformat(c.get("last_activity_at", "")) < cutoff
-            ]
-            for cid in stale_ids:
-                logger.debug("Evicting stale conversation: %s", cid)
-                del conversations[cid]
+            evict_stale_conversations(cutoff)
         except Exception as e:
             logger.error("Conversation eviction failed: %s", e)
         try:
@@ -422,7 +436,11 @@ async def send_message(conversation_id: str, audio: UploadFile = File(...)):
         output_audio = config.AUDIO_DIR / f"{conversation_id}/{message_id}.mp3"
         try:
             clean_text = sanitize_for_tts(response_text)
-            audio_path = await tts_service.synthesize(clean_text, output_path=output_audio)
+            audio_path, tts_provider = await tts_service.synthesize(
+                clean_text,
+                output_path=output_audio,
+                conversation_id=conversation_id,
+            )
         except RuntimeError as e:
             raise HTTPException(status_code=503, detail=f"TTS synthesis failed: {e}")
         _t.append(time.time())
@@ -458,6 +476,7 @@ async def send_message(conversation_id: str, audio: UploadFile = File(...)):
             "user_text": user_text,
             "response_text": response_text,
             "audio_url": f"/audio/{conversation_id}/{message_id}.mp3",
+            "tts_provider": tts_provider,
         }
 
     finally:
@@ -473,7 +492,7 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
     Events:
       - transcription: {"text": "..."}
       - token: {"text": "..."}        (one per LLM chunk)
-      - audio_url: {"url": "..."}
+      - audio_chunk: {"id": ..., "url": "...", "provider": "elevenlabs"|"microsoft"}
       - error: {"detail": "..."}
       - done: {}
     """
@@ -602,6 +621,7 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
                                     tts_service.synthesize_sentence(
                                         clean_sentence, sentence_id,
                                         output_dir=config.AUDIO_DIR / conversation_id,
+                                        conversation_id=conversation_id,
                                     )
                                 )
                                 tts_futures[task] = sentence_id
@@ -613,10 +633,11 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
                     else:
                         # A TTS task completed — yield the audio chunk immediately
                         try:
-                            sid, audio_path = done.result()
+                            sid, audio_path, tts_provider = done.result()
                             yield sse_format("audio_chunk", {
                                 "id": sid,
-                                "url": f"/audio/{conversation_id}/{audio_path.name}"
+                                "url": f"/audio/{conversation_id}/{audio_path.name}",
+                                "provider": tts_provider,
                             })
                         except Exception as e:
                             logger.error("TTS task %s failed: %s", done, e)

@@ -306,10 +306,10 @@ def test_last_activity_at_updated_on_message():
         mock_profile.profile_data = {"name": "Mikel"}
         mock_profile.documents = {}
 
-        async def mock_synth(text, output_path=None):
+        async def mock_synth(text, output_path=None, conversation_id=None):
             output_path.parent.mkdir(parents=True, exist_ok=True)
             output_path.touch()
-            return output_path
+            return output_path, "microsoft"
         mock_tts.synthesize = mock_synth
 
         client = TestClient(app)
