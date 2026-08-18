@@ -1,4 +1,4 @@
-"""Candidate profile loader — reads JSON and Markdown from candidate/ directory."""
+"""Candidate profile loader — reads JSON and Markdown from wiki/ directory."""
 
 import json
 import logging
@@ -7,19 +7,27 @@ from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+# Directories to skip when loading wiki files
+_SKIP_DIRS = {"templates", "__pycache__", ".git"}
+_SKIP_FILES = {"README.md", "CONVENCIONES.md"}
+
 
 class CandidateProfile:
     """Loads and provides access to candidate profile data."""
 
-    def __init__(self, candidate_dir: str | Path):
+    def __init__(self, candidate_dir: str | Path, wiki_dir: str | Path | None = None):
         self.candidate_dir = Path(candidate_dir)
+        self.wiki_dir = Path(wiki_dir) if wiki_dir else None
         self.profile_data: Optional[Dict] = None
         self.documents: Dict[str, str] = {}  # filename -> content
 
     def load(self) -> None:
-        """Load profile.json and all Markdown documents from candidate/ directory."""
+        """Load profile.json and Markdown documents from wiki/ (preferred) or candidate/."""
         self._load_profile_json()
-        self._load_markdown_docs()
+        if self.wiki_dir and self.wiki_dir.exists():
+            self._load_wiki_docs()
+        else:
+            self._load_markdown_docs()
 
     def _load_profile_json(self) -> None:
         """Load the main profile.json file."""
@@ -35,8 +43,37 @@ class CandidateProfile:
         except (json.JSONDecodeError, OSError) as e:
             logger.error("Failed to load profile.json: %s", e)
 
+    def _load_wiki_docs(self) -> None:
+        """Load all Markdown files from wiki/ directory (excluding templates and READMEs)."""
+        if not self.wiki_dir:
+            return
+
+        loaded = 0
+        skipped = 0
+
+        for md_file in sorted(self.wiki_dir.rglob("*.md")):
+            # Skip template and README files
+            if md_file.name in _SKIP_FILES:
+                skipped += 1
+                continue
+            if any(skip_dir in md_file.parts for skip_dir in _SKIP_DIRS):
+                skipped += 1
+                continue
+
+            try:
+                content = md_file.read_text(encoding="utf-8")
+                # Use relative path as key for better traceability
+                rel_path = md_file.relative_to(self.wiki_dir)
+                self.documents[str(rel_path)] = content
+                loaded += 1
+                logger.info("Loaded wiki document: %s (%d chars)", rel_path, len(content))
+            except OSError as e:
+                logger.error("Failed to load %s: %s", md_file, e)
+
+        logger.info("Loaded %d wiki documents, skipped %d", loaded, skipped)
+
     def _load_markdown_docs(self) -> None:
-        """Load all Markdown files from candidate/docs/ directory."""
+        """Load all Markdown files from candidate/docs/ directory (fallback)."""
         docs_dir = self.candidate_dir / "docs"
         if not docs_dir.exists():
             logger.warning("candidate/docs/ directory not found at %s", docs_dir)
@@ -54,7 +91,7 @@ class CandidateProfile:
                     missing_sections.remove(md_file.name)
                 logger.info("Loaded document: %s (%d chars)", md_file.name, len(content))
             except OSError as e:
-                logger.error("Failed to load %s: %s", md_file.name, e)
+                logger.error("Failed to load %s: %s", md_file, e)
 
         logger.info("Loaded %d documents, missing: %s", len(found_sections), missing_sections or "none")
 

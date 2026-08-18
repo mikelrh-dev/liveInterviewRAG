@@ -95,7 +95,7 @@ rag_pipeline = RAGPipeline(
     chunk_size=config.CHUNK_SIZE,
     chunk_overlap=config.CHUNK_OVERLAP,
 )
-candidate_profile = CandidateProfile(config.CANDIDATE_DIR)
+candidate_profile = CandidateProfile(config.CANDIDATE_DIR, wiki_dir=config.WIKI_DIR)
 
 
 @asynccontextmanager

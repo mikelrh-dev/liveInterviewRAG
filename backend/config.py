@@ -38,6 +38,7 @@ class Config:
         # Paths
         self.BASE_DIR: Path = Path(__file__).resolve().parent.parent
         self.CANDIDATE_DIR: Path = self.BASE_DIR / "candidate"
+        self.WIKI_DIR: Path = self.BASE_DIR / "wiki"
         self.AUDIO_DIR: Path = self.BASE_DIR / "audio"
         self.FRONTEND_DIR: Path = self.BASE_DIR / "frontend"
 
