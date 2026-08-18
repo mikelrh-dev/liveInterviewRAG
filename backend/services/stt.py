@@ -63,7 +63,7 @@ class STTService:
             segments, info = self._model.transcribe(
                 str(audio_path),
                 beam_size=1,
-                language=None,
+                language="es",
                 vad_filter=True,
             )
 
