@@ -4,11 +4,102 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
+import yaml
 
 logger = logging.getLogger(__name__)
+
+_FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n?", re.DOTALL)
+
+# Topic keywords -> synonyms appended to the query before embedding.
+# Improves recall when the user's wording differs from the document's.
+QUERY_EXPANSIONS: Dict[str, List[str]] = {
+    "tests": ["testing", "pytest", "tdd", "skills"],
+    "testing": ["tests", "pytest", "tdd", "skills"],
+    "test": ["testing", "pytest", "tdd", "skills"],
+    "projects": ["project", "entrevista", "prácticas"],
+    "proyectos": ["project", "entrevista", "prácticas"],
+    "proyecto": ["project", "entrevista", "prácticas"],
+}
+
+# Query keywords -> document type. Used to pre-filter chunks before similarity
+# search when a query clearly maps to a single type.
+QUERY_TYPE_KEYWORDS: Dict[str, List[str]] = {
+    "skills": ["tests", "testing", "test", "pytest", "tdd", "skills", "lenguajes", "frameworks"],
+    "experience": ["experiencia", "mercadona", "encargado", "gerente", "retail"],
+    "projects": ["proyecto", "proyectos", "projects", "portfolio"],
+    "stories": ["historia", "anécdota", "story", "situación"],
+    "opinions": ["opinión", "opinion", "piensas", "crees"],
+    "decisions": ["decisión", "decision", "dejaste", "dejar"],
+    "faq": ["presentación", "presentacion", "fortalezas", "debilidades", "área preferida"],
+    "profile": ["sobre ti", "quién eres", "quien eres", "presentate", "preséntate"],
+}
+
+
+def detect_doc_type(query: str) -> Optional[str]:
+    """Return the document type a query clearly maps to, or None if ambiguous.
+
+    A query maps to a type when it matches keywords for exactly one type.
+    Zero matches (no signal) or multiple matches (conflicting signals) return
+    None so cosine similarity acts as the fallback.
+    """
+    query_lower = query.lower()
+    matched = [
+        doc_type
+        for doc_type, keywords in QUERY_TYPE_KEYWORDS.items()
+        if any(re.search(rf"\b{re.escape(kw)}\b", query_lower) for kw in keywords)
+    ]
+    return matched[0] if len(matched) == 1 else None
+
+
+def expand_query(query: str) -> str:
+    """Expand a query with synonyms for known topics to improve embedding recall.
+
+    Matches topic keywords case-insensitively on word boundaries and appends
+    the mapped synonyms (deduplicated, order-preserving) to the query. Queries
+    without known keywords are returned unchanged.
+    """
+    query_lower = query.lower()
+    additions: List[str] = []
+    for keyword, synonyms in QUERY_EXPANSIONS.items():
+        if re.search(rf"\b{re.escape(keyword)}\b", query_lower):
+            additions.extend(synonyms)
+    if not additions:
+        return query
+    return f"{query} {' '.join(dict.fromkeys(additions))}"
+
+
+def parse_frontmatter(content: str) -> Tuple[Dict, str]:
+    """Extract YAML frontmatter metadata from a Markdown document.
+
+    Args:
+        content: Raw document content, optionally starting with a YAML
+            frontmatter block delimited by ``---`` lines.
+
+    Returns:
+        Tuple of (metadata_dict, body). ``metadata_dict`` contains the parsed
+        frontmatter fields (``type``, ``title``, ``tags``, ``summary_1line``,
+        ...) or ``{}`` when no frontmatter is present. ``body`` is the document
+        content with the frontmatter block removed.
+    """
+    match = _FRONTMATTER_RE.match(content)
+    if not match:
+        return {}, content
+
+    try:
+        metadata = yaml.safe_load(match.group(1)) or {}
+    except yaml.YAMLError as e:
+        logger.warning("Invalid YAML frontmatter, ignoring metadata: %s", e)
+        return {}, content
+
+    if not isinstance(metadata, dict):
+        logger.warning("Frontmatter is not a mapping, ignoring metadata")
+        return {}, content
+
+    body = content[match.end():].lstrip("\n")
+    return metadata, body
 
 
 @dataclass
@@ -18,6 +109,9 @@ class Chunk:
     content: str
     source: str
     section: str = ""
+    type: str = ""
+    tags: List[str] = field(default_factory=list)
+    summary: str = ""
     embedding: Optional[np.ndarray] = field(default=None, repr=False)
 
 
@@ -79,7 +173,18 @@ class RAGPipeline:
         return len(self.chunks)
 
     def _chunk_document(self, filename: str, content: str) -> List[Chunk]:
-        """Split a document into chunks, respecting heading boundaries."""
+        """Split a document into chunks, respecting heading boundaries.
+
+        YAML frontmatter (if present) is parsed for metadata and stripped
+        from the content before chunking.
+        """
+        metadata, content = parse_frontmatter(content)
+        doc_type = str(metadata.get("type", ""))
+        tags = metadata.get("tags", [])
+        if isinstance(tags, str):
+            tags = [tags]
+        summary = str(metadata.get("summary_1line", ""))
+
         chunks = []
 
         # Split by headings first
@@ -102,6 +207,9 @@ class RAGPipeline:
                     content=section,
                     source=filename,
                     section=section_name,
+                    type=doc_type,
+                    tags=tags,
+                    summary=summary,
                 ))
                 chunk_id += 1
             else:
@@ -116,6 +224,9 @@ class RAGPipeline:
                         content=chunk_text,
                         source=filename,
                         section=section_name,
+                        type=doc_type,
+                        tags=tags,
+                        summary=summary,
                     ))
                     chunk_id += 1
                     start += self.chunk_size - self.chunk_overlap
@@ -145,13 +256,16 @@ class RAGPipeline:
         for i, chunk in enumerate(self.chunks):
             chunk.embedding = normalized[i]
 
-    def retrieve(self, query: str, top_k: int = 3, threshold: float | None = None) -> List[Tuple[Chunk, float]]:
+    def retrieve(self, query: str, top_k: int = 3, threshold: float | None = None,
+                 doc_type: Optional[str] = None) -> List[Tuple[Chunk, float]]:
         """Retrieve the most relevant chunks for a query.
 
         Args:
             query: Search query.
             top_k: Number of results to return.
             threshold: Minimum similarity score (overrides instance default).
+            doc_type: If given, only chunks of this document type are
+                considered (pre-filter before similarity search).
 
         Returns:
             List of (Chunk, score) tuples ordered by descending similarity.
@@ -162,11 +276,20 @@ class RAGPipeline:
         if threshold is None:
             threshold = self.threshold
 
+        candidates = self.chunks
+        if doc_type:
+            candidates = [c for c in self.chunks if c.type == doc_type]
+            if not candidates:
+                return []
+
+        # Expand the query with synonyms before embedding to improve recall
+        expanded_query = expand_query(query)
+
         # Embed the query
         if self._use_tfidf:
-            query_vec = self._tfidf_vectorizer.transform([query]).toarray().astype(np.float32)[0]
+            query_vec = self._tfidf_vectorizer.transform([expanded_query]).toarray().astype(np.float32)[0]
         else:
-            query_vec = self._embedder.encode([query])[0].astype(np.float32)
+            query_vec = self._embedder.encode([expanded_query])[0].astype(np.float32)
 
         # Normalize query vector
         norm = np.linalg.norm(query_vec)
@@ -175,7 +298,7 @@ class RAGPipeline:
 
         # Compute cosine similarities
         scores = []
-        for chunk in self.chunks:
+        for chunk in candidates:
             if chunk.embedding is not None:
                 score = float(np.dot(query_vec, chunk.embedding))
                 if score >= threshold:
@@ -195,13 +318,23 @@ class RAGPipeline:
         Returns:
             Formatted context string, or empty string if no relevant chunks.
         """
-        results = self.retrieve(query, top_k=top_k)
+        results = self.retrieve(query, top_k=top_k, doc_type=detect_doc_type(query))
         if not results:
             return ""
 
         parts = []
         for chunk, score in results:
-            parts.append(f"[Source: {chunk.source}] {chunk.content}")
+            header = f"[Source: {chunk.source}"
+            if chunk.type:
+                header += f" | Tipo: {chunk.type}"
+            if chunk.summary:
+                header += f" | Resumen: {chunk.summary}"
+            header += "]"
+            if chunk.type or chunk.summary:
+                parts.append(f"{header}\n{chunk.content}")
+            else:
+                # Legacy format for chunks without metadata
+                parts.append(f"{header} {chunk.content}")
 
         return "\n\n".join(parts)
 
@@ -215,7 +348,7 @@ class RAGPipeline:
         Returns:
             List of dicts: [{"text": "...", "score": 0.82, "source": "cv.md"}, ...]
         """
-        results = self.retrieve(query, top_k=top_k)
+        results = self.retrieve(query, top_k=top_k, doc_type=detect_doc_type(query))
         return [
             {"text": chunk.content, "score": round(score, 3), "source": chunk.source}
             for chunk, score in results

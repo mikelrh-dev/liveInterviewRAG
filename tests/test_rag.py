@@ -3,7 +3,7 @@
 import pytest
 import numpy as np
 
-from backend.services.rag import RAGPipeline, Chunk
+from backend.services.rag import RAGPipeline, Chunk, parse_frontmatter, expand_query, detect_doc_type
 
 
 class TestRAGPipeline:
@@ -136,6 +136,40 @@ Second section content."""
         assert avg_ms < 500, f"Average retrieval time {avg_ms:.1f}ms exceeds 500ms budget"
 
 
+class TestContextMetadata:
+    """Tests for metadata enrichment of the LLM context string."""
+
+    def test_context_string_includes_type_and_summary(self):
+        """Context headers include Tipo and Resumen when metadata exists."""
+        rag = RAGPipeline(chunk_size=1000)
+        docs = {
+            "skills/testing.md": """---
+type: skills
+tags: [testing, tdd]
+summary_1line: Testing autodidacta
+---
+
+# Testing
+
+Hago tests después de cada cambio significativo.""",
+        }
+        rag.ingest_documents(docs)
+        context = rag.get_context_string("¿Cómo haces los tests?")
+        assert "[Source: skills/testing.md" in context
+        assert "Tipo: skills" in context
+        assert "Resumen: Testing autodidacta" in context
+        assert "Hago tests" in context
+
+    def test_context_string_without_metadata_keeps_legacy_format(self):
+        """Chunks without metadata keep the original [Source: ...] format."""
+        rag = RAGPipeline(chunk_size=1000)
+        rag.ingest_documents({"cv.md": "## Experience\nWorked with Python and FastAPI."})
+        context = rag.get_context_string("What is your Python experience?")
+        assert "[Source: cv.md]" in context
+        assert "Tipo:" not in context
+        assert "Resumen:" not in context
+
+
 class TestGetChunksWithScores:
     """Tests for retrieve returning chunks with scores."""
 
@@ -162,3 +196,228 @@ class TestGetChunksWithScores:
             assert "score" in first
             assert "source" in first
             assert isinstance(first["score"], float)
+
+
+class TestFrontmatterParsing:
+    """Tests for YAML frontmatter metadata extraction."""
+
+    def test_parse_frontmatter_extracts_metadata(self):
+        """Frontmatter fields type, title, tags, summary_1line are parsed."""
+        content = """---
+type: skills
+title: testing
+created: 2026-08-16
+updated: 2026-08-16
+confidence: high
+tags: [testing, tdd, pytest]
+related: []
+summary_1line: Testing autodidacta
+---
+
+# Testing
+
+Hago tests después de cada cambio significativo."""
+        metadata, body = parse_frontmatter(content)
+        assert metadata["type"] == "skills"
+        assert metadata["title"] == "testing"
+        assert metadata["tags"] == ["testing", "tdd", "pytest"]
+        assert metadata["summary_1line"] == "Testing autodidacta"
+        # Frontmatter is stripped from the body
+        assert body.startswith("# Testing")
+        assert "Hago tests" in body
+
+    def test_parse_frontmatter_without_frontmatter(self):
+        """Documents without frontmatter return empty metadata and unchanged body."""
+        metadata, body = parse_frontmatter("Just plain content without frontmatter.")
+        assert metadata == {}
+        assert body == "Just plain content without frontmatter."
+
+    def test_chunk_document_attaches_metadata(self):
+        """Chunks inherit type, tags, and summary from the document frontmatter."""
+        rag = RAGPipeline(chunk_size=1000)
+        content = """---
+type: skills
+title: testing
+tags: [testing, tdd]
+summary_1line: Testing autodidacta
+---
+
+# Testing
+
+Hago tests después de cada cambio significativo."""
+        chunks = rag._chunk_document("skills/testing.md", content)
+        assert len(chunks) == 1
+        chunk = chunks[0]
+        assert chunk.type == "skills"
+        assert chunk.tags == ["testing", "tdd"]
+        assert chunk.summary == "Testing autodidacta"
+        # Frontmatter must not leak into chunk content
+        assert "type: skills" not in chunk.content
+        assert "Hago tests" in chunk.content
+
+    def test_chunk_defaults(self):
+        """Chunks without metadata use empty defaults."""
+        chunk = Chunk(id="x", content="y", source="z")
+        assert chunk.type == ""
+        assert chunk.tags == []
+        assert chunk.summary == ""
+
+    def test_ingest_documents_parses_frontmatter(self):
+        """ingest_documents extracts metadata when documents have frontmatter."""
+        rag = RAGPipeline(chunk_size=1000)
+        docs = {
+            "skills/testing.md": """---
+type: skills
+tags: [testing]
+summary_1line: Testing autodidacta
+---
+
+# Testing
+
+Hago tests con pytest.""",
+            "cv.md": "## Experience\nWorked with Python.",
+        }
+        rag.ingest_documents(docs)
+        skills_chunks = [c for c in rag.chunks if c.source == "skills/testing.md"]
+        assert len(skills_chunks) == 1
+        assert skills_chunks[0].type == "skills"
+        assert skills_chunks[0].tags == ["testing"]
+        assert skills_chunks[0].summary == "Testing autodidacta"
+        # Document without frontmatter keeps defaults
+        cv_chunks = [c for c in rag.chunks if c.source == "cv.md"]
+        assert cv_chunks[0].type == ""
+
+
+class TestQueryEnrichment:
+    """Tests for query expansion with synonyms before embedding."""
+
+    def test_expand_query_tests(self):
+        """Queries about 'tests' are expanded with testing synonyms."""
+        expanded = expand_query("¿Haces tests?")
+        assert "testing" in expanded
+        assert "pytest" in expanded
+        assert "tdd" in expanded
+        assert "skills" in expanded
+
+    def test_expand_query_projects(self):
+        """Queries about 'projects' are expanded with project synonyms."""
+        expanded = expand_query("Cuéntame sobre tus proyectos")
+        assert "project" in expanded
+        assert "entrevista" in expanded
+        assert "prácticas" in expanded
+
+    def test_expand_query_no_keyword_unchanged(self):
+        """Queries without known keywords are returned unchanged."""
+        query = "¿Cuál es tu experiencia con Python?"
+        assert expand_query(query) == query
+
+    def test_expand_query_case_insensitive(self):
+        """Keyword matching is case-insensitive."""
+        expanded = expand_query("Mis TESTS con FastAPI")
+        assert "pytest" in expanded
+
+
+class TestDocTypeFiltering:
+    """Tests for optional filtering by document type."""
+
+    def test_detect_type_tests_maps_to_skills(self):
+        """Queries about 'tests' clearly map to the skills type."""
+        assert detect_doc_type("¿Cómo haces los tests?") == "skills"
+
+    def test_detect_type_experiencia_maps_to_experience(self):
+        """Queries about 'experiencia' clearly map to the experience type."""
+        assert detect_doc_type("¿Qué experiencia tienes en retail?") == "experience"
+
+    def test_detect_type_ambiguous_returns_none(self):
+        """Queries matching multiple types are treated as ambiguous."""
+        # "experiencia" -> experience, "proyecto" -> projects: no single type
+        assert detect_doc_type("¿Qué experiencia tienes con el proyecto InterviewTTS?") is None
+
+    def test_detect_type_no_match_returns_none(self):
+        """Queries without type signals return None (cosine fallback)."""
+        assert detect_doc_type("Cuéntame algo interesante") is None
+
+    def test_retrieve_filters_by_doc_type(self):
+        """retrieve() with doc_type only returns chunks of that type."""
+        rag = RAGPipeline(chunk_size=1000)
+        docs = {
+            "skills/testing.md": """---
+type: skills
+tags: [testing]
+summary_1line: Testing
+---
+
+# Testing
+
+Hago tests con pytest.""",
+            "experience/mercadona.md": """---
+type: experience
+tags: [retail]
+summary_1line: Retail
+---
+
+# Experience
+
+Gerente en Mercadona.""",
+        }
+        rag.ingest_documents(docs)
+        results = rag.retrieve("tests pytest", top_k=3, doc_type="skills")
+        assert len(results) > 0
+        for chunk, _ in results:
+            assert chunk.type == "skills"
+
+    def test_retrieve_without_doc_type_keeps_all(self):
+        """retrieve() without doc_type does not filter by type (backward compat)."""
+        rag = RAGPipeline(chunk_size=1000)
+        docs = {
+            "skills/testing.md": """---
+type: skills
+tags: [testing]
+summary_1line: Testing
+---
+
+# Testing
+
+Hago tests con pytest.""",
+            "experience/mercadona.md": """---
+type: experience
+tags: [retail]
+summary_1line: Retail
+---
+
+# Experience
+
+Gerente en Mercadona.""",
+        }
+        rag.ingest_documents(docs)
+        results = rag.retrieve("gerente mercadona", top_k=3)
+        assert len(results) > 0
+        assert any(chunk.type == "experience" for chunk, _ in results)
+
+    def test_context_string_auto_filters_by_type(self):
+        """get_context_string() filters by detected type when unambiguous."""
+        rag = RAGPipeline(chunk_size=1000)
+        docs = {
+            "skills/testing.md": """---
+type: skills
+tags: [testing]
+summary_1line: Testing autodidacta
+---
+
+# Testing
+
+Hago tests con pytest después de cada cambio.""",
+            "experience/retail.md": """---
+type: experience
+tags: [retail]
+summary_1line: Retail
+---
+
+# Experience
+
+Gestioné equipos en Mercadona.""",
+        }
+        rag.ingest_documents(docs)
+        context = rag.get_context_string("¿Cómo haces los tests?")
+        assert "Hago tests" in context
+        assert "Gestioné equipos" not in context
