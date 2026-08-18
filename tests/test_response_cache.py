@@ -110,6 +110,76 @@ def test_como_aprendes_question():
     assert "autodidacta" in answer.lower()
 
 
+def test_python_question():
+    """'¿Qué experiencia tienes con Python?' returns the Python answer."""
+    answer = get_cached_response("¿Qué experiencia tienes con Python?")
+    assert answer is not None
+    assert "python" in answer.lower()
+
+
+def test_docker_question():
+    """'¿Qué experiencia tienes con Docker?' returns the Docker answer."""
+    answer = get_cached_response("¿Qué experiencia tienes con Docker?")
+    assert answer is not None
+    assert "docker" in answer.lower()
+
+
+def test_donde_te_ves_question():
+    """'¿Dónde te ves en 5 años?' returns the future vision."""
+    answer = get_cached_response("¿Dónde te ves en 5 años?")
+    assert answer is not None
+    assert "backend" in answer.lower() or "desarrollador" in answer.lower()
+
+
+def test_area_preferida_question():
+    """'¿Qué área del desarrollo te gusta más?' returns the preferred area."""
+    answer = get_cached_response("¿Qué área del desarrollo te gusta más?")
+    assert answer is not None
+    assert "backend" in answer.lower() or "datos" in answer.lower()
+
+
+def test_bases_de_datos_question():
+    """'¿Qué sabes de bases de datos?' returns the database answer."""
+    answer = get_cached_response("¿Qué sabes de bases de datos?")
+    assert answer is not None
+    assert "sql" in answer.lower() or "mysql" in answer.lower()
+
+
+def test_trabajo_equipo_question():
+    """'¿Has trabajado en equipo?' returns the teamwork answer."""
+    answer = get_cached_response("¿Has trabajado en equipo?")
+    assert answer is not None
+    assert "equipo" in answer.lower()
+
+
+def test_mayor_logro_question():
+    """'¿Cuál es tu mayor logro?' returns the biggest achievement."""
+    answer = get_cached_response("¿Cuál es tu mayor logro?")
+    assert answer is not None
+    assert "interviewtts" in answer.lower()
+
+
+def test_apis_rest_question():
+    """'¿Qué sabes de APIs REST?' returns the REST API answer."""
+    answer = get_cached_response("¿Qué sabes de APIs REST?")
+    assert answer is not None
+    assert "api" in answer.lower()
+
+
+def test_rag_question():
+    """'¿Qué es RAG?' returns the RAG explanation."""
+    answer = get_cached_response("¿Qué es RAG?")
+    assert answer is not None
+    assert "rag" in answer.lower()
+
+
+def test_dam_question():
+    """'¿Por qué elegiste DAM?' returns the DAM answer."""
+    answer = get_cached_response("¿Por qué elegiste DAM?")
+    assert answer is not None
+    assert "dam" in answer.lower()
+
+
 # ─── get_cached_response: miss behavior ───────────────────
 
 def test_unknown_question_returns_none():

@@ -161,6 +161,143 @@ _CACHED_QUESTIONS = [
             "aplico lo aprendido en un proyecto real lo antes posible."
         ),
     },
+    # --- NEW ENTRIES ---
+    {
+        "phrases": [
+            "que experiencia tienes con python",
+            "que sabes de python",
+            "que sabes python",
+            "has usado python",
+            "trabajas con python",
+        ],
+        "keywords": ["python"],
+        "answer": (
+            "Python es mi lenguaje principal. Lo uso en InterviewTTS con FastAPI para "
+            "el backend, integración de IA y procesamiento de voz. También lo usé en "
+            "proyectos de la Dam para bases de datos y scripts."
+        ),
+    },
+    {
+        "phrases": [
+            "que experiencia tienes con docker",
+            "que sabes de docker",
+            "has usado docker",
+            "trabajas con docker",
+        ],
+        "keywords": ["docker"],
+        "answer": (
+            "He usado Docker con docker-compose para desplegar InterviewTTS en un VPS. "
+            "Lo configuré con Nginx como reverse proxy. Aún estoy aprendiendo, pero "
+            "entiendo los conceptos básicos de contenedores y orquestación."
+        ),
+    },
+    {
+        "phrases": [
+            "donde te ves en 5 anos",
+            "donde te ves en 3 anos",
+            "donde te ves en el futuro",
+            "como te ves profesionalmente",
+            "que planes tienes a futuro",
+        ],
+        "keywords": [],
+        "answer": (
+            "Me veo como desarrollador backend o datos en una empresa donde pueda crecer "
+            "y aprender a nivel técnico. Quiero entender los procesos de negocio y llegar "
+            "a participar en la toma de decisiones técnicas."
+        ),
+    },
+    {
+        "phrases": [
+            "que area del desarrollo te gusta mas",
+            "que area te gusta mas",
+            "que te gusta mas del desarrollo",
+            "frontend o backend",
+        ],
+        "keywords": [],
+        "answer": (
+            "Me gusta todo, pero si tuviera que elegir, backend y datos. Disfruto diseñar "
+            "APIs, modelar bases de datos y pensar en cómo los datos fluyen a través del sistema."
+        ),
+    },
+    {
+        "phrases": [
+            "que sabes de bases de datos",
+            "que experiencia tienes con bases de datos",
+            "has usado bases de datos",
+            "que sabes de sql",
+        ],
+        "keywords": ["bases de datos", "sql"],
+        "answer": (
+            "Trabajo con MySQL, PostgreSQL y SQLite. En la Dam hice diseño de bases de datos, "
+            "consultas complejas, triggers y procedimientos almacenados. También usé Hibernate "
+            "para ORM en Java."
+        ),
+    },
+    {
+        "phrases": [
+            "has trabajado en equipo",
+            "que experiencia tienes trabajando en equipo",
+            "como trabajas en equipo",
+        ],
+        "keywords": [],
+        "answer": (
+            "Sí, gestioné equipos de hasta 20 personas en Mercadona. En desarrollo, uso Git "
+            "con branches y pull requests para colaborar. Me gusta la comunicación clara "
+            "y que todos sepan qué hacer."
+        ),
+    },
+    {
+        "phrases": [
+            "cual es tu mayor logro",
+            "cuál es tu mayor logro",
+            "que logro te enorgullece mas",
+        ],
+        "keywords": [],
+        "answer": (
+            "Mi mayor logro es InterviewTTS: un proyecto completo con voz, IA, RAG y "
+            "despliegue en producción. Lo construí de cero siendo autodidacta y lo usé "
+            "para aprender todo el stack de desarrollo."
+        ),
+    },
+    {
+        "phrases": [
+            "que sabes de apis rest",
+            "que son las apis rest",
+            "has creado apis",
+            "que sabes de api",
+        ],
+        "keywords": ["api", "rest"],
+        "answer": (
+            "Diseño y consumo APIs REST con FastAPI. En InterviewTTS creé endpoints para "
+            "conversación, streaming de audio con SSE y gestión de sesiones. Entiendo "
+            "verbos HTTP, status codes y diseño de contratos."
+        ),
+    },
+    {
+        "phrases": [
+            "que es rag",
+            "que es retrieval augmented",
+        ],
+        "keywords": ["rag"],
+        "answer": (
+            "RAG es Retrieval Augmented Generation: combina búsqueda de documentos "
+            "relevantes con generación de texto por IA. En InterviewTTS lo uso para que "
+            "las respuestas se basen en mi perfil real, no en invenciones del modelo."
+        ),
+    },
+    {
+        "phrases": [
+            "por que elegiste dam",
+            "por que estudias dam",
+            "por que te metiste en dam",
+        ],
+        "keywords": ["dam"],
+        "answer": (
+            "Elegí DAM porque me permitía formarme en desarrollo full-stack de manera "
+            "estructurada. Siempre me atrajo la tecnología, yDam me dio las bases "
+            "de backend, frontend y bases de datos para empezar a construir."
+        ),
+    },
 ]
 
 _PUNCTUATION_RE = re.compile(r"[^\w\s]+", re.UNICODE)
