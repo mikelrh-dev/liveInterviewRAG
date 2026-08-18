@@ -25,6 +25,7 @@ from backend.config import config
 from backend.services.candidate import CandidateProfile
 from backend.services.llm import LLMService, SentenceBuffer
 from backend.services.rag import RAGPipeline
+from backend.services.response_cache import get_cached_response
 from backend.services.stt import STTService
 from backend.services.tts import TTSService
 from backend.prompts.candidate import build_system_prompt, sanitize_for_tts
@@ -398,24 +399,33 @@ async def send_message(conversation_id: str, audio: UploadFile = File(...)):
         if not user_text.strip():
             raise HTTPException(status_code=422, detail="No speech detected in audio")
 
-        # Step 2: RAG — retrieve relevant context
-        context = rag_pipeline.get_context_string(user_text, top_k=config.RAG_TOP_K)
-        _t.append(time.time())
+        # Step 2: Response cache — skip RAG + LLM for frequent questions (instant reply)
+        cached_response = get_cached_response(user_text)
+        if cached_response is not None:
+            logger.info("Cache hit for: %s", user_text)
+            response_text = cached_response
+            now = time.time()
+            _t.append(now)  # RAG marker (skipped)
+            _t.append(now)  # LLM marker (skipped)
+        else:
+            # Step 2: RAG — retrieve relevant context
+            context = rag_pipeline.get_context_string(user_text, top_k=config.RAG_TOP_K)
+            _t.append(time.time())
 
-        # Step 3: LLM — generate response as candidate
-        # Build conversation context (rolling summary + recent turns) for memory
-        conversation_context = build_conversation_context(conversation_id, recent_count=3)
-        system_prompt = build_system_prompt(context, conversation_context=conversation_context)
-        try:
-            response_text = await asyncio.to_thread(
-                llm_service.generate,
-                prompt=user_text,
-                context=context,
-                system_prompt=system_prompt,
-            )
-        except RuntimeError as e:
-            raise HTTPException(status_code=503, detail=f"Response generation temporarily unavailable: {e}")
-        _t.append(time.time())
+            # Step 3: LLM — generate response as candidate
+            # Build conversation context (rolling summary + recent turns) for memory
+            conversation_context = build_conversation_context(conversation_id, recent_count=3)
+            system_prompt = build_system_prompt(context, conversation_context=conversation_context)
+            try:
+                response_text = await asyncio.to_thread(
+                    llm_service.generate,
+                    prompt=user_text,
+                    context=context,
+                    system_prompt=system_prompt,
+                )
+            except RuntimeError as e:
+                raise HTTPException(status_code=503, detail=f"Response generation temporarily unavailable: {e}")
+            _t.append(time.time())
 
         # Step 4: TTS — synthesize audio response
         message_id = uuid.uuid4().hex
@@ -524,12 +534,50 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
                 })
                 return
 
-            # ── Step 2: RAG ──────────────────────────────────────
+            # ── Step 2: Response cache — skip RAG + LLM for frequent questions ──
+            cached_response = get_cached_response(user_text)
+            if cached_response is not None:
+                logger.info("Cache hit (streaming) for: %s", user_text)
+                yield sse_format("token", {"text": cached_response})
+
+                # Synthesize the whole cached answer as a single audio file
+                message_id = uuid.uuid4().hex
+                output_audio = config.AUDIO_DIR / f"{conversation_id}/{message_id}.mp3"
+                try:
+                    clean_text = sanitize_for_tts(cached_response)
+                    await tts_service.synthesize(clean_text, output_path=output_audio)
+                except RuntimeError as e:
+                    logger.error("TTS synthesis failed for cached answer: %s", e)
+                    yield sse_format("error", {"detail": f"TTS synthesis failed: {e}"})
+                    return
+
+                # Store the exchange in conversation memory (same as LLM path)
+                turn_number = len(conversations[conversation_id].get("turns", []))
+                new_turn = {
+                    "n": turn_number,
+                    "user_text": user_text,
+                    "assistant_text": cached_response,
+                    "chunks_used": [],  # Cache hit: no RAG chunks
+                }
+                conversations[conversation_id]["turns"].append(new_turn)
+                update_conversation_summary(conversation_id, new_turn)
+                conversations[conversation_id]["last_activity_at"] = datetime.utcnow().isoformat()
+                conversations[conversation_id]["messages"].append({
+                    "user_text": user_text,
+                    "response_text": cached_response,
+                    "audio_url": f"/audio/{conversation_id}/{message_id}.mp3",
+                })
+
+                yield sse_format("audio_url", {"url": f"/audio/{conversation_id}/{message_id}.mp3"})
+                yield sse_format("done", {})
+                return
+
+            # ── Step 3: RAG ──────────────────────────────────────
             context_chunks = rag_pipeline.get_chunks_with_scores(user_text, top_k=config.RAG_TOP_K)
             context = rag_pipeline.get_context_string(user_text, top_k=config.RAG_TOP_K)
             _t_rag = time.time()
 
-            # ── Step 3: LLM streaming + sentence detection ──────
+            # ── Step 4: LLM streaming + sentence detection ──────
             # Build conversation context (rolling summary + recent turns) for memory
             conversation_context = build_conversation_context(conversation_id, recent_count=3)
             system_prompt = build_system_prompt(context, conversation_context=conversation_context)
@@ -557,7 +605,7 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
 
             loop.run_in_executor(None, run_llm_stream)
 
-            # ── Step 4: Event loop — LLM tokens + TTS completions ──
+            # ── Step 5: Event loop — LLM tokens + TTS completions ──
             queue_task = None
             while listening_to_llm or tts_futures:
                 pending = list(tts_futures.keys())
