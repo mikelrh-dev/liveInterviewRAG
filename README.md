@@ -37,12 +37,12 @@ It's not a demo. It's a deployable system with real tradeoffs, real constraints,
 - **Speech-to-Text** — [Faster Whisper](https://github.com/SYSTRAN/faster-whisper) running CPU with int8 quantization, configurable model size (default `small`)
 - **RAG pipeline** — Retrieves relevant context from the candidate's wiki (8 document types: profile, projects, experience, skills, stories, opinions, decisions, FAQ) and feeds it to the LLM
 - **LLM generation** — Google AI as primary provider, [OpenRouter](https://openrouter.ai/) as fallback. System prompt positions the model as the candidate
-- **Voice output** — [Edge TTS](https://github.com/rany2/edge-tts) for natural Spanish synthesis (configurable voice)
+- **Voice output** — [Pocket TTS](https://github.com/rhasspy/piper) for natural Spanish synthesis (local, fast), with [Edge TTS](https://github.com/rany2/edge-tts) as fallback
 - **Audio-reactive avatar** — 3D avatar with crossfade between neutral and talking states, synchronized with the audio playback
 - **Session management** — Multi-turn conversations with TTL-based cleanup
 - **Rate limiting** — 10 requests per minute per IP to prevent abuse
 - **Periodic audio cleanup** — Old TTS files are pruned automatically
-- **Tested** — 84 tests covering config, RAG, LLM, STT, TTS, API endpoints, and conversation memory
+- **Tested** — 155+ tests covering config, RAG, LLM, STT, TTS, API endpoints, conversation memory, response cache, and embedding persistence
 
 ---
 
@@ -128,7 +128,7 @@ sequenceDiagram
 | STT | faster-whisper (CTranslate2) | CTranslate2 is way faster than vanilla Whisper on CPU, int8 quantization keeps RAM at ~1.4 GB |
 | Embeddings | sentence-transformers (all-MiniLM-L6-v2) | Small model, runs on CPU, good enough for semantic search over a small doc set |
 | LLM | Google AI (Gemini) + OpenRouter | Google AI as primary (fast, cheap), OpenRouter as fallback with model flexibility |
-| TTS | edge-tts | Free, no API key, runs locally, decent Spanish voices |
+| TTS | Pocket TTS (Piper) + Edge TTS | Local, fast, no API key; Edge as fallback for reliability |
 | Frontend | Vanilla HTML/CSS/JS | No framework overhead, faster cold start on the free tier |
 | Reverse proxy | Nginx | Standard, well-documented, handles static files + WSGI proxy |
 | Process manager | systemd | Auto-restart on failure, journal logging |
@@ -152,6 +152,27 @@ These are documented tradeoffs, not bugs. The point is that every decision has a
 
 ---
 
+## Performance optimizations
+
+Every optimization targets real latency in the voice pipeline. Here's what I implemented and why:
+
+| Optimization | Latency saved | Technique | Risk |
+|---|---|---|---|
+| System prompt trimming | -0.5-1.5s | Reduced 50% of tokens, kept essential instructions | Low |
+| FAQ response cache | -4-8s (hits) | 20 common questions with pre-generated answers | None |
+| Cache + RAG enrichment | 0s + rich context | Instant answer enriched with wiki-sourced details | Low |
+| Wiki metadata RAG | Better accuracy | Frontmatter parsing, type filtering, query enrichment | Low |
+| Embedding persistence | -2-3s startup | Pre-computed embeddings saved to disk, validated on load | Medium |
+| Whisper medium + float16 | +20-30% accuracy | Larger model on ARM64, no GPU needed | Low |
+| Streaming SSE | Perceived 0s | Tokens arrive before full response, avatar starts talking | None |
+
+**Before optimizations:** ~15-25s per response
+**After optimizations:** ~8-12s (cache hits: ~4-6s)
+
+The approach: measure first, optimize the bottleneck, verify with tests, document the tradeoff.
+
+---
+
 ## What I learned
 
 Building this project end-to-end forced me to learn things that aren't taught in the FP DAM curriculum:
@@ -163,7 +184,7 @@ Building this project end-to-end forced me to learn things that aren't taught in
 - **Multi-provider LLM orchestration** — Google AI as primary, OpenRouter as fallback, with graceful degradation. The pattern matters more than the providers.
 - **SSE (Server-Sent Events)** — For streaming tokens and audio URLs. Different from WebSockets in tradeoffs.
 - **Spec-driven development** — Every change goes through OpenSpec (proposal → spec → design → tasks → test → apply). Forces clarity before code.
-- **TDD discipline** — 84 tests, all written before the production change. Strict mode means red → green, no shortcuts.
+- **TDD discipline** — 155+ tests, all written before the production change. Strict mode means red → green, no shortcuts.
 - **MCP and agent orchestration** — Built tooling around Model Context Protocol for connecting the LLM to local resources.
 
 Beyond the tech, this project also taught me to make product decisions under constraints: prioritize what matters, defer what doesn't, document the tradeoffs.
@@ -266,21 +287,31 @@ InterviewTTS/
 │   ├── services/
 │   │   ├── stt.py           # Speech-to-Text (Faster Whisper)
 │   │   ├── llm.py           # LLM client (OpenRouter + Google AI)
-│   │   ├── tts.py           # Text-to-Speech (Edge TTS)
-│   │   ├── rag.py           # RAG pipeline
-│   │   └── candidate.py     # Candidate profile loader
+│   │   ├── tts.py           # Text-to-Speech (Pocket TTS + Edge TTS)
+│   │   ├── rag.py           # RAG pipeline with embedding persistence
+│   │   ├── candidate.py     # Candidate profile loader (wiki/ source)
+│   │   └── response_cache.py # FAQ response cache for instant answers
 │   └── prompts/
 │       └── candidate.py     # System prompt template
 ├── candidate/               # Profile data (RAG input)
 │   ├── profile.json
 │   └── docs/
+├── wiki/                    # Source of truth for candidate data
+│   ├── profile/
+│   ├── projects/
+│   ├── experience/
+│   ├── skills/
+│   ├── stories/
+│   ├── opinions/
+│   ├── decisions/
+│   └── faq/
 ├── frontend/
 │   ├── index.html           # Main page
 │   ├── style.css            # Styling
 │   ├── app.js               # Voice chat logic
 │   ├── avatar.js            # 3D avatar controller
 │   └── assets/              # Avatar video files
-├── tests/                   # 84 tests, strict TDD
+├── tests/                   # 155+ tests, strict TDD
 ├── docs/                    # Internal docs (optimization plans, superpowers specs)
 ├── openspec/                # Change management artifacts
 │   ├── specs/               # Current capability specs
@@ -297,7 +328,7 @@ InterviewTTS/
 
 ## Testing
 
-84 tests covering config, RAG, LLM, STT, TTS, API endpoints, and conversation memory. Strict TDD mode: every change is red → green → refactor.
+155+ tests covering config, RAG, LLM, STT, TTS, API endpoints, conversation memory, response cache, and embedding persistence. Strict TDD mode: every change is red → green → refactor.
 
 ```bash
 # Run all tests
