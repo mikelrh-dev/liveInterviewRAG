@@ -1,7 +1,7 @@
 # InterviewTTS
 
 <p align="center">
-  <img src="docs/hero-banner.png" alt="InterviewTTS - Voice-based AI Digital Twin" width="100%"/>
+  <img src="https://lh3.googleusercontent.com/aida/AEtjO1XDN3xw7saf4qPk_UZR4781Gexk8-NmlXM4XutayLy7jiMZ7pVX2mMGHVy2J0sU91_vBtxWLqOIGRA13TCCJmOr8S9AZTURQnIyHYB-BfLoF-1erRaT_RqrH_kbNWdIeXRj4iwfYhSh11Efr0WYUtFsGSj4vDK6ZS00pM4d3mZGhkYGJpCjZaa9mqQ9jPZDfTUIOKY0Bq0_JK8nFIk0RsdbRXBskpdtivX1vkhq_Sx8RFFA_XQJHqgRv9I" alt="InterviewTTS - Voice-based AI Digital Twin" width="100%"/>
 </p>
 
 <p align="center">
@@ -47,7 +47,7 @@ It's not a demo. It's a deployable system with real tradeoffs, real constraints,
 ---
 
 <p align="center">
-  <img src="docs/hero-banner-alt.png" alt="InterviewTTS Pipeline" width="100%"/>
+  <img src="https://lh3.googleusercontent.com/aida/AEtjO1XDN3xw7saf4qPk_UZR4781Gexk8-NmlXM4XutayLy7jiMZ7pVX2mMGHVy2J0sU91_vBtxWLqOIGRA13TCCJmOr8S9AZTURQnIyHYB-BfLoF-1erRaT_RqrH_kbNWdIeXRj4iwfYhSh11Efr0WYUtFsGSj4vDK6ZS00pM4d3mZGhkYGJpCjZaa9mqQ9jPZDfTUIOKY0Bq0_JK8nFIk0RsdbRXBskpdtivX1vkhq_Sx8RFFA_XQJHqgRv9I" alt="InterviewTTS Pipeline" width="100%"/>
 </p>
 
 ---
@@ -170,6 +170,10 @@ Every optimization targets real latency in the voice pipeline. Here's what I imp
 **After optimizations:** ~8-12s (cache hits: ~4-6s)
 
 The approach: measure first, optimize the bottleneck, verify with tests, document the tradeoff.
+
+<p align="center">
+  <img src="https://lh3.googleusercontent.com/aida/AEtjO1WlIlZaXyG8jJTVSZFt4aoV8lMVzD6waZPeCteST98zN6YcdOqwmP0rIVmfOBhmzFRrBPKWZvwXJO00XjL5m03UbE-MVl87dXjI8LmwJk4mWMaOxzOLEe0b9JMVc8OrFnWxjANMdDYbkMVrSt-wu_1w7SlYkQjkmYSNvbDarmtv0i2lmsyZCifOFxV8WSYEU7JXiq7-VX9Q-BSwlV7wHvVuZiTBYZwMqyyk6qZB75fJf7xg6fDz4zoBcG0" alt="Performance Comparison" width="100%"/>
+</p>
 
 ---
 
