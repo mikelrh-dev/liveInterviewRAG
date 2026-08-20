@@ -421,3 +421,72 @@ Gestioné equipos en Mercadona.""",
         context = rag.get_context_string("¿Cómo haces los tests?")
         assert "Hago tests" in context
         assert "Gestioné equipos" not in context
+
+
+class TestTypeNormalization:
+    """Tests for project/projects type alias normalization (Bug 2 fix)."""
+
+    def test_detect_project_singular(self):
+        """detect_doc_type returns 'project' for singular form."""
+        assert detect_doc_type("Cuéntame sobre tu proyecto") == "project"
+
+    def test_detect_project_plural(self):
+        """detect_doc_type returns 'project' for plural form (normalized)."""
+        assert detect_doc_type("Cuéntame sobre tus proyectos") == "project"
+
+    def test_retrieve_finds_chunks_with_singular_type(self):
+        """Chunks with type='project' are found when filtering by 'project'."""
+        rag = RAGPipeline(chunk_size=1000)
+        docs = {
+            "wiki/interviewtts.md": """---
+type: project
+tags: [interviewtts]
+summary_1line: InterviewTTS portfolio project
+---
+
+# InterviewTTS
+
+Portfolio project with voice AI.""",
+        }
+        rag.ingest_documents(docs)
+        results = rag.retrieve("interviewtts project", top_k=3, doc_type="project")
+        assert len(results) > 0
+        assert results[0][0].type == "project"
+
+    def test_retrieve_finds_chunks_with_plural_type_via_normalization(self):
+        """Chunks with type='projects' are found when filtering by 'project'."""
+        rag = RAGPipeline(chunk_size=1000, threshold=0.0)
+        docs = {
+            "wiki/projects.md": """---
+type: projects
+tags: [portfolio]
+summary_1line: Portfolio projects
+---
+
+# Projects
+
+Built several apps.""",
+        }
+        rag.ingest_documents(docs)
+        # Query detects "project" (singular), but chunk has "projects" (plural)
+        results = rag.retrieve("mis proyectos", top_k=3, doc_type="project")
+        assert len(results) > 0
+        assert results[0][0].type == "projects"
+
+    def test_get_context_string_with_project_type(self):
+        """get_context_string auto-detects project type and retrieves matching chunks."""
+        rag = RAGPipeline(chunk_size=1000)
+        docs = {
+            "wiki/interviewtts.md": """---
+type: project
+tags: [interviewtts]
+summary_1line: InterviewTTS
+---
+
+# InterviewTTS
+
+App de entrevistas por voz.""",
+        }
+        rag.ingest_documents(docs)
+        context = rag.get_context_string("¿Qué es InterviewTTS?")
+        assert "entrevistas por voz" in context

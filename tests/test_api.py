@@ -325,6 +325,8 @@ class TestResponseCache:
     def test_cached_question_skips_llm(self, client, mock_services):
         """A common question returns the cached answer without calling the LLM."""
         mock_services["stt"].transcribe.return_value = "¿Qué es InterviewTTS?"
+        # Return empty RAG context so the cached answer is not enriched
+        mock_services["rag"].get_context_string.return_value = ""
 
         conv_response = client.post("/api/conversation")
         conversation_id = conv_response.json()["conversation_id"]
@@ -378,6 +380,8 @@ class TestStreamingResponseCache:
     def test_stream_cached_question_answers_from_cache(self, client, mock_services):
         """A common question streams the cached answer as one token, then audio, skipping the LLM."""
         mock_services["stt"].transcribe.return_value = "¿Qué es InterviewTTS?"
+        # Return empty RAG context so the cached answer is not enriched
+        mock_services["rag"].get_context_string.return_value = ""
 
         conv = client.post("/api/conversation")
         conv_id = conv.json()["conversation_id"]
@@ -406,6 +410,8 @@ class TestStreamingResponseCache:
     def test_stream_cached_different_question_returns_matching_answer(self, client, mock_services):
         """A different cached question returns its own answer — real lookup, not a hardcoded reply."""
         mock_services["stt"].transcribe.return_value = "¿Cuáles son tus fortalezas?"
+        # Return empty RAG context so the cached answer is not enriched
+        mock_services["rag"].get_context_string.return_value = ""
 
         conv = client.post("/api/conversation")
         conv_id = conv.json()["conversation_id"]
@@ -448,3 +454,148 @@ class TestStreamingResponseCache:
         # The LLM path emits per-sentence audio_chunk events, never audio_url
         assert len(audio_url_events) == 0
         assert len(done_events) == 1
+
+
+class TestCacheRagEnrichment:
+    """Cache hits are enriched with RAG context when available (non-streaming)."""
+
+    def test_cache_hit_with_rag_enrichment(self, client, mock_services):
+        """Cached answer is appended with RAG context when RAG returns results."""
+        mock_services["stt"].transcribe.return_value = "¿Qué es InterviewTTS?"
+        mock_services["rag"].get_context_string.return_value = (
+            "[Source: wiki/interviewtts.md | Tipo: project]\n"
+            "InterviewTTS es una app de entrevistas por voz con IA."
+        )
+
+        conv_response = client.post("/api/conversation")
+        conversation_id = conv_response.json()["conversation_id"]
+
+        response = client.post(
+            f"/api/conversation/{conversation_id}/message",
+            files={"audio": ("test.webm", b"audio data", "audio/webm")},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        # Cached answer is present
+        assert "InterviewTTS" in data["response_text"]
+        # RAG context is appended
+        assert "wiki/interviewtts.md" in data["response_text"]
+        assert "entrevistas por voz" in data["response_text"]
+        # LLM was NOT called
+        mock_services["llm"].generate.assert_not_called()
+        # RAG was called with top_k=2 for enrichment
+        mock_services["rag"].get_context_string.assert_called_with(
+            "¿Qué es InterviewTTS?", top_k=2
+        )
+
+    def test_cache_hit_without_rag_returns_cache_only(self, client, mock_services):
+        """Cached answer is returned as-is when RAG finds nothing relevant."""
+        mock_services["stt"].transcribe.return_value = "¿Qué es InterviewTTS?"
+        mock_services["rag"].get_context_string.return_value = ""
+
+        conv_response = client.post("/api/conversation")
+        conversation_id = conv_response.json()["conversation_id"]
+
+        response = client.post(
+            f"/api/conversation/{conversation_id}/message",
+            files={"audio": ("test.webm", b"audio data", "audio/webm")},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        # Only the cached answer, no RAG suffix
+        assert data["response_text"] == mock_services["rag"].get_context_string.return_value or \
+               "InterviewTTS es mi proyecto" in data["response_text"]
+        mock_services["llm"].generate.assert_not_called()
+
+    def test_cache_hit_tracks_rag_chunks_in_turn(self, client, mock_services):
+        """Cache hit with RAG enrichment stores chunks_used in the conversation turn."""
+        mock_services["stt"].transcribe.return_value = "¿Qué es InterviewTTS?"
+        mock_services["rag"].get_context_string.return_value = "RAG context here"
+        mock_services["rag"].get_chunks_with_scores.return_value = [
+            {"text": "RAG context here", "score": 0.85, "source": "wiki/interviewtts.md"}
+        ]
+
+        conv_response = client.post("/api/conversation")
+        conversation_id = conv_response.json()["conversation_id"]
+
+        client.post(
+            f"/api/conversation/{conversation_id}/message",
+            files={"audio": ("test.webm", b"audio data", "audio/webm")},
+        )
+
+        from backend.main import conversations
+        turns = conversations[conversation_id]["turns"]
+        assert len(turns) == 1
+        assert len(turns[0]["chunks_used"]) > 0
+        assert turns[0]["chunks_used"][0]["source"] == "wiki/interviewtts.md"
+
+
+class TestStreamingCacheRagEnrichment:
+    """Cache hits in /message/stream are enriched with RAG context."""
+
+    def _stream_events(self, client, conversation_id):
+        """POST audio to /message/stream and return the parsed SSE events."""
+        import json
+
+        with client.stream(
+            "POST",
+            f"/api/conversation/{conversation_id}/message/stream",
+            files={"audio": ("test.webm", b"audio data", "audio/webm")},
+        ) as response:
+            assert response.status_code == 200
+            events = []
+            for line in response.iter_lines():
+                if line and line.startswith("data: "):
+                    events.append(json.loads(line[6:]))
+        return events
+
+    def test_stream_cache_hit_with_rag_enrichment(self, client, mock_services):
+        """Streaming cache hit appends RAG context to the token and audio."""
+        mock_services["stt"].transcribe.return_value = "¿Qué es InterviewTTS?"
+        mock_services["rag"].get_context_string.return_value = (
+            "[Source: wiki/interviewtts.md | Tipo: project]\n"
+            "InterviewTTS es una app de entrevistas por voz con IA."
+        )
+        mock_services["rag"].get_chunks_with_scores.return_value = [
+            {"text": "InterviewTTS app", "score": 0.85, "source": "wiki/interviewtts.md"}
+        ]
+
+        conv = client.post("/api/conversation")
+        conv_id = conv.json()["conversation_id"]
+
+        events = self._stream_events(client, conv_id)
+
+        token_events = [e for e in events if e.get("event") == "token"]
+        audio_url_events = [e for e in events if e.get("event") == "audio_url"]
+        done_events = [e for e in events if e.get("event") == "done"]
+
+        # Single token event with enriched text (cached + RAG)
+        assert len(token_events) == 1
+        token_text = token_events[0]["data"]["text"]
+        assert "InterviewTTS es mi proyecto" in token_text
+        assert "wiki/interviewtts.md" in token_text
+        # Single audio file
+        assert len(audio_url_events) == 1
+        assert len(done_events) == 1
+        # LLM was NOT called
+        mock_services["llm"].generate_stream_with_context.assert_not_called()
+
+    def test_stream_cache_hit_without_rag_returns_cache_only(self, client, mock_services):
+        """Streaming cache hit returns only cached answer when RAG finds nothing."""
+        mock_services["stt"].transcribe.return_value = "¿Qué es InterviewTTS?"
+        mock_services["rag"].get_context_string.return_value = ""
+
+        conv = client.post("/api/conversation")
+        conv_id = conv.json()["conversation_id"]
+
+        events = self._stream_events(client, conv_id)
+
+        token_events = [e for e in events if e.get("event") == "token"]
+        assert len(token_events) == 1
+        token_text = token_events[0]["data"]["text"]
+        # Only cached answer, no RAG suffix
+        assert "InterviewTTS es mi proyecto" in token_text
+        assert "[Source:" not in token_text
+        mock_services["llm"].generate_stream_with_context.assert_not_called()

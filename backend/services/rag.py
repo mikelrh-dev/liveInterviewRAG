@@ -29,7 +29,7 @@ QUERY_EXPANSIONS: Dict[str, List[str]] = {
 QUERY_TYPE_KEYWORDS: Dict[str, List[str]] = {
     "skills": ["tests", "testing", "test", "pytest", "tdd", "skills", "lenguajes", "frameworks"],
     "experience": ["experiencia", "mercadona", "encargado", "gerente", "retail"],
-    "projects": ["proyecto", "proyectos", "projects", "portfolio"],
+    "project": ["proyecto", "proyectos", "project", "projects", "portfolio"],
     "stories": ["historia", "anécdota", "story", "situación"],
     "opinions": ["opinión", "opinion", "piensas", "crees"],
     "decisions": ["decisión", "decision", "dejaste", "dejar"],
@@ -278,7 +278,14 @@ class RAGPipeline:
 
         candidates = self.chunks
         if doc_type:
-            candidates = [c for c in self.chunks if c.type == doc_type]
+            # Normalize type aliases: "projects" ↔ "project" so wiki docs using
+            # either singular or plural in frontmatter are found consistently.
+            _norm = "project" if doc_type in ("project", "projects") else doc_type
+            candidates = [
+                c for c in self.chunks
+                if c.type == _norm or c.type == doc_type
+                or (doc_type in ("project", "projects") and c.type in ("project", "projects"))
+            ]
             if not candidates:
                 return []
 
