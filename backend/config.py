@@ -42,6 +42,9 @@ class Config:
         self.AUDIO_DIR: Path = self.BASE_DIR / "audio"
         self.FRONTEND_DIR: Path = self.BASE_DIR / "frontend"
 
+        # RAG cache
+        self.RAG_CACHE_DIR: Path = Path(os.getenv("RAG_CACHE_DIR", str(self.BASE_DIR / "backend" / ".rag_cache")))
+
         # Server
         self.HOST: str = os.getenv("HOST", "0.0.0.0")
         self.PORT: int = int(os.getenv("PORT", "8000"))

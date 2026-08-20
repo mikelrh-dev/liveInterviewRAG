@@ -1,9 +1,13 @@
 """RAG pipeline — document chunking, embedding, and retrieval."""
 
+import hashlib
+import json
 import logging
 import re
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -118,7 +122,8 @@ class Chunk:
 class RAGPipeline:
     """In-memory RAG pipeline with cosine similarity retrieval."""
 
-    def __init__(self, chunk_size: int = 400, chunk_overlap: int = 50, threshold: float = 0.3):
+    def __init__(self, chunk_size: int = 400, chunk_overlap: int = 50, threshold: float = 0.3,
+                 cache_dir: Optional[Path] = None, embedding_model: str = "all-MiniLM-L6-v2"):
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self.threshold = threshold
@@ -127,6 +132,11 @@ class RAGPipeline:
         self._use_tfidf = False
         self._tfidf_vectorizer = None
         self._initialized = False
+        self._embedding_model = embedding_model
+        self._cache_dir = cache_dir
+        self._metadata_path: Optional[Path] = None
+        if self._cache_dir:
+            self._metadata_path = self._cache_dir / "embeddings.json"
 
     def initialize(self) -> None:
         """Load the embedding model. Falls back to TF-IDF if unavailable."""
@@ -144,8 +154,130 @@ class RAGPipeline:
             self._tfidf_vectorizer = TfidfVectorizer(max_features=384)
         self._initialized = True
 
+    # ── Embedding cache helpers ──────────────────────────────────────────
+
+    @staticmethod
+    def _compute_documents_hash(documents: dict[str, str]) -> str:
+        """Compute a deterministic SHA-256 hash of all loaded documents."""
+        h = hashlib.sha256()
+        for filename in sorted(documents.keys()):
+            h.update(filename.encode("utf-8"))
+            h.update(documents[filename].encode("utf-8"))
+        return h.hexdigest()
+
+    def _save_embeddings_cache(self, chunks: List[Chunk], documents_hash: str) -> None:
+        """Persist chunks and embeddings to disk for fast startup.
+
+        Saves two files inside ``_cache_dir``:
+        - ``embeddings.npz`` — numpy compressed embeddings + metadata arrays.
+        - ``embeddings.json`` — validation metadata (model, hash, counts).
+        """
+        if not self._cache_dir:
+            return
+        try:
+            self._cache_dir.mkdir(parents=True, exist_ok=True)
+
+            # Pack arrays into a single npz
+            ids = np.array([c.id for c in chunks], dtype=object)
+            contents = np.array([c.content for c in chunks], dtype=object)
+            sources = np.array([c.source for c in chunks], dtype=object)
+            sections = np.array([c.section for c in chunks], dtype=object)
+            types = np.array([c.type for c in chunks], dtype=object)
+            summaries = np.array([c.summary for c in chunks], dtype=object)
+            # Tags are variable-length; store as JSON strings
+            tags_json = np.array([json.dumps(c.tags) for c in chunks], dtype=object)
+            embeddings = np.stack([c.embedding for c in chunks]) if chunks else np.empty((0, 0), dtype=np.float32)
+
+            npz_path = self._cache_dir / "embeddings.npz"
+            np.savez_compressed(
+                npz_path,
+                ids=ids, contents=contents, sources=sources,
+                sections=sections, types=types, summaries=summaries,
+                tags_json=tags_json, embeddings=embeddings,
+            )
+
+            # Write metadata
+            metadata = {
+                "model": self._embedding_model,
+                "document_hash": documents_hash,
+                "chunk_count": len(chunks),
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+            with open(self._metadata_path, "w", encoding="utf-8") as f:
+                json.dump(metadata, f, indent=2)
+
+            logger.info("Saved embedding cache (%d chunks) to %s", len(chunks), self._cache_dir)
+        except Exception as e:
+            logger.warning("Failed to save embedding cache: %s", e)
+
+    def _load_embeddings_cache(self, documents: dict[str, str]) -> Optional[List[Chunk]]:
+        """Try to load cached embeddings. Returns None if cache is invalid or missing."""
+        if not self._cache_dir or not self._metadata_path:
+            return None
+
+        npz_path = self._cache_dir / "embeddings.npz"
+        if not npz_path.exists() or not self._metadata_path.exists():
+            return None
+
+        try:
+            # 1. Read and validate metadata
+            with open(self._metadata_path, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+
+            if meta.get("model") != self._embedding_model:
+                logger.info(
+                    "Cache model mismatch (cache=%s, current=%s) — recomputing",
+                    meta.get("model"), self._embedding_model,
+                )
+                return None
+
+            # 2. Validate document hash
+            current_hash = self._compute_documents_hash(documents)
+            if meta.get("document_hash") != current_hash:
+                logger.info("Cache document hash stale — recomputing")
+                return None
+
+            # 3. Load npz
+            data = np.load(npz_path, allow_pickle=True)
+            ids = data["ids"]
+            contents = data["contents"]
+            sources = data["sources"]
+            sections = data["sections"]
+            types = data["types"]
+            summaries = data["summaries"]
+            tags_json = data["tags_json"]
+            embeddings = data["embeddings"]
+
+            if len(ids) != meta.get("chunk_count"):
+                logger.info("Cache chunk count mismatch — recomputing")
+                return None
+
+            # 4. Rebuild Chunk objects
+            chunks: List[Chunk] = []
+            for i in range(len(ids)):
+                chunks.append(Chunk(
+                    id=str(ids[i]),
+                    content=str(contents[i]),
+                    source=str(sources[i]),
+                    section=str(sections[i]),
+                    type=str(types[i]),
+                    tags=json.loads(str(tags_json[i])),
+                    summary=str(summaries[i]),
+                    embedding=embeddings[i],
+                ))
+
+            logger.info("Loaded %d chunks from embedding cache", len(chunks))
+            return chunks
+
+        except Exception as e:
+            logger.warning("Failed to load embedding cache, recomputing: %s", e)
+            return None
+
     def ingest_documents(self, documents: dict[str, str]) -> int:
         """Chunk and embed documents.
+
+        Attempts to load pre-computed embeddings from cache first.
+        Falls back to full computation on any cache miss or error.
 
         Args:
             documents: Dict of filename -> content.
@@ -159,6 +291,15 @@ class RAGPipeline:
         start_time = time.time()
         self.chunks = []
 
+        # ── Try cache first ────────────────────────────────────────────
+        cached = self._load_embeddings_cache(documents)
+        if cached is not None:
+            self.chunks = cached
+            elapsed = time.time() - start_time
+            logger.info("RAG cache hit — %d chunks restored in %.3fs", len(self.chunks), elapsed)
+            return len(self.chunks)
+
+        # ── Cache miss: chunk + embed from scratch ─────────────────────
         for filename, content in documents.items():
             doc_chunks = self._chunk_document(filename, content)
             self.chunks.extend(doc_chunks)
@@ -168,8 +309,12 @@ class RAGPipeline:
         if self.chunks:
             self._compute_embeddings()
 
+        # ── Persist new cache ──────────────────────────────────────────
+        doc_hash = self._compute_documents_hash(documents)
+        self._save_embeddings_cache(self.chunks, doc_hash)
+
         elapsed = time.time() - start_time
-        logger.info("Ingestion completed in %.2fs", elapsed)
+        logger.info("Ingestion (compute) completed in %.2fs", elapsed)
         return len(self.chunks)
 
     def _chunk_document(self, filename: str, content: str) -> List[Chunk]:

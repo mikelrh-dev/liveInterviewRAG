@@ -94,6 +94,8 @@ tts_service = TTSService(
 rag_pipeline = RAGPipeline(
     chunk_size=config.CHUNK_SIZE,
     chunk_overlap=config.CHUNK_OVERLAP,
+    cache_dir=config.RAG_CACHE_DIR,
+    embedding_model=config.EMBEDDING_MODEL,
 )
 candidate_profile = CandidateProfile(config.CANDIDATE_DIR, wiki_dir=config.WIKI_DIR)
 

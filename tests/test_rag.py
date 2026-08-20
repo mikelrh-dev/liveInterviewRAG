@@ -1,7 +1,9 @@
 """Tests for RAG pipeline with known documents."""
 
-import pytest
+import json
 import numpy as np
+import pytest
+from pathlib import Path
 
 from backend.services.rag import RAGPipeline, Chunk, parse_frontmatter, expand_query, detect_doc_type
 
@@ -490,3 +492,148 @@ App de entrevistas por voz.""",
         rag.ingest_documents(docs)
         context = rag.get_context_string("¿Qué es InterviewTTS?")
         assert "entrevistas por voz" in context
+
+
+class TestEmbeddingCache:
+    """Tests for embedding cache save/load and invalidation."""
+
+    DOCS = {
+        "cv.md": "## Experience\nWorked with Python and FastAPI.",
+        "skills.md": "## Skills\nJavaScript, React for frontend.",
+    }
+
+    def _make_rag(self, tmp_path: Path, model: str = "all-MiniLM-L6-v2") -> RAGPipeline:
+        return RAGPipeline(
+            chunk_size=100,
+            cache_dir=tmp_path / "cache",
+            embedding_model=model,
+        )
+
+    def test_first_run_creates_cache(self, tmp_path):
+        """Test first run computes and saves cache."""
+        rag = self._make_rag(tmp_path)
+        count = rag.ingest_documents(self.DOCS)
+        assert count > 0
+
+        # Cache files should exist
+        cache_dir = tmp_path / "cache"
+        assert (cache_dir / "embeddings.npz").exists()
+        assert (cache_dir / "embeddings.json").exists()
+
+        # Metadata should be valid
+        with open(cache_dir / "embeddings.json") as f:
+            meta = json.load(f)
+        assert meta["model"] == "all-MiniLM-L6-v2"
+        assert meta["chunk_count"] == count
+        assert len(meta["document_hash"]) == 64  # SHA-256 hex
+
+    def test_cache_hit_reuses_embeddings(self, tmp_path):
+        """Test cache hit restores chunks without recompute."""
+        rag1 = self._make_rag(tmp_path)
+        rag1.ingest_documents(self.DOCS)
+
+        # Second ingest with same docs should use cache
+        rag2 = self._make_rag(tmp_path)
+        count = rag2.ingest_documents(self.DOCS)
+        assert count > 0
+
+        # Embeddings should be loaded and identical
+        for chunk in rag2.chunks:
+            assert chunk.embedding is not None
+
+    def test_cache_invalidation_on_doc_change(self, tmp_path):
+        """Test stale cache is discarded when documents change."""
+        rag1 = self._make_rag(tmp_path)
+        rag1.ingest_documents(self.DOCS)
+
+        # Modify a document
+        changed_docs = {**self.DOCS, "cv.md": "## Experience\nWorked with Go and Rust."}
+        rag2 = self._make_rag(tmp_path)
+        count = rag2.ingest_documents(changed_docs)
+        assert count > 0
+
+        # The loaded chunks should reflect the NEW content
+        cv_chunks = [c for c in rag2.chunks if c.source == "cv.md"]
+        assert any("Go" in c.content for c in cv_chunks)
+
+    def test_model_mismatch_triggers_recompute(self, tmp_path):
+        """Test different model name forces recompute."""
+        rag1 = self._make_rag(tmp_path, model="all-MiniLM-L6-v2")
+        rag1.ingest_documents(self.DOCS)
+
+        # Same docs, different model
+        rag2 = self._make_rag(tmp_path, model="paraphrase-multilingual-MiniLM-L12-v2")
+        count = rag2.ingest_documents(self.DOCS)
+        assert count > 0
+
+        # Metadata should now have the new model
+        with open(tmp_path / "cache" / "embeddings.json") as f:
+            meta = json.load(f)
+        assert meta["model"] == "paraphrase-multilingual-MiniLM-L12-v2"
+
+    def test_corrupted_npz_falls_back_to_compute(self, tmp_path):
+        """Test corrupted npz file triggers recompute."""
+        rag1 = self._make_rag(tmp_path)
+        rag1.ingest_documents(self.DOCS)
+
+        # Corrupt the npz file
+        npz_path = tmp_path / "cache" / "embeddings.npz"
+        npz_path.write_bytes(b"not a valid npz file")
+
+        rag2 = self._make_rag(tmp_path)
+        count = rag2.ingest_documents(self.DOCS)
+        assert count > 0
+        # Should have recompute and re-saved a valid cache
+        assert npz_path.exists()
+
+    def test_corrupted_json_falls_back_to_compute(self, tmp_path):
+        """Test corrupted metadata JSON triggers recompute."""
+        rag1 = self._make_rag(tmp_path)
+        rag1.ingest_documents(self.DOCS)
+
+        # Corrupt the metadata file
+        json_path = tmp_path / "cache" / "embeddings.json"
+        json_path.write_text("not valid json {{{")
+
+        rag2 = self._make_rag(tmp_path)
+        count = rag2.ingest_documents(self.DOCS)
+        assert count > 0
+
+    def test_no_cache_dir_still_works(self, tmp_path):
+        """Test pipeline works without cache_dir (backward compat)."""
+        rag = RAGPipeline(chunk_size=100)
+        count = rag.ingest_documents(self.DOCS)
+        assert count > 0
+        for chunk in rag.chunks:
+            assert chunk.embedding is not None
+
+    def test_chunk_count_mismatch_triggers_recompute(self, tmp_path):
+        """Test cache rejected when chunk count doesn't match."""
+        rag1 = self._make_rag(tmp_path)
+        rag1.ingest_documents(self.DOCS)
+
+        # Tamper with the metadata chunk_count
+        json_path = tmp_path / "cache" / "embeddings.json"
+        with open(json_path) as f:
+            meta = json.load(f)
+        meta["chunk_count"] = 9999
+        with open(json_path, "w") as f:
+            json.dump(meta, f)
+
+        rag2 = self._make_rag(tmp_path)
+        count = rag2.ingest_documents(self.DOCS)
+        assert count > 0
+        assert count != 9999  # Should have recomputed
+
+    def test_compute_documents_hash_deterministic(self, tmp_path):
+        """Test hash is deterministic for same inputs."""
+        h1 = RAGPipeline._compute_documents_hash(self.DOCS)
+        h2 = RAGPipeline._compute_documents_hash(self.DOCS)
+        assert h1 == h2
+        assert len(h1) == 64
+
+    def test_compute_documents_hash_different_for_different_docs(self, tmp_path):
+        """Test different docs produce different hashes."""
+        h1 = RAGPipeline._compute_documents_hash(self.DOCS)
+        h2 = RAGPipeline._compute_documents_hash({"other.md": "Completely different content."})
+        assert h1 != h2
