@@ -1,6 +1,10 @@
 # InterviewTTS
 
 <p align="center">
+  <a href="README_ES.md">🇪🇸 Español</a> | <a href="README.md">🇬🇧 English</a>
+</p>
+
+<p align="center">
   <img src="https://lh3.googleusercontent.com/aida/AEtjO1XDN3xw7saf4qPk_UZR4781Gexk8-NmlXM4XutayLy7jiMZ7pVX2mMGHVy2J0sU91_vBtxWLqOIGRA13TCCJmOr8S9AZTURQnIyHYB-BfLoF-1erRaT_RqrH_kbNWdIeXRj4iwfYhSh11Efr0WYUtFsGSj4vDK6ZS00pM4d3mZGhkYGJpCjZaa9mqQ9jPZDfTUIOKY0Bq0_JK8nFIk0RsdbRXBskpdtivX1vkhq_Sx8RFFA_XQJHqgRv9I" alt="InterviewTTS - Gemelo Digital con IA por Voz" width="100%"/>
 </p>
 
