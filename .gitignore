@@ -34,7 +34,7 @@ htmlcov/
 
 # Sensitive — personal data, never commit
 RAGraw/
-wiki/
+
 candidate/
 
 # Working documents — not for public repo
