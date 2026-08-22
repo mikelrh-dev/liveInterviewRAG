@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>05 Cache y Optimizacion de Latencia - InterviewTTS</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;0,6..72,700;1,6..72,400&family=Source+Sans+3:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <nav class="nav" role="navigation" aria-label="Navegacion principal">
+    <div class="nav-inner">
+      <a href="index.html" class="nav-logo">InterviewTTS</a>
+      <ul class="nav-links">
+        <li><a href="index.html">00 Inicio</a></li>
+        <li><a href="arquitectura.html">01 Arquitectura</a></li>
+        <li><a href="whisper-stt.html">02 Whisper</a></li>
+        <li><a href="rag.html">03 RAG</a></li>
+        <li><a href="llm-prompting.html">04 LLM</a></li>
+        <li><a href="cache-latencia.html" class="active">05 Latencia</a></li>
+        <li><a href="despliegue.html">06 Despliegue</a></li>
+        <li><a href="aprendizajes.html">07 Aprendizajes</a></li>
+      </ul>
+    </div>
+  </nav>
+
+  <main class="main">
+    <header class="chapter-header">
+      <span class="chapter-num">Capitulo 05</span>
+      <h1 class="chapter-title">Cache y Optimizacion de Latencia</h1>
+      <p class="chapter-subtitle">El proceso de medicion como disciplina: de ~20s a ~5s promedio. Cache FAQ, embeddings en disco, Whisper medium, y SSE.</p>
+    </header>
+
+    <section class="reveal">
+      <h2>El Patron: Medir, Optimizar, Verificar</h2>
+      <p>Cada optimizacion que hicimos siguió el mismo patron:</p>
+      <ol>
+        <li><strong>Medir:</strong> Instrumentar el pipeline para saber exactamente donde se va el tiempo</li>
+        <li><strong>Identificar cuello de botella:</strong> Que componente consume mas tiempo?</li>
+        <li><strong>Optimizar:</strong> Atacar el cuello de botella con la tecnica adecuada</li>
+        <li><strong>Verificar:</strong> Confirmar que la optimizacion realmente mejoro los tiempos</li>
+        <li><strong>Documentar:</strong> Registrar el tradeoff para que futuros desarrolladores entiendan la decision</li>
+      </ol>
+    </section>
+
+    <section class="reveal">
+      <h2>Tabla Completa de Optimizaciones</h2>
+      <div class="table-wrapper">
+        <table>
+          <thead><tr><th>Optimizacion</th><th>Mejora</th><th>Detalle</th></tr></thead>
+          <tbody>
+            <tr><td>Recorte del system prompt</td><td>-0.5 a -1.5s</td><td>De ~1200 a ~600 caracteres reduce tiempo de processamiento del LLM</td></tr>
+            <tr><td>Cache FAQ (20 preguntas)</td><td>-4 a -8s</td><td>Preguntas frecuentes cacheadas saltan todo el pipeline STT+RAG+LLM</td></tr>
+            <tr><td>Cache + RAG enrichment</td><td>Instantanea + contexto wiki</td><td>Las respuestas cacheadas se enriquecen con contexto actualizado</td></tr>
+            <tr><td>Wiki metadata para RAG</td><td>Mejor precision</td><td>Filtrado por tipo y entity boost mejoran la relevancia</td></tr>
+            <tr><td>Persistencia de embeddings</td><td>-2 a -3s en arranque</td><td>Embeddings en disco .npz evitan recalcular al iniciar</td></tr>
+            <tr><td>Whisper medium float16</td><td>+20-30% precision</td><td>Precision vs small es critica para contexto tecnico</td></tr>
+            <tr><td>SSE streaming</td><td>Latencia percibida ~0s</td><td>El usuario escucha antes de que termine la generacion</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="reveal">
+      <h2>Antes vs Despues</h2>
+      <img src="assets/stitch-performance-chart.png" alt="Grafico comparativo mostrando latencia antes (~15-25 segundos) y despues (~8-12 segundos con cache hits de 4-6 segundos) de las optimizaciones" class="img-full" width="860" height="486">
+      <p class="img-label">Comparativa de latencia: antes ~15-25s por turno | despues ~8-12s (cache hits: 4-6s)</p>
+
+      <div class="opt-before-after">
+        <div class="opt-box before">
+          <div class="opt-time">~20s</div>
+          <div class="opt-label">Antes</div>
+          <p style="color:var(--text-muted);font-size:0.85rem;margin-top:var(--space-sm);">Promedio por turno sin optimizar</p>
+        </div>
+        <div class="opt-box after">
+          <div class="opt-time">~5s</div>
+          <div class="opt-label">Despues (promedio)</div>
+          <p style="color:var(--text-muted);font-size:0.85rem;margin-top:var(--space-sm);">Con cache hits: 4-6s. Sin cache: 8-12s</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="reveal">
+      <h2>Cache FAQ: La Mayor Ganancia</h2>
+      <p>La optimizacion con mayor impacto fue el <strong>cache de preguntas frecuentes</strong>. Identificamos las 20 preguntas mas comunes en una entrevista tecnica y pre-generamos sus respuestas.</p>
+      <p>Cuando el reclutador pregunta algo cacheado, el sistema:</p>
+      <ol>
+        <li>Compara la pregunta contra el cache con <strong>similitud semantica</strong> (no matching exacto)</li>
+        <li>Si supera el umbral, retorna la respuesta cacheada <strong>instantaneamente</strong></li>
+        <li>El audio se genera en ~200ms en lugar de ~5-8 segundos</li>
+      </ol>
+      <div class="callout"><div class="callout-title">Cache semantico, no por texto exacto</div><p>Un cache por texto exacto solo funcionaria si el reclutador escribiera la pregunta identica. Usamos embeddings para comparar el significado de la pregunta, no las palabras exactas. "Cual es tu experiencia con Python?" y "Hablame de Python" matchearian el mismo cache.</p></div>
+    </section>
+
+    <section class="reveal">
+      <h2>El Tradeoff Fundamental</h2>
+      <p>Optimizar latencia siempre implica tradeoffs:</p>
+      <ul>
+        <li><strong>Cache vs Frescura:</strong> Las respuestas cacheadas pueden estar desactualizadas si la wiki cambia. Mitigamos invalidando el cache cuando cambian los documentos.</li>
+        <li><strong>Modelo pequeno vs Precision:</strong> small es mas rapido que medium, pero pierde precision en contexto tecnico. Preferimos la precision.</li>
+        <li><strong>beam_size=1 vs Calidad:</strong> beam_size=1 es mas rapido pero explora menos. Para conversacion, es aceptable.</li>
+        <li><strong>SSE vs WebSockets:</strong> SSE es mas simple pero unidireccional. Para nuestro caso, es suficiente.</li>
+      </ul>
+    </section>
+
+  </main>
+
+  <footer class="footer">
+    <div class="footer-inner">
+      <div class="footer-col">
+        <p><strong>InterviewTTS</strong> &mdash; Proyecto de aprendizaje</p>
+        <p>Construido por <strong>Mikel</strong> como proyecto de portafolio en IA/ML.</p>
+      </div>
+      <div class="footer-col">
+        <p><a href="https://github.com/mikelrh-dev/liveInterviewRAG" target="_blank" rel="noopener">Ver repositorio en GitHub &rarr;</a></p>
+        <p>Stack: Python, FastAPI, Whisper, RAG, Pocket TTS</p>
+      </div>
+    </div>
+    <p class="footer-copy">Documento tecnico construido para fines educativos. 2025.</p>
+  </footer>
+  <script src="script.js"></script>
+</body>
+</html>

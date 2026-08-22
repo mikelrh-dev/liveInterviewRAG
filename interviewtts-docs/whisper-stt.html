@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>02 Whisper STT - InterviewTTS</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;0,6..72,700;1,6..72,400&family=Source+Sans+3:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <nav class="nav" role="navigation" aria-label="Navegacion principal">
+    <div class="nav-inner">
+      <a href="index.html" class="nav-logo">InterviewTTS</a>
+      <ul class="nav-links">
+        <li><a href="index.html">00 Inicio</a></li>
+        <li><a href="arquitectura.html">01 Arquitectura</a></li>
+        <li><a href="whisper-stt.html" class="active">02 Whisper</a></li>
+        <li><a href="rag.html">03 RAG</a></li>
+        <li><a href="llm-prompting.html">04 LLM</a></li>
+        <li><a href="cache-latencia.html">05 Latencia</a></li>
+        <li><a href="despliegue.html">06 Despliegue</a></li>
+        <li><a href="aprendizajes.html">07 Aprendizajes</a></li>
+      </ul>
+    </div>
+  </nav>
+
+  <main class="main">
+    <header class="chapter-header">
+      <span class="chapter-num">Capitulo 02</span>
+      <h1 class="chapter-title">Speech-to-Text con Whisper</h1>
+      <p class="chapter-subtitle">Deep dive en faster-whisper, CTranslate2, y las decisiones de configuracion que impactan la precision y latencia en nuestro VPS ARM64.</p>
+    </header>
+
+    <section class="reveal">
+      <h2>Que es Whisper</h2>
+      <p>Whisper es un modelo de reconocimiento de voz entrenado por OpenAI con <strong>680,000 horas</strong> de audio multilingue. Es uno de los modelos STT mas precisos disponibles, y lo mejor: es open source.</p>
+      <p><strong>Faster-Whisper</strong> es una reimplementacion optimizada que usa <strong>CTranslate2</strong> como backend de inferencia. CTranslate2 es un motor de inferencia para modelos de transformer que soporta cuantizacion int8, lo que permite ejecutar Whisper de forma significativamente mas rapida que la implementacion original de PyTorch.</p>
+      <img src="assets/stitch-person-speaking.png" alt="Persona hablando a un microfono de estudio, representando el proceso de captura de voz para STT" class="img-full" width="860" height="486">
+      <p class="img-label">Captura de voz: el proceso comienza con el microfono del navegador</p>
+      <div class="callout">
+        <div class="callout-title">CTranslate2</div>
+        <p>CTranslate2 es a PyTorch lo que un motor optimizado de C es a un interprete de Python. Reimplementa las operaciones criticas de transformer en C++ con soporte nativo para cuantizacion int8 y float16, logrando speedups de 2x a 4x sin perdida significativa de precision.</p>
+      </div>
+    </section>
+
+    <section class="reveal">
+      <h2>Cuantizacion: int8 vs float16</h2>
+      <p>La cuantizacion es el proceso de reducir la precision numerica de los pesos del modelo. En lugar de usar float32 (32 bits por numero), usamos int8 (8 bits) o float16 (16 bits).</p>
+      <div class="table-wrapper">
+        <table>
+          <thead>
+            <tr><th>Formato</th><th>Tamano</th><th>Velocidad</th><th>Precision</th><th>RAM</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><span class="code-inline">float32</span></td><td>~3 GB</td><td>Baseline</td><td>Maxima</td><td>~4 GB</td></tr>
+            <tr><td><span class="code-inline">float16</span></td><td>~1.5 GB</td><td>~1.2x</td><td>Casi igual a float32</td><td>~2 GB</td></tr>
+            <tr><td><span class="code-inline">int8</span></td><td>~0.8 GB</td><td>~1.5x</td><td>~1-2% menos WER</td><td>~1.2 GB</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p><strong>Nuestra decision: float16.</strong> Con 24GB RAM en el VPS, no tenemos presion de memoria. float16 nos da la mejor relacion velocidad/precision.</p>
+      <div class="callout">
+        <div class="callout-title">Tradeoff</div>
+        <p>int8 sacrifica ~1-2% de precision (medido en Word Error Rate) a cambio de usar ~40% menos RAM. En nuestro caso, con 24GB disponibles, no tiene sentido sacrificar precision por ahorrar memoria.</p>
+      </div>
+    </section>
+
+    <section class="reveal">
+      <h2>Por que medium sobre small/tiny</h2>
+      <p>Whisper viene en varios tamanos: tiny, base, small, medium, large. La pregunta es: por que elegimos <strong>medium</strong>?</p>
+      <div class="table-wrapper">
+        <table>
+          <thead>
+            <tr><th>Modelo</th><th>Parametros</th><th>WER (ES)</th><th>Velocidad ARM64</th><th>RAM</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>tiny</td><td>39M</td><td>~12%</td><td>Muy rapido</td><td>~200 MB</td></tr>
+            <tr><td>small</td><td>244M</td><td>~7%</td><td>Rapido</td><td>~600 MB</td></tr>
+            <tr><td><strong>medium</strong></td><td><strong>769M</strong></td><td><strong>~4%</strong></td><td><strong>Aceptable</strong></td><td><strong>~2 GB</strong></td></tr>
+            <tr><td>large-v3</td><td>1.5B</td><td>~3%</td><td>Lento en ARM64</td><td>~4 GB</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p><strong>Medium es el sweet spot</strong> para nuestro VPS ARM64 con 24GB RAM. tiny y small tienen un WER demasiado alto para un contexto de entrevista tecnica donde la precision es critica. large-v3 es demasiado lento en CPU ARM64 sin GPU.</p>
+    </section>
+
+    <section class="reveal">
+      <h2>Configuracion de Inference</h2>
+      <p>Hay tres parametros que configuramos explicitamente en faster-whisper:</p>
+      <h3>language="es"</h3>
+      <p>Forzamos el idioma a espanol. Esto <strong>reduce significativamente la latencia</strong> porque el modelo no necesita detectar el idioma primero. Forzar el idioma ahorra ~200-400ms por turno.</p>
+      <h3>vad_filter=True</h3>
+      <p><strong>Voice Activity Detection</strong> filtra porciones del audio que no contienen voz (silencio, ruido de fondo). El VAD trimme esos segmentos, reduciendo el audio que Whisper necesita procesar.</p>
+      <div class="callout">
+        <div class="callout-title">Tradeoff VAD</div>
+        <p>Si el VAD es demasiado agresivo, puede cortar palabras al inicio o fin de frase. El VAD por defecto de silero-vad funciona bien, pero es algo que monitoreamos.</p>
+      </div>
+      <h3>beam_size=1</h3>
+      <p>En lugar del beam_size por defecto de 5, usamos 1. Whisper solo considera la secuencia mas probable en cada paso, sin explorar alternativas.</p>
+      <div class="code-block" data-lang="python"><span class="cm"># Configuracion de faster-whisper para InterviewTTS</span>
+<span class="kw">from</span> faster_whisper <span class="kw">import</span> WhisperModel
+
+model = WhisperModel(
+    <span class="st">"medium"</span>,
+    device=<span class="st">"cpu"</span>,
+    compute_type=<span class="st">"float16"</span>,
+    cpu_threads=<span class="nm">4</span>
+)
+
+segments, info = model.transcribe(
+    audio_path,
+    language=<span class="st">"es"</span>,
+    vad_filter=<span class="kw">True</span>,
+    beam_size=<span class="nm">1</span>,
+    best_of=<span class="nm">1</span>
+)</div>
+      <p><strong>beam_size=1 tradeoff:</strong> La calidad de la transcripcion baja ligeramente (~0.5% WER), pero la latencia se reduce ~30-40%. Para un caso de uso conversacional donde la velocidad importa mas que la precision perfecta, es el tradeoff correcto.</p>
+    </section>
+
+    <section class="reveal">
+      <h2>Latencia por Turno</h2>
+      <p>Con esta configuracion, el STT para un audio de 5-10 segundos toma <strong>~1.5-2.5 segundos</strong> en el VPS ARM64. No es instantaneo, pero es aceptable para una conversacion.</p>
+      <p>La mayor parte de la latencia viene del procesamiento del modelo en CPU. Si tuviÃ©ramos GPU, podrÃ­amos reducir esto a ~200-500ms. Pero en Oracle Free Tier no hay GPU disponible, y parte del desafio del proyecto es demostrar que se puede construir algo funcional con restricciones reales.</p>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="footer-inner">
+      <div class="footer-col">
+        <p><strong>InterviewTTS</strong> - Proyecto de aprendizaje</p>
+        <p>Construido por <strong>Mikel</strong> como proyecto de portafolio en IA/ML.</p>
+      </div>
+      <div class="footer-col">
+        <p><a href="https://github.com/mikelrh-dev/liveInterviewRAG" target="_blank" rel="noopener">Ver repositorio en GitHub</a></p>
+        <p>Stack: Python, FastAPI, Whisper, RAG, Pocket TTS</p>
+      </div>
+    </div>
+    <p class="footer-copy">Documento tecnico construido para fines educativos. 2025.</p>
+  </footer>
+  <script src="script.js"></script>
+</body>
+</html>

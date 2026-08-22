@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>InterviewTTS — Documentacion del Proyecto</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;0,6..72,700;1,6..72,400&family=Source+Sans+3:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <nav class="nav" role="navigation" aria-label="Navegacion principal">
+    <div class="nav-inner">
+      <a href="index.html" class="nav-logo">InterviewTTS</a>
+      <ul class="nav-links">
+        <li><a href="index.html" class="active">00 Inicio</a></li>
+        <li><a href="arquitectura.html">01 Arquitectura</a></li>
+        <li><a href="whisper-stt.html">02 Whisper</a></li>
+        <li><a href="rag.html">03 RAG</a></li>
+        <li><a href="llm-prompting.html">04 LLM</a></li>
+        <li><a href="cache-latencia.html">05 Latencia</a></li>
+        <li><a href="despliegue.html">06 Despliegue</a></li>
+        <li><a href="aprendizajes.html">07 Aprendizajes</a></li>
+      </ul>
+    </div>
+  </nav>
+
+  <main class="main">
+    <section class="hero">
+      <div class="hero-bg" aria-hidden="true"></div>
+      <div class="hero-content">
+        <img src="assets/stitch-hero-mic-neural.png" alt="Microfono de estudio conectado a una red neuronal, representando la interfaz de voz del sistema InterviewTTS" width="640" height="360">
+        <h1><span class="accent">InterviewTTS</span><br>Digital Twin por Voz</h1>
+        <p class="tagline">Un clon digital de voz que permite a los reclutadores entrevistar a un candidato mediante una conversacion de voz asistida por IA. Construido como proyecto de aprendizaje en IA/ML.</p>
+        <div class="link-btn-group" style="justify-content:center;">
+          <a href="https://github.com/mikelrh-dev/liveInterviewRAG" class="link-btn" target="_blank" rel="noopener">GitHub &rarr;</a>
+          <a href="arquitectura.html" class="link-btn">Capitulo 01 &rarr;</a>
+        </div>
+      </div>
+    </section>
+
+    <section class="reveal">
+      <h2>El Problema</h2>
+      <p>Los reclutadores dedican en promedio <strong>6 segundos a revisar un CV</strong>. En ese tiempo, todo lo que un candidato puede comunicar se reduce a unas cuantas lineas de texto plano. La voz, el tono, la capacidad de explicar ideas complejas... todo se pierde.</p>
+      <p>Imagine poder crear un <strong>clone digital</strong> que responda preguntas tecnicas, comunique su experiencia y demuestre conocimiento profundo del dominio del candidato, todo ello mediante una conversacion de voz natural.</p>
+    </section>
+
+    <section class="reveal">
+      <h2>Que es InterviewTTS</h2>
+      <p>InterviewTTS es un sistema de <strong>doblete digital basado en voz</strong>. Funciona as:</p>
+      <ol>
+        <li>Un reclutador habla al microfono del navegador</li>
+        <li>El audio se envia a un servidor FastAPI via Server-Sent Events (SSE)</li>
+        <li>Whisper convierte la voz a texto (STT)</li>
+        <li>Un sistema RAG busca contexto relevante en una wiki del candidato (~30 documentos Markdown)</li>
+        <li>Un LLM genera una respuesta informada y natural</li>
+        <li>Pocket TTS sintetiza la respuesta en voz y la envia de vuelta, token por token</li>
+      </ol>
+      <p>El resultado es una experiencia de entrevista por voz que se siente conversacional y natural.</p>
+    </section>
+
+    <section class="reveal">
+      <h2>Indice de Capitulos</h2>
+      <div class="chapter-index">
+        <a href="arquitectura.html" class="chapter-card reveal reveal-delay-1">
+          <span class="chapter-card-num">01</span>
+          <div class="chapter-card-body">
+            <h3>Arquitectura End-to-End</h3>
+            <p>Pipeline de voz completo: del microfono del navegador al audio sintetizado. Flujo por turno, SSE vs WebSockets, y porque elegimos el patron que elegimos.</p>
+          </div>
+        </a>
+        <a href="whisper-stt.html" class="chapter-card reveal reveal-delay-2">
+          <span class="chapter-card-num">02</span>
+          <div class="chapter-card-body">
+            <h3>Speech-to-Text con Whisper</h3>
+            <p>Deep dive en faster-whisper, CTranslate2, cuantizacion int8 vs float16, y porque el modelo medium es el sweet spot para nuestro VPS ARM64.</p>
+          </div>
+        </a>
+        <a href="rag.html" class="chapter-card reveal reveal-delay-3">
+          <span class="chapter-card-num">03</span>
+          <div class="chapter-card-body">
+            <h3>RAG: Recuperacion Aumentada por Generacion</h3>
+            <p>La estrella del sistema. Embeddings, similitud coseno, chunking por headers, query expansion, y persistencia de embeddings en disco.</p>
+          </div>
+        </a>
+        <a href="llm-prompting.html" class="chapter-card reveal reveal-delay-4">
+          <span class="chapter-card-num">04</span>
+          <div class="chapter-card-body">
+            <h3>LLM y Prompt Engineering</h3>
+            <p>Como reduje el system prompt de 1200 a 600 caracteres, reglas anti-razonamiento, y orquestacion multi-proveedor con degradacion elegante.</p>
+          </div>
+        </a>
+        <a href="cache-latencia.html" class="chapter-card reveal reveal-delay-1">
+          <span class="chapter-card-num">05</span>
+          <div class="chapter-card-body">
+            <h3>Cache y Optimizacion de Latencia</h3>
+            <p>El proceso de medicion como disciplina: de ~20s a ~5s promedio. Cache FAQ, embeddings en disco, Whisper medium, y SSE.</p>
+          </div>
+        </a>
+        <a href="despliegue.html" class="chapter-card reveal reveal-delay-2">
+          <span class="chapter-card-num">06</span>
+          <div class="chapter-card-body">
+            <h3>Despliegue en Produccion</h3>
+            <p>Oracle Free Tier ARM64, $0/mes, sin GPU. Nginx, systemd, y los tradeoffs documentados de correr inferencia CPU-only.</p>
+          </div>
+        </a>
+        <a href="aprendizajes.html" class="chapter-card reveal reveal-delay-3">
+          <span class="chapter-card-num">07</span>
+          <div class="chapter-card-body">
+            <h3>Aprendizajes y Reflexion</h3>
+            <p>FastAPI async, Docker por prueba y error, arquitectura RAG desde cero, TDD con 155+ tests, y lo que aprendi construyendo esto.</p>
+          </div>
+        </a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="footer-inner">
+      <div class="footer-col">
+        <p><strong>InterviewTTS</strong> — Proyecto de aprendizaje</p>
+        <p>Construido por <strong>Mikel</strong> como proyecto de portafolio en IA/ML.</p>
+      </div>
+      <div class="footer-col">
+        <p><a href="https://github.com/mikelrh-dev/liveInterviewRAG" target="_blank" rel="noopener">Ver repositorio en GitHub &rarr;</a></p>
+        <p>Stack: Python, FastAPI, Whisper, RAG, Pocket TTS</p>
+      </div>
+    </div>
+    <p class="footer-copy">Documento tecnico construido para fines educativos. 2025.</p>
+  </footer>
+
+  <script src="script.js"></script>
+</body>
+</html>

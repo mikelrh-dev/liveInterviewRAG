@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>03 RAG - InterviewTTS</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;0,6..72,700;1,6..72,400&family=Source+Sans+3:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <nav class="nav" role="navigation" aria-label="Navegacion principal">
+    <div class="nav-inner">
+      <a href="index.html" class="nav-logo">InterviewTTS</a>
+      <ul class="nav-links">
+        <li><a href="index.html">00 Inicio</a></li>
+        <li><a href="arquitectura.html">01 Arquitectura</a></li>
+        <li><a href="whisper-stt.html">02 Whisper</a></li>
+        <li><a href="rag.html" class="active">03 RAG</a></li>
+        <li><a href="llm-prompting.html">04 LLM</a></li>
+        <li><a href="cache-latencia.html">05 Latencia</a></li>
+        <li><a href="despliegue.html">06 Despliegue</a></li>
+        <li><a href="aprendizajes.html">07 Aprendizajes</a></li>
+      </ul>
+    </div>
+  </nav>
+
+  <main class="main">
+    <header class="chapter-header">
+      <span class="chapter-num">Capitulo 03</span>
+      <h1 class="chapter-title">RAG: Recuperacion Aumentada por Generacion</h1>
+      <p class="chapter-subtitle">La estrella del sistema. Como el candidato puede responder preguntas que nunca se planteo, usando contexto recuperado inteligentemente de su wiki personal.</p>
+    </header>
+
+    <section class="reveal">
+      <h2>Que es RAG</h2>
+      <p>RAG (Retrieval-Augmented Generation) es una tecnica que combina <strong>recuperacion de informacion</strong> con <strong>generacion de texto</strong>. En lugar de que un LLM responda solo con su conocimiento entrenado, RAG le proporciona documentos relevantes como contexto antes de generar la respuesta.</p>
+      <img src="assets/stitch-vector-search.png" alt="Espacio vectorial semantico con clusters de documentos agrupados por similitud" class="img-full" width="860" height="486">
+      <p class="img-label">Espacio vectorial semantico: documentos agrupados por similitud de significado, no por palabras exactas</p>
+      <p>La clave de RAG es que los documentos no se buscan por palabras clave, sino por <strong>similitud semantica</strong>. Si un reclutador pregunta sobre experiencia con bases de datos distribuidas, el sistema recupera fragmentos sobre MongoDB, sharding, y replicas, aunque esas palabras exactas no esten en la pregunta.</p>
+    </section>
+
+    <section class="reveal">
+      <h2>Embeddings: Texto a Vectores</h2>
+      <p>Para calcular similitud semantica, representamos cada fragmento de texto como un <strong>vector numerico</strong>. Usamos <strong>sentence-transformers</strong> con el modelo <span class="code-inline">all-MiniLM-L6-v2</span>, que genera vectores de <strong>384 dimensiones</strong>.</p>
+      <div class="callout"><div class="callout-title">Por que all-MiniLM-L6-v2?</div><p>Modelo pequeno (~80MB) con excelente balance calidad/velocidad. No necesitamos los embeddings mas precisos del mundo, sino algo suficientemente bueno que funcione rapido en CPU.</p></div>
+      <p>Cada fragmento de la wiki se convierte en un vector de 384 dimensiones. La consulta del reclutador tambien se vectoriza. Luego calculamos la <strong>similitud coseno</strong> entre la consulta y todos los fragmentos.</p>
+    </section>
+
+    <section class="reveal">
+      <h2>Similitud Coseno</h2>
+      <p>Mide que tan similares son dos vectores en terminos de su <strong>direccion</strong>, ignorando magnitud. Va de -1 (opuestos) a 1 (identicos).</p>
+      <div class="formula">cos(theta) = (A . B) / (||A|| * ||B||)</div>
+      <ul>
+        <li><strong>0.8 - 1.0:</strong> Muy relevante, coincidencia semantica fuerte</li>
+        <li><strong>0.5 - 0.8:</strong> Relevante, relacion tematica clara</li>
+        <li><strong>0.3 - 0.5:</strong> Parcialmente relevante</li>
+        <li><strong>0.0 - 0.3:</strong> Poco o nada relevante</li>
+      </ul>
+      <p>Usamos un umbral de <span class="code-inline">0.35</span> para filtrar fragmentos irrelevantes.</p>
+    </section>
+
+    <section class="reveal">
+      <h2>Chunking por Headers Markdown</h2>
+      <p>La wiki del candidato son ~30 documentos Markdown con frontmatter YAML. Los dividimos en chunks:</p>
+      <ul>
+        <li><strong>Division por headers:</strong> Cada header Markdown (##, ###) inicia un nuevo chunk</li>
+        <li><strong>Maximo 400 palabras:</strong> Si un chunk excede 400 palabras, se divide mas</li>
+        <li><strong>Overlap de 50 palabras:</strong> Las 50 ultimas palabras del chunk anterior se repiten al inicio del siguiente</li>
+      </ul>
+      <div class="callout"><div class="callout-title">Por que overlap?</div><p>Sin overlap, una pregunta que cruza la division entre dos chunks perderia contexto en ambos. El overlap garantiza que la informacion en la frontera este representada en al menos uno de ellos.</p></div>
+    </section>
+
+    <section class="reveal">
+      <h2>Metadata del Frontmatter YAML</h2>
+      <p>Cada documento tiene frontmatter YAML con metadatos que se adjuntan a cada chunk:</p>
+      <div class="code-block" data-lang="yaml"><span class="pr">---</span>
+<span class="pr">type:</span> <span class="st">experiencia</span>
+<span class="pr">tags:</span> [<span class="st">python</span>, <span class="st">fastapi</span>, <span class="st">api</span>]
+<span class="pr">summary_1line:</span> <span class="st">Experiencia construyendo APIs con FastAPI</span>
+<span class="pr">---</span>
+<span class="cm"># Experiencia con APIs</span>
+<span class="cm">## FastAPI</span>
+He construido multiples APIs con FastAPI...</div>
+      <p>Estos metadatos habilitan dos funcionalidades criticas:</p>
+      <ul>
+        <li><strong>Filtrado previo por tipo:</strong> Si la query mapea a un tipo exacto (ej: "experiencia"), se filtran chunks de ese tipo antes de calcular similitud</li>
+        <li><strong>Entity boost:</strong> Chunks que mencionan la entidad preguntada reciben un boost de +0.15 en su score de similitud</li>
+      </ul>
+    </section>
+
+    <section class="reveal">
+      <h2>Query Expansion</h2>
+      <p>Antes de embeddear la consulta del reclutador, expandimos la query con sinonimos y terminos relacionados. Esto mejora la cobertura de recuperacion.</p>
+      <p>Por ejemplo, si el reclutador pregunta sobre "bases de datos", la query expandida podria incluir: "database", "SQL", "NoSQL", "MongoDB", "PostgreSQL". Esto permite recuperar fragmentos que usan esos terminos especificos aunque la pregunta sea mas general.</p>
+    </section>
+
+    <section class="reveal">
+      <h2>Persistencia de Embeddings</h2>
+      <p>Calcular embeddings es costoso (~50ms por chunk). Para evitar recalcular en cada arranque, <strong>persistimos los embeddings en disco</strong> usando archivos <span class="code-inline">.npz</span> (formato comprimido de NumPy).</p>
+      <p>La clave de invalidacion es un <strong>hash SHA256</strong> de todos los documentos Markdown. Si algun documento cambia, el hash cambia, y los embeddings se recomputan silenciosamente. Si nada cambia, se cargan directamente del disco.</p>
+      <div class="callout"><div class="callout-title">Invalidacion por Hash</div><p>Al iniciar el servidor, calculamos el SHA256 de la suma de todos los archivos .md de la wiki. Comparamos con el hash guardado. Si difiere, re-embeddeamos todo (~2-3 segundos). Si coincide, cargamos de disco (~0.3 segundos).</p></div>
+    </section>
+
+    <section class="reveal">
+      <h2>El Pipeline RAG Completo</h2>
+      <p>Resumiendo el flujo completo de una consulta RAG:</p>
+      <ol>
+        <li><strong>Query expansion:</strong> Se expanden sinonimos y terminos relacionados</li>
+        <li><strong>Filtrado por tipo:</strong> Si aplica, se filtran chunks por tipo de documento</li>
+        <li><strong>Embedding de la query:</strong> La consulta se convierte en vector de 384d</li>
+        <li><strong>Similitud coseno:</strong> Se comparan con todos los chunks de la wiki</li>
+        <li><strong>Entity boost:</strong> Se ajustan scores para entidades mencionadas</li>
+        <li><strong>Filtrado por umbral:</strong> Se descartan chunks con score &lt; 0.35</li>
+        <li><strong>Top-K selection:</strong> Se seleccionan los K chunks mas relevantes</li>
+        <li><strong>Context assembly:</strong> Se concatenan como contexto para el LLM</li>
+      </ol>
+    </section>
+
+  </main>
+
+  <footer class="footer">
+    <div class="footer-inner">
+      <div class="footer-col">
+        <p><strong>InterviewTTS</strong> &mdash; Proyecto de aprendizaje</p>
+        <p>Construido por <strong>Mikel</strong> como proyecto de portafolio en IA/ML.</p>
+      </div>
+      <div class="footer-col">
+        <p><a href="https://github.com/mikelrh-dev/liveInterviewRAG" target="_blank" rel="noopener">Ver repositorio en GitHub &rarr;</a></p>
+        <p>Stack: Python, FastAPI, Whisper, RAG, Pocket TTS</p>
+      </div>
+    </div>
+    <p class="footer-copy">Documento tecnico construido para fines educativos. 2025.</p>
+  </footer>
+  <script src="script.js"></script>
+</body>
+</html>

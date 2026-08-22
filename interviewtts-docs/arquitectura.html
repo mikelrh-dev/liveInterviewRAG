@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>01 Arquitectura — InterviewTTS</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;0,6..72,700;1,6..72,400&family=Source+Sans+3:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <nav class="nav" role="navigation" aria-label="Navegacion principal">
+    <div class="nav-inner">
+      <a href="index.html" class="nav-logo">InterviewTTS</a>
+      <ul class="nav-links">
+        <li><a href="index.html">00 Inicio</a></li>
+        <li><a href="arquitectura.html" class="active">01 Arquitectura</a></li>
+        <li><a href="whisper-stt.html">02 Whisper</a></li>
+        <li><a href="rag.html">03 RAG</a></li>
+        <li><a href="llm-prompting.html">04 LLM</a></li>
+        <li><a href="cache-latencia.html">05 Latencia</a></li>
+        <li><a href="despliegue.html">06 Despliegue</a></li>
+        <li><a href="aprendizajes.html">07 Aprendizajes</a></li>
+      </ul>
+    </div>
+  </nav>
+
+  <main class="main">
+    <header class="chapter-header">
+      <span class="chapter-num">Capitulo 01</span>
+      <h1 class="chapter-title">Arquitectura End-to-End</h1>
+      <p class="chapter-subtitle">El pipeline completo de voz: del microfono del navegador al audio sintetizado que responde a la pregunta del reclutador.</p>
+    </header>
+
+    <section class="reveal">
+      <h2>Vision General</h2>
+      <img src="assets/stitch-architecture-labeled.png" alt="Diagrama de arquitectura etiquetado: Browser envia audio a FastAPI, que orquesta Whisper STT, RAG con wiki del candidato, LLM para generar respuesta, y TTS para sintetizar voz de vuelta al navegador" class="img-full" width="860" height="486">
+      <p class="img-label">Arquitectura del sistema: Browser &rarr; FastAPI &rarr; Whisper &rarr; RAG+Wiki &rarr; LLM &rarr; TTS &rarr; SSE</p>
+
+      <p>El sistema se compone de <strong>cinco componentes principales</strong> orquestados por un servidor FastAPI. Cada componente tiene una responsabilidad clara y acotada, lo que facilita tanto el desarrollo independiente como la optimizacion de cada etapa del pipeline.</p>
+    </section>
+
+    <section class="reveal">
+      <h2>Flujo por Turno</h2>
+      <p>Cada interaccion sigue el mismo patron. Divide la conversacion en turnos, donde cada turno es un ciclo completo de procesamiento:</p>
+
+      <div class="pipeline-flow">
+        <div class="pipeline-step">
+          <span class="step-icon" aria-hidden="true">🎤</span>
+          <span class="step-label">Audio In</span>
+        </div>
+        <span class="pipeline-arrow" aria-hidden="true">&rarr;</span>
+        <div class="pipeline-step">
+          <span class="step-icon" aria-hidden="true">📝</span>
+          <span class="step-label">Whisper STT</span>
+        </div>
+        <span class="pipeline-arrow" aria-hidden="true">&rarr;</span>
+        <div class="pipeline-step">
+          <span class="step-icon" aria-hidden="true">🔍</span>
+          <span class="step-label">RAG Wiki</span>
+        </div>
+        <span class="pipeline-arrow" aria-hidden="true">&rarr;</span>
+        <div class="pipeline-step">
+          <span class="step-icon" aria-hidden="true">🧠</span>
+          <span class="step-label">LLM</span>
+        </div>
+        <span class="pipeline-arrow" aria-hidden="true">&rarr;</span>
+        <div class="pipeline-step">
+          <span class="step-icon" aria-hidden="true">🔊</span>
+          <span class="step-label">TTS</span>
+        </div>
+        <span class="pipeline-arrow" aria-hidden="true">&rarr;</span>
+        <div class="pipeline-step">
+          <span class="step-icon" aria-hidden="true">📡</span>
+          <span class="step-label">SSE</span>
+        </div>
+      </div>
+
+      <ol>
+        <li><strong>Captura de audio:</strong> El navegador graba audio del microfono y lo envia como WAV/PCM al servidor.</li>
+        <li><strong>STT (Speech-to-Text):</strong> Faster-Whisper transcribe el audio a texto en espanol.</li>
+        <li><strong>RAG (Retrieval-Augmented Generation):</strong> Se busca contexto relevante en la wiki del candidato (~30 documentos Markdown con frontmatter YAML).</li>
+        <li><strong>LLM:</strong> Un modelo de lenguaje genera una respuesta informada usando el contexto recuperado.</li>
+        <li><strong>TTS (Text-to-Speech):</strong> Pocket TTS sintetiza la respuesta en audio.</li>
+        <li><strong>SSE (Server-Sent Events):</strong> El audio se envia de vuelta al navegador, token por token, para reproducirse en tiempo real.</li>
+      </ol>
+    </section>
+
+    <section class="reveal">
+      <h2>Por que SSE y no WebSockets</h2>
+      <img src="assets/stitch-pipeline-infographic.png" alt="Infografia del pipeline STT a LLM a TTS mostrando el flujo de datos unidireccional del servidor al cliente" class="img-full" width="860" height="486">
+      <p class="img-label">Pipeline STT &rarr; LLM &rarr; TTS con streaming unidireccional</p>
+
+      <p>Esta fue una de las decisiones arquitectonicas mas importantes. Los WebSockets permiten comunicacion bidireccional, pero en nuestro caso el flujo es <strong>fundamentalmente unidireccional</strong> durante la fase de respuesta: el servidor genera tokens y los envia al cliente.</p>
+
+      <div class="callout">
+        <div class="callout-title">Decision de Diseno</div>
+        <p>SSE es mas simple, se integra nativamente con HTTP, y funciona detras de proxies y load balancers sin configuracion adicional. Para nuestro caso de uso — streaming de audio generado — es la herramienta correcta.</p>
+      </div>
+
+      <p><strong>Ventajas de SSE para nuestro caso:</strong></p>
+      <ul>
+        <li><strong>Simplicidad:</strong> No requiere handshake como WebSockets. Una conexion HTTP simple.</li>
+        <li><strong>Compatibilidad:</strong> Funciona con proxies HTTP estandar, Nginx, y CDNs sin configuracion especial.</li>
+        <li><strong>Auto-reconexion:</strong> El navegador reconecta automaticamente si la conexion se cae.</li>
+        <li><strong>Direccion unidireccional:</strong> El cliente envia la pregunta via POST, el servidor responde via SSE. No necesitamos bidireccionalidad.</li>
+      </ul>
+
+      <p>Cuando el cliente necesita enviar algo (una nueva pregunta), simplemente hace una nueva peticion POST. Cada turno es independiente.</p>
+    </section>
+
+    <section class="reveal">
+      <h2>FastAPI como Orquestador</h2>
+      <p>FastAPI no es solo un framework HTTP aqui — es el <strong>orquestador central</strong> que coordina todos los componentes. Gracias a su soporte nativo para <code class="code-inline">async/await</code> y <code class="code-inline">StreamingResponse</code>, podemos:</p>
+      <ul>
+        <li>Recibir audio del navegador como upload</li>
+        <li>Ejecutar Whisper STT en un thread pool separado (para no bloquear el event loop)</li>
+        <li>Invocar el pipeline RAG para recuperar contexto</li>
+        <li>Hacer streaming token-by-token del LLM al TTS</li>
+        <li>Enviar el audio resultante via SSE</li>
+      </ul>
+
+      <p>Todo esto manteniendo la concurrencia y sin bloquear el servidor para otros clientes.</p>
+    </section>
+
+    <section class="reveal">
+      <h2>El Rol del Frontend</h2>
+      <p>El navegador no es un simple reproductor. El frontend maneja:</p>
+      <ul>
+        <li><strong>Grabacion de audio:</strong> MediaRecorder API del navegador</li>
+        <li><strong>Envio de audio:</strong> POST multipart con el audio capturado</li>
+        <li><strong>Recepcion SSE:</strong> Escucha tokens de audio generados</li>
+        <li><strong>Reproduccion:</strong> AudioContext para reproducir los chunks de audio</li>
+        <li><strong>Avatar audio-reactivo:</strong> Un avatar que reacciona a la amplitud del audio</li>
+      </ul>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="footer-inner">
+      <div class="footer-col">
+        <p><strong>InterviewTTS</strong> — Proyecto de aprendizaje</p>
+        <p>Construido por <strong>Mikel</strong> como proyecto de portafolio en IA/ML.</p>
+      </div>
+      <div class="footer-col">
+        <p><a href="https://github.com/mikelrh-dev/liveInterviewRAG" target="_blank" rel="noopener">Ver repositorio en GitHub &rarr;</a></p>
+        <p>Stack: Python, FastAPI, Whisper, RAG, Pocket TTS</p>
+      </div>
+    </div>
+    <p class="footer-copy">Documento tecnico construido para fines educativos. 2025.</p>
+  </footer>
+
+  <script src="script.js"></script>
+</body>
+</html>

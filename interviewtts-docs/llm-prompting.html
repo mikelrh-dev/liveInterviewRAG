@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>04 LLM y Prompt Engineering - InterviewTTS</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;0,6..72,700;1,6..72,400&family=Source+Sans+3:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <nav class="nav" role="navigation" aria-label="Navegacion principal">
+    <div class="nav-inner">
+      <a href="index.html" class="nav-logo">InterviewTTS</a>
+      <ul class="nav-links">
+        <li><a href="index.html">00 Inicio</a></li>
+        <li><a href="arquitectura.html">01 Arquitectura</a></li>
+        <li><a href="whisper-stt.html">02 Whisper</a></li>
+        <li><a href="rag.html">03 RAG</a></li>
+        <li><a href="llm-prompting.html" class="active">04 LLM</a></li>
+        <li><a href="cache-latencia.html">05 Latencia</a></li>
+        <li><a href="despliegue.html">06 Despliegue</a></li>
+        <li><a href="aprendizajes.html">07 Aprendizajes</a></li>
+      </ul>
+    </div>
+  </nav>
+
+  <main class="main">
+    <header class="chapter-header">
+      <span class="chapter-num">Capitulo 04</span>
+      <h1 class="chapter-title">LLM y Prompt Engineering</h1>
+      <p class="chapter-subtitle">Como reduje el system prompt de 1200 a 600 caracteres, reglas anti-razonamiento, y orquestacion multi-proveedor con degradacion elegante.</p>
+    </header>
+
+    <section class="reveal">
+      <h2>El System Prompt</h2>
+      <p>El system prompt es la instruccion fundamental que define como el LLM responde. Es el equivalente a un briefing para un empleado: le dice quien es, que debe hacer, y que no debe hacer.</p>
+      <p>Empezamos con un prompt de ~1200 caracteres. Tras iterar, lo redujimos a <strong>~600 caracteres</strong>. Cada caracter cuenta porque se envia en cada turno, y afecta directamente la latencia y el costo.</p>
+    </section>
+
+    <section class="reveal">
+      <h2>Version Final del System Prompt</h2>
+      <div class="code-block" data-lang="python">system_prompt = <span class="st">"""Eres un clone digital de un candidato tecnico.
+Responde como el candidato, no como un asistente.
+Responde directamente, no expongas razonamiento.
+Se conciso pero completo. Maximo 2-3 parrafos.
+Usa terminologia tecnica cuando sea apropiado.
+Si no sabes algo, di que no tienes esa informacion
+en tu perfil. No inventes experiencia."""</span></div>
+      <p>Note las reglas criticas:</p>
+      <ul>
+        <li><strong>"Responde directamente, no expongas razonamiento":</strong> Impide que el LLM diga "Voy a analizar tu pregunta..." o "Basandome en mi experiencia..."</li>
+        <li><strong>"Maximo 2-3 parrafos":</strong> Limita la longitud para mantener respuestas conversacionales</li>
+        <li><strong>"No inventes experiencia":</strong> La linea mas importante para la integridad del sistema</li>
+      </ul>
+    </section>
+
+    <section class="reveal">
+      <h2>Orquestacion Multi-Proveedor</h2>
+      <p>Usamos dos proveedores de LLM en cascada:</p>
+      <ol>
+        <li><strong>Google AI (Gemini)</strong> como proveedor primario</li>
+        <li><strong>OpenRouter</strong> como fallback automatico</li>
+      </ol>
+      <p>Si Google AI falla (rate limit, timeout, error), el sistema automaticamente intenta con OpenRouter. El usuario nunca nota la conmutacion.</p>
+      <div class="callout"><div class="callout-title">Degradacion Elegante</div><p>El patron es simple: intenta el proveedor primario, y si falla, intenta el secundario. No hay retry infinito, no hay circuit breaker complejo. Un solo fallback con timeout de 10 segundos es suficiente para nuestro caso de uso.</p></div>
+    </section>
+
+    <section class="reveal">
+      <h2>Streaming Token a Token</h2>
+      <p>En lugar de esperar a que el LLM genere la respuesta completa, hacemos <strong>streaming token a token</strong>. Cada token generado se envia inmediatamente al TTS para sintetizar.</p>
+      <p>Esto reduce la latencia percibida dramaticamente: el usuario empieza a escuchar la respuesta antes de que se haya completado la generacion.</p>
+      <div class="code-block" data-lang="python"><span class="cm"># Streaming del LLM</span>
+<span class="kw">async for</span> chunk <span class="kw">in</span> llm.stream(prompt, system=system_prompt):
+    audio = tts.synthesize(chunk.text)
+    <span class="kw">yield</span> audio  <span class="cm"># Envia inmediatamente via SSE</span></div>
+    </section>
+
+    <section class="reveal">
+      <h2>Parametros de Generacion</h2>
+      <div class="table-wrapper">
+        <table>
+          <thead><tr><th>Parametro</th><th>Valor</th><th>Por que</th></tr></thead>
+          <tbody>
+            <tr><td><span class="code-inline">temperature</span></td><td>0.7</td><td>Balance entre creatividad y coherencia. 0.0 es demasiado robotico, 1.0 es demasiado creativo</td></tr>
+            <tr><td><span class="code-inline">max_tokens</span></td><td>500</td><td>Limita respuestas largas. En una conversacion de voz, las respuestas de 2-3 parrafos son ideales</td></tr>
+            <tr><td><span class="code-inline">top_p</span></td><td>0.9</td><td>Nucleus sampling: considera el 90% mas probable de tokens, descartando los extremos</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="reveal">
+      <h2>Lecciones de Prompt Engineering</h2>
+      <ul>
+        <li><strong>Menos es mas:</strong> Un prompt corto y preciso genera mejores resultados que uno largo y ambiguo</li>
+        <li><strong>Reglas negativas funcionan:</strong> Decir "no hagas X" es mas efectivo que describir implicitamente que hacer</li>
+        <li><strong>El contexto del RAG importa mas que el prompt:</strong> Un buen contexto recuperado hace que el prompt sea casi irrelevante</li>
+        <li><strong>Testea con preguntas reales:</strong> Los prompts que parecen perfectos en papel fallan con preguntas del mundo real</li>
+      </ul>
+    </section>
+
+  </main>
+
+  <footer class="footer">
+    <div class="footer-inner">
+      <div class="footer-col">
+        <p><strong>InterviewTTS</strong> &mdash; Proyecto de aprendizaje</p>
+        <p>Construido por <strong>Mikel</strong> como proyecto de portafolio en IA/ML.</p>
+      </div>
+      <div class="footer-col">
+        <p><a href="https://github.com/mikelrh-dev/liveInterviewRAG" target="_blank" rel="noopener">Ver repositorio en GitHub &rarr;</a></p>
+        <p>Stack: Python, FastAPI, Whisper, RAG, Pocket TTS</p>
+      </div>
+    </div>
+    <p class="footer-copy">Documento tecnico construido para fines educativos. 2025.</p>
+  </footer>
+  <script src="script.js"></script>
+</body>
+</html>

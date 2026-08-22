@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>07 Aprendizajes y Reflexion - InterviewTTS</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;0,6..72,700;1,6..72,400&family=Source+Sans+3:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <nav class="nav" role="navigation" aria-label="Navegacion principal">
+    <div class="nav-inner">
+      <a href="index.html" class="nav-logo">InterviewTTS</a>
+      <ul class="nav-links">
+        <li><a href="index.html">00 Inicio</a></li>
+        <li><a href="arquitectura.html">01 Arquitectura</a></li>
+        <li><a href="whisper-stt.html">02 Whisper</a></li>
+        <li><a href="rag.html">03 RAG</a></li>
+        <li><a href="llm-prompting.html">04 LLM</a></li>
+        <li><a href="cache-latencia.html">05 Latencia</a></li>
+        <li><a href="despliegue.html">06 Despliegue</a></li>
+        <li><a href="aprendizajes.html" class="active">07 Aprendizajes</a></li>
+      </ul>
+    </div>
+  </nav>
+
+  <main class="main">
+    <header class="chapter-header">
+      <span class="chapter-num">Capitulo 07</span>
+      <h1 class="chapter-title">Aprendizajes y Reflexion</h1>
+      <p class="chapter-subtitle">Lo que aprendi construyendo esto: FastAPI async, Docker, RAG desde cero, TDD con 155+ tests, y decisiones de producto bajo restricciones.</p>
+    </header>
+
+    <section class="reveal">
+      <h2>FastAPI Async Patterns</h2>
+      <p>FastAPI no es solo un framework HTTP. Su soporte nativo para <strong>async/await</strong> y <code class="code-inline">StreamingResponse</code> lo convierte en un orquestador ideal para pipelines de IA.</p>
+      <p>Lo que aprendi:</p>
+      <ul>
+        <li><strong>async no es magia:</strong> Si tu componente bloquea (como Whisper en CPU), necesitas <code class="code-inline">run_in_executor</code> para no bloquear el event loop</li>
+        <li><strong>StreamingResponse</strong> es perfecto para SSE: yields tokens a medida que se generan</li>
+        <li><strong>Background tasks</strong> sirven para invalidar caches sin bloquear la respuesta al cliente</li>
+      </ul>
+    </section>
+
+    <section class="reveal">
+      <h2>Docker por Prueba y Error</h2>
+      <p>Docker fue una de las partes mas frustrantes y formativas del proyecto. El problema: <strong>ARM64</strong>. Muchas imagenes Docker no estan compiladas para ARM64, y las que estan pueden tener problemas sutiles.</p>
+      <p>Aprendi a:</p>
+      <ul>
+        <li>Construir imagenes multi-arch con <code class="code-inline">docker buildx</code></li>
+        <li>Usar <code class="code-inline">python:3.11-slim</code> en lugar de imagenes full para reducir tamano</li>
+        <li>Montar volumes para embeddings persistidos</li>
+        <li>Manejar dependencias del sistema (libros, codecs) que varian entre arquitecturas</li>
+      </ul>
+    </section>
+
+    <section class="reveal">
+      <h2>Arquitectura RAG Desde Cero</h2>
+      <p>Antes de este proyecto, RAG era solo un concepto que habia leido. Ahora lo entiendo como un <strong>sistema de ingenieria</strong> con componentes concretos:</p>
+      <ul>
+        <li><strong>Chunking:</strong> No es trivial. La estrategia de division afecta directamente la calidad de recuperacion</li>
+        <li><strong>Embeddings:</strong> Elegir el modelo correcto importa. all-MiniLM-L6-v2 es el sweet spot para CPU</li>
+        <li><strong>Metadata:</strong> El frontmatter YAML es poderoso para filtrado y boost</li>
+        <li><strong>Persistencia:</strong> Calcular embeddings es costoso; persistirlos en disco es obligatorio</li>
+        <li><strong>Invalidacion:</strong> SHA256 de documentos es simple y efectivo</li>
+      </ul>
+    </section>
+
+    <section class="reveal">
+      <h2>TDD: 155+ Tests</h2>
+      <p>El proyecto tiene <strong>155+ tests</strong> siguiendo el ciclo estricto: <strong>rojo - verde - refactor</strong>.</p>
+      <ul>
+        <li><strong>Rojo:</strong> Escribo el test primero. Falla porque la funcionalidad no existe.</li>
+        <li><strong>Verde:</strong> Implemento lo minimo necesario para que pase.</li>
+        <li><strong>Refactor:</strong> Limpio el codigo sin cambiar el comportamiento.</li>
+      </ul>
+      <p>Lo que aprendi: TDD no es sobre tests. Es sobre <strong>diseñar antes de implementar</strong>. Cada test es un mini-diseno de como deberia funcionar el codigo.</p>
+      <div class="callout"><div class="callout-title">Disciplina TDD</div><p>La tentacion de "escribir el codigo primero y los tests despues" es constante. Pero cada vez que cedi, el codigo resultante era peor: mas acoplado, menos claro, mas dificil de cambiar. TDD fuerza una separation of concerns natural.</p></div>
+    </section>
+
+    <section class="reveal">
+      <h2>Orquestacion Multi-Proveedor</h2>
+      <p>Diseñar un sistema que funcione con multiples proveedores de LLM (Google AI, OpenRouter) me enseno sobre <strong>abstraccion y degradacion elegante</strong>.</p>
+      <p>El patron es simple pero poderoso: un adaptador por proveedor, una interfaz comun, y un fallback automatico. Si el primario falla, el secundario toma el control sin que el usuario note nada.</p>
+    </section>
+
+    <section class="reveal">
+      <h2>SSE vs WebSockets</h2>
+      <p>Elegir SSE sobre WebSockets fue una decision basada en <strong>analisis del caso de uso</strong>, no en preferencia personal.</p>
+      <p>WebSockets son perfectos para chat bidireccional. Pero nuestro flujo es: cliente envia audio (POST), servidor responde con streaming de audio (SSE). Es fundamentalmente unidireccional durante la fase de respuesta. SSE es la herramienta correcta.</p>
+    </section>
+
+    <section class="reveal">
+      <h2>OpenSpec: Spec-Driven Development</h2>
+      <p>Usar OpenSpec para documentar decisiones arquitectonicas antes de implementar cambio la forma en que trabajo. Escribir que voy a hacer <strong>antes</strong> de hacerlo me obliga a pensar en edge cases, tradeoffs, y consecuencias.</p>
+      <p>Las specs no son burocracia. Son <strong>contratos con mi futuro yo</strong>.</p>
+    </section>
+
+    <section class="reveal">
+      <h2>Decisiones de Producto Bajo Restricciones</h2>
+      <p>Las mejores lecciones vinieron de las restricciones:</p>
+      <ul>
+        <li><strong>$0/mes:</strong> Me obligo a buscar alternativas open source y a optimizar lo que ya tenia</li>
+        <li><strong>Sin GPU:</strong> Me enseño a medir y optimizar cada milisegundo del pipeline</li>
+        <li><strong>ARM64:</strong> Me expuso a problemas reales de compatibilidad entre arquitecturas</li>
+        <li><strong>Solo CPU:</strong> Me mostro que la ingenieria correcta puede compensar hardware limitado</li>
+      </ul>
+      <p>Las restricciones no son enemigas. Son <strong>maestras</strong>. Te fuerzan a ser creativo, a entender realmente los sistemas con los que trabajas, y a tomar decisiones informadas en lugar de random.</p>
+    </section>
+
+  </main>
+
+  <footer class="footer">
+    <div class="footer-inner">
+      <div class="footer-col">
+        <p><strong>InterviewTTS</strong> &mdash; Proyecto de aprendizaje</p>
+        <p>Construido por <strong>Mikel</strong> como proyecto de portafolio en IA/ML.</p>
+      </div>
+      <div class="footer-col">
+        <p><a href="https://github.com/mikelrh-dev/liveInterviewRAG" target="_blank" rel="noopener">Ver repositorio en GitHub &rarr;</a></p>
+        <p>Stack: Python, FastAPI, Whisper, RAG, Pocket TTS</p>
+      </div>
+    </div>
+    <p class="footer-copy">Documento tecnico construido para fines educativos. 2025.</p>
+  </footer>
+  <script src="script.js"></script>
+</body>
+</html>
