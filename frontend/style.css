@@ -889,13 +889,22 @@ main {
     /* PR #2 will implement mobile slide-in */
 }
 
+#mobile-end-btn { display: none; }
+
 /* ─── Mobile (≤768px) ─── */
 
 @media (max-width: 768px) {
-    --app-height: 100dvh;
+    :root { --app-height: 100dvh; }
 
     .main-grid { grid-template-columns: 1fr; }
     #sidebar { display: none; }
+
+    /* Header: reclaim horizontal space on narrow screens */
+    header { padding-left: var(--space-md); padding-right: var(--space-md); }
+    .header-right { gap: var(--space-sm); }
+    .header-title { font-size: 0.85rem; }
+    .latency { display: none; }
+    #context-toggle { padding: 6px 10px; }
 
     #context-panel {
         position: fixed;
@@ -928,9 +937,13 @@ main {
     }
 
     #avatar-wrapper {
-        max-width: min(300px, 90vw);
+        width: min(240px, 80vw);
+        height: min(240px, 80vw);
         margin: 0 auto;
     }
+
+    /* Free vertical space so the conversation panel stays usable on small phones */
+    #waveform { display: none; }
 
     #mobile-end-btn {
         display: flex;
@@ -958,8 +971,8 @@ main {
     button, .sidebar-end-btn, #btn-mic { user-select: none; }
 }
 
-#mobile-end-btn { display: none; }
-
 @supports not (height: 100dvh) {
-    @media (max-width: 768px) { --app-height: 100vh; }
+    @media (max-width: 768px) {
+        :root { --app-height: 100vh; }
+    }
 }
