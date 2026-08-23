@@ -32,6 +32,22 @@ from backend.prompts.candidate import build_system_prompt, sanitize_for_tts
 
 logger = logging.getLogger(__name__)
 
+
+# ─── Audio extension mapping ────────────────────────────
+_CONTENT_TYPE_EXT = {
+    "audio/mp4": ".m4a",
+    "audio/webm": ".webm",
+}
+
+
+def _audio_extension(content_type: str) -> str:
+    """Derive temp-file extension from MIME content_type."""
+    if not content_type:
+        return ".webm"
+    # Strip parameters (e.g. "audio/mp4; codecs=mp4a.40.2") and normalize case
+    base_type = content_type.split(";")[0].strip().lower()
+    return _CONTENT_TYPE_EXT.get(base_type, ".webm")
+
 # ─── SSE format helper ────────────────────────────────────
 def sse_format(event: str, data: dict) -> str:
     """Format as Server-Sent Event data line.
@@ -385,7 +401,8 @@ async def send_message(conversation_id: str, audio: UploadFile = File(...)):
     if len(audio_bytes) > MAX_AUDIO_SIZE:
         raise HTTPException(status_code=422, detail="Audio too long (max 30 seconds)")
 
-    temp_audio = config.AUDIO_DIR / f"input_{conversation_id}_{uuid.uuid4().hex}.webm"
+    ext = _audio_extension(audio.content_type)
+    temp_audio = config.AUDIO_DIR / f"input_{conversation_id}_{uuid.uuid4().hex}{ext}"
     temp_audio.write_bytes(audio_bytes)
 
     _t = [time.time()]  # t0
@@ -512,7 +529,8 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
     if len(audio_bytes) > MAX_AUDIO_SIZE:
         raise HTTPException(status_code=422, detail="Audio too long (max 30 seconds)")
 
-    temp_audio = config.AUDIO_DIR / f"input_{conversation_id}_{uuid.uuid4().hex}.webm"
+    ext = _audio_extension(audio.content_type)
+    temp_audio = config.AUDIO_DIR / f"input_{conversation_id}_{uuid.uuid4().hex}{ext}"
     temp_audio.write_bytes(audio_bytes)
 
     async def event_generator():

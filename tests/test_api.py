@@ -532,6 +532,58 @@ class TestCacheRagEnrichment:
         assert turns[0]["chunks_used"][0]["source"] == "wiki/interviewtts.md"
 
 
+class TestMp4UploadAcceptance:
+    """Tests for mp4/m4a audio upload support (mobile codec)."""
+
+    def test_send_message_mp4_audio(self, client, mock_services):
+        """POST with audio/mp4 content type returns 200."""
+        conv = client.post("/api/conversation")
+        conv_id = conv.json()["conversation_id"]
+
+        response = client.post(
+            f"/api/conversation/{conv_id}/message",
+            files={"audio": ("test.m4a", b"fake-audio-data", "audio/mp4")},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert "user_text" in data
+        assert "response_text" in data
+
+    def test_send_message_stream_mp4_audio(self, client, mock_services):
+        """POST with audio/mp4 to stream endpoint returns 200."""
+        conv = client.post("/api/conversation")
+        conv_id = conv.json()["conversation_id"]
+
+        with client.stream(
+            "POST",
+            f"/api/conversation/{conv_id}/message/stream",
+            files={"audio": ("test.m4a", b"fake-audio-data", "audio/mp4")},
+        ) as response:
+            assert response.status_code == 200
+
+    def test_upload_saves_with_correct_extension(self, client, mock_services):
+        """Temp file extension matches content_type: .m4a for audio/mp4."""
+        conv = client.post("/api/conversation")
+        conv_id = conv.json()["conversation_id"]
+
+        original_write = Path.write_bytes
+        captured_paths = []
+
+        def capture_write(self, data):
+            captured_paths.append(str(self))
+            return original_write(self, data)
+
+        with patch.object(Path, "write_bytes", capture_write):
+            client.post(
+                f"/api/conversation/{conv_id}/message",
+                files={"audio": ("test.m4a", b"fake-audio-data", "audio/mp4")},
+            )
+
+        temp_files = [p for p in captured_paths if "input_" in p]
+        assert len(temp_files) == 1
+        assert temp_files[0].endswith(".m4a"), f"Expected .m4a, got: {temp_files[0]}"
+
+
 class TestStreamingCacheRagEnrichment:
     """Cache hits in /message/stream are enriched with RAG context."""
 

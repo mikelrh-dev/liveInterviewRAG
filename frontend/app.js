@@ -26,6 +26,32 @@ let analyserNode = null;
 let mediaStream = null;
 let audioBlocked = false;
 
+let selectedMimeType = '';
+
+function chooseMimeType() {
+    const candidates = [
+        'audio/webm;codecs=opus',
+        'audio/webm',
+        'audio/mp4;codecs=mp4a.40.2',
+        'audio/mp4',
+    ];
+    for (const mime of candidates) {
+        if (MediaRecorder.isTypeSupported(mime)) {
+            selectedMimeType = mime;
+            return;
+        }
+    }
+    // No supported codec — leave selectedMimeType empty so callers can
+    // surface a browser-compatibility error instead of a permission one.
+    selectedMimeType = '';
+}
+
+async function ensureAudioContext() {
+    if (audioContext && audioContext.state === 'suspended') {
+        await audioContext.resume();
+    }
+}
+
 // TTS output analyser — drives fake-sync of talking video
 let ttsAnalyser = null;
 let ttsVolumeBuffer = null;
@@ -188,9 +214,40 @@ function init() {
         });
     }
 
+    // Mobile END button — same logic as sidebar button
+    const mobileEndBtn = document.getElementById('mobile-end-btn');
+    if (mobileEndBtn) {
+        mobileEndBtn.addEventListener('click', () => {
+            if (isInterviewActive) {
+                stopInterview();
+                setText('sidebar-session-id', 'ID: ---');
+                setText('sidebar-turns', 'Turnos: 0');
+                sessionStartTime = null;
+                startSessionTimer();
+            }
+        });
+    }
+
+    // Debounced resize for Three.js avatar
+    let resizeTimer = null;
+    window.addEventListener('resize', () => {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(() => {
+            if (window.AvatarOrb && window.AvatarOrb.isInitialized()) {
+                const wrapper = document.getElementById('avatar-wrapper');
+                if (wrapper) {
+                    window.AvatarOrb.resize(wrapper.clientWidth, wrapper.clientHeight);
+                }
+            }
+        }, 250);
+    });
+
     // Context panel toggle
     contextToggle.addEventListener('click', toggleContextPanel);
-    contextClose.addEventListener('click', () => contextPanel.classList.remove('open'));
+    contextClose.addEventListener('click', () => {
+        contextPanel.classList.remove('open');
+        document.body.classList.remove('context-open');
+    });
 
     // Close context panel on outside click
     document.addEventListener('click', (e) => {
@@ -199,6 +256,7 @@ function init() {
             e.target !== contextToggle &&
             !contextToggle.contains(e.target)) {
             contextPanel.classList.remove('open');
+            document.body.classList.remove('context-open');
         }
     });
 
@@ -307,6 +365,11 @@ function initAvatarOrb() {
 
     const success = window.AvatarOrb.init();
     if (success) {
+        // Fix initial render on mobile — measure wrapper and resize
+        const wrapper = document.getElementById('avatar-wrapper');
+        if (wrapper) {
+            window.AvatarOrb.resize(wrapper.clientWidth, wrapper.clientHeight);
+        }
         startVisualizationLoop();
     }
 }
@@ -516,6 +579,8 @@ function startListening() {
 
 async function startRecording() {
     try {
+        await ensureAudioContext();
+
         if (!mediaStream || mediaStream.getTracks().some(t => t.readyState === 'ended')) {
             mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
         }
@@ -528,9 +593,18 @@ async function startRecording() {
 
         audioChunks = [];
 
+        if (!selectedMimeType) chooseMimeType();
+
+        if (!selectedMimeType) {
+            console.error('No supported audio codec for MediaRecorder');
+            setStatus('Tu navegador no soporta grabación de audio compatible — usá Chrome o Safari actualizado', true);
+            setState('idle');
+            mediaStream.getTracks().forEach(t => t.stop());
+            return;
+        }
+
         mediaRecorder = new MediaRecorder(mediaStream, {
-            mimeType: MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-                ? 'audio/webm;codecs=opus' : 'audio/webm',
+            mimeType: selectedMimeType,
             audioBitsPerSecond: 128000,
         });
 
@@ -670,14 +744,14 @@ function tryPlayNextChunk() {
         tryPlayNextChunk();
         checkAllDone();
     }, { once: true });
-    audio.play().catch(e => {
+    ensureAudioContext().then(() => audio.play().catch(e => {
         console.error('Audio play() failed:', e);
         nextChunkId++;
         isAudioPlaying = false;
         removeAudioIndicator();
         tryPlayNextChunk();
         checkAllDone();
-    });
+    }));
 }
 
 function checkAllDone() {
@@ -720,9 +794,10 @@ async function processRecordingStream() {
     currentCandidateDiv = null;
     showTyping();
 
-    const blob = new Blob(audioChunks, { type: 'audio/webm' });
+    const blob = new Blob(audioChunks, { type: selectedMimeType || 'audio/webm' });
+            const ext = (selectedMimeType || '').includes('mp4') ? '.m4a' : '.webm';
     const fd = new FormData();
-    fd.append('audio', blob, 'recording.webm');
+    fd.append('audio', blob, `recording${ext}`);
 
     let fullText = '';
     let lastTurnNumber = -1;
@@ -848,7 +923,8 @@ function appendTypingText(messageDiv, text) {
 // ─── Context panel ─────────────────────────────────────
 
 function toggleContextPanel() {
-    contextPanel.classList.toggle('open');
+    const isOpen = contextPanel.classList.toggle('open');
+    document.body.classList.toggle('context-open', isOpen);
 }
 
 async function fetchContext(turnNumber) {
@@ -867,6 +943,7 @@ async function fetchContext(turnNumber) {
         // Auto-close after 5s
         setTimeout(() => {
             contextPanel.classList.remove('open');
+            document.body.classList.remove('context-open');
         }, 5000);
     } catch (e) {
         // Silently fail — interview unaffected

@@ -44,6 +44,7 @@
     --space-xl: 32px;
 
     /* Layout */
+    --app-height: 100vh;
     --header-h: 64px;
     --sidebar-w: 320px;
     --context-w: 320px;
@@ -134,7 +135,7 @@ body {
 .app-grid {
     display: flex;
     flex-direction: column;
-    height: 100vh;
+    height: var(--app-height);
     position: relative;
     z-index: 1;
 }
@@ -886,4 +887,79 @@ main {
 
 .context-panel.open {
     /* PR #2 will implement mobile slide-in */
+}
+
+/* ─── Mobile (≤768px) ─── */
+
+@media (max-width: 768px) {
+    --app-height: 100dvh;
+
+    .main-grid { grid-template-columns: 1fr; }
+    #sidebar { display: none; }
+
+    #context-panel {
+        position: fixed;
+        top: 0;
+        right: -100%;
+        height: var(--app-height);
+        width: 85vw;
+        transition: transform 0.3s ease;
+        z-index: var(--z-context-mobile);
+    }
+
+    .context-panel.open { transform: translateX(-100%); }
+
+    body.context-open {
+        overflow: hidden; /* iOS momentum-scroll lock while overlay is open */
+    }
+
+    body.context-open::before {
+        content: '';
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.4);
+        z-index: calc(var(--z-context-mobile) - 1);
+    }
+
+    /* Touch target ≥44×44 for the small close icon on mobile */
+    #context-close {
+        min-width: 44px;
+        min-height: 44px;
+    }
+
+    #avatar-wrapper {
+        max-width: min(300px, 90vw);
+        margin: 0 auto;
+    }
+
+    #mobile-end-btn {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 44px;
+        min-height: 44px;
+        background: transparent;
+        border: 1px solid var(--hazard-red);
+        color: var(--hazard-red);
+        font-family: var(--font-mono);
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        cursor: pointer;
+        transition: all 0.2s ease;
+    }
+
+    #mobile-end-btn:hover { background: rgba(255, 59, 48, 0.1); }
+
+    header { padding-top: env(safe-area-inset-top); }
+    footer, .app-grid > :last-child { padding-bottom: env(safe-area-inset-bottom); }
+
+    * { touch-action: manipulation; }
+    button, .sidebar-end-btn, #btn-mic { user-select: none; }
+}
+
+#mobile-end-btn { display: none; }
+
+@supports not (height: 100dvh) {
+    @media (max-width: 768px) { --app-height: 100vh; }
 }
