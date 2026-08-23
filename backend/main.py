@@ -418,19 +418,14 @@ async def send_message(conversation_id: str, audio: UploadFile = File(...)):
         if not user_text.strip():
             raise HTTPException(status_code=422, detail="No speech detected in audio")
 
-        # Step 2: Response cache — enrich cached answers with RAG context
+        # Step 2: Response cache — instant pre-generated answer in candidate's voice.
+        # RAG chunks are still collected for the context panel but NEVER spoken:
+        # appending raw context here made TTS read "[Source: ...]" metadata aloud.
         cached_response = get_cached_response(user_text)
         if cached_response is not None:
             logger.info("Cache hit for: %s", user_text)
-            # Run RAG with fewer chunks (2 instead of 3) to enrich the cached answer
-            rag_context = rag_pipeline.get_context_string(user_text, top_k=2)
+            response_text = cached_response
             _t.append(time.time())
-
-            if rag_context:
-                response_text = cached_response + "\n\n" + rag_context
-                logger.info("Cache enriched with RAG context (%d chars)", len(rag_context))
-            else:
-                response_text = cached_response
             _t.append(time.time())  # LLM marker (skipped)
         else:
             # Step 2: RAG — retrieve relevant context
@@ -473,9 +468,9 @@ async def send_message(conversation_id: str, audio: UploadFile = File(...)):
 
         # Store message in conversation with turn tracking
         turn_number = len(conversations[conversation_id].get("turns", []))
-        # Track RAG chunks when enrichment was applied (cache hit with RAG)
+        # Track RAG chunks for the context panel on cache hits (tracked, never spoken)
         chunks_for_turn = []
-        if cached_response is not None and rag_context:
+        if cached_response is not None:
             chunks_for_turn = rag_pipeline.get_chunks_with_scores(user_text, top_k=2)
         new_turn = {
             "n": turn_number,
@@ -564,18 +559,11 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
                 })
                 return
 
-            # ── Step 2: Response cache — enrich cached answers with RAG context ──
+            # ── Step 2: Response cache — instant answer in candidate's own voice ──
             cached_response = get_cached_response(user_text)
             if cached_response is not None:
                 logger.info("Cache hit (streaming) for: %s", user_text)
-
-                # Run RAG with fewer chunks to enrich the cached answer
-                rag_context = rag_pipeline.get_context_string(user_text, top_k=2)
-                if rag_context:
-                    response_text = cached_response + "\n\n" + rag_context
-                    logger.info("Cache enriched with RAG context (%d chars)", len(rag_context))
-                else:
-                    response_text = cached_response
+                response_text = cached_response
 
                 yield sse_format("token", {"text": response_text})
 
@@ -591,7 +579,7 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
                     return
 
                 # Retrieve chunks for context tracking (same as LLM path)
-                context_chunks = rag_pipeline.get_chunks_with_scores(user_text, top_k=2) if rag_context else []
+                context_chunks = rag_pipeline.get_chunks_with_scores(user_text, top_k=2)
 
                 # Store the exchange in conversation memory
                 turn_number = len(conversations[conversation_id].get("turns", []))

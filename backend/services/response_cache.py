@@ -83,9 +83,9 @@ _CACHED_QUESTIONS = [
         ],
         "keywords": ["fortalezas"],
         "answer": (
-            "Mis fortalezas son la disciplina y la constancia, el trabajo en equipo "
-            "y ser resolutivo. Saqué el DAM compatibilizándolo con Mercadona, gestioné "
-            "equipos grandes en retail y, si no sé algo, lo investigo hasta resolverlo."
+            "Mis fortalezas son la disciplina y la constancia. Además, la curiosidad "
+            "siempre me empuja a querer ir más allá. No me asusta empezar algo nuevo: "
+            "creo en el aprendizaje constante."
         ),
     },
     {
@@ -174,7 +174,7 @@ _CACHED_QUESTIONS = [
         "answer": (
             "Python es mi lenguaje principal. Lo uso en InterviewTTS con FastAPI para "
             "el backend, integración de IA y procesamiento de voz. También lo usé en "
-            "proyectos de la Dam para bases de datos y scripts."
+            "proyectos del DAM para bases de datos y scripts."
         ),
     },
     {
@@ -215,8 +215,9 @@ _CACHED_QUESTIONS = [
         ],
         "keywords": [],
         "answer": (
-            "Me gusta todo, pero si tuviera que elegir, backend y datos. Disfruto diseñar "
-            "APIs, modelar bases de datos y pensar en cómo los datos fluyen a través del sistema."
+            "Me gusta todo, pero si tuviera que elegir: backend, datos e integración "
+            "de la inteligencia artificial. Me gusta diseñar APIs, modelar bases de "
+            "datos e integrar la IA en los procesos donde pueda aportar valor."
         ),
     },
     {
@@ -228,7 +229,7 @@ _CACHED_QUESTIONS = [
         ],
         "keywords": ["bases de datos", "sql"],
         "answer": (
-            "Trabajo con MySQL, PostgreSQL y SQLite. En la Dam hice diseño de bases de datos, "
+            "Trabajo con MySQL, PostgreSQL y SQLite. En el DAM hice diseño de bases de datos, "
             "consultas complejas, triggers y procedimientos almacenados. También usé Hibernate "
             "para ORM en Java."
         ),
@@ -241,9 +242,9 @@ _CACHED_QUESTIONS = [
         ],
         "keywords": [],
         "answer": (
-            "Sí, gestioné equipos de hasta 20 personas en Mercadona. En desarrollo, uso Git "
-            "con branches y pull requests para colaborar. Me gusta la comunicación clara "
-            "y que todos sepan qué hacer."
+            "Sí, tengo experiencia siendo responsable de diferentes establecimientos "
+            "de supermercado, así que no tengo problema tanto para liderar como para "
+            "integrarme en el equipo."
         ),
     },
     {
@@ -254,9 +255,8 @@ _CACHED_QUESTIONS = [
         ],
         "keywords": [],
         "answer": (
-            "Mi mayor logro es InterviewTTS: un proyecto completo con voz, IA, RAG y "
-            "despliegue en producción. Lo construí de cero siendo autodidacta y lo usé "
-            "para aprender todo el stack de desarrollo."
+            "Mi mayor logro, más allá de lo tangible y de los proyectos concretos, "
+            "es ser autodidacta, resolutivo y no tenerle miedo a lo que esté por venir."
         ),
     },
     {
@@ -293,9 +293,11 @@ _CACHED_QUESTIONS = [
         ],
         "keywords": ["dam"],
         "answer": (
-            "Elegí DAM porque me permitía formarme en desarrollo full-stack de manera "
-            "estructurada. Siempre me atrajo la tecnología, yDam me dio las bases "
-            "de backend, frontend y bases de datos para empezar a construir."
+            "Elegí estudiar desarrollo de software porque siempre me atrajo la tecnología. "
+            "A raíz de descubrir la programación, mi cabeza hizo click y empezó un no parar "
+            "de querer saber más y aumentar mis conocimientos. También me siento muy atraído "
+            "por todo lo relacionado con la inteligencia artificial, desde su desarrollo "
+            "hasta su aplicación en el día a día y en los negocios."
         ),
     },
 ]

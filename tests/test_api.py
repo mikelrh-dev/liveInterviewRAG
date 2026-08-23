@@ -457,10 +457,11 @@ class TestStreamingResponseCache:
 
 
 class TestCacheRagEnrichment:
-    """Cache hits are enriched with RAG context when available (non-streaming)."""
+    """Cache hits return ONLY the pre-generated answer — RAG chunks are
+    tracked for the context panel but never appended to spoken text."""
 
-    def test_cache_hit_with_rag_enrichment(self, client, mock_services):
-        """Cached answer is appended with RAG context when RAG returns results."""
+    def test_cache_hit_returns_cached_answer_without_rag_text(self, client, mock_services):
+        """Cached answer is returned verbatim; RAG context is never spoken."""
         mock_services["stt"].transcribe.return_value = "¿Qué es InterviewTTS?"
         mock_services["rag"].get_context_string.return_value = (
             "[Source: wiki/interviewtts.md | Tipo: project]\n"
@@ -477,22 +478,22 @@ class TestCacheRagEnrichment:
 
         assert response.status_code == 200
         data = response.json()
-        # Cached answer is present
-        assert "InterviewTTS" in data["response_text"]
-        # RAG context is appended
-        assert "wiki/interviewtts.md" in data["response_text"]
-        assert "entrevistas por voz" in data["response_text"]
-        # LLM was NOT called
+        # Exactly the cached answer, no RAG suffix or source metadata
+        assert data["response_text"].startswith("InterviewTTS es mi proyecto de portfolio")
+        assert "wiki/interviewtts.md" not in data["response_text"]
+        assert "[Source:" not in data["response_text"]
+        # LLM was NOT called and raw context string was never requested for speech
         mock_services["llm"].generate.assert_not_called()
-        # RAG was called with top_k=2 for enrichment
-        mock_services["rag"].get_context_string.assert_called_with(
+        mock_services["rag"].get_context_string.assert_not_called()
+        # Chunks still collected (top_k=2) for the context panel
+        mock_services["rag"].get_chunks_with_scores.assert_called_with(
             "¿Qué es InterviewTTS?", top_k=2
         )
 
     def test_cache_hit_without_rag_returns_cache_only(self, client, mock_services):
         """Cached answer is returned as-is when RAG finds nothing relevant."""
         mock_services["stt"].transcribe.return_value = "¿Qué es InterviewTTS?"
-        mock_services["rag"].get_context_string.return_value = ""
+        mock_services["rag"].get_chunks_with_scores.return_value = []
 
         conv_response = client.post("/api/conversation")
         conversation_id = conv_response.json()["conversation_id"]
@@ -505,14 +506,12 @@ class TestCacheRagEnrichment:
         assert response.status_code == 200
         data = response.json()
         # Only the cached answer, no RAG suffix
-        assert data["response_text"] == mock_services["rag"].get_context_string.return_value or \
-               "InterviewTTS es mi proyecto" in data["response_text"]
+        assert data["response_text"].startswith("InterviewTTS es mi proyecto de portfolio")
         mock_services["llm"].generate.assert_not_called()
 
     def test_cache_hit_tracks_rag_chunks_in_turn(self, client, mock_services):
-        """Cache hit with RAG enrichment stores chunks_used in the conversation turn."""
+        """Cache hit stores chunks_used in the conversation turn for the UI."""
         mock_services["stt"].transcribe.return_value = "¿Qué es InterviewTTS?"
-        mock_services["rag"].get_context_string.return_value = "RAG context here"
         mock_services["rag"].get_chunks_with_scores.return_value = [
             {"text": "RAG context here", "score": 0.85, "source": "wiki/interviewtts.md"}
         ]
@@ -585,7 +584,8 @@ class TestMp4UploadAcceptance:
 
 
 class TestStreamingCacheRagEnrichment:
-    """Cache hits in /message/stream are enriched with RAG context."""
+    """Streaming cache hits return ONLY the cached answer — RAG chunks are
+    tracked for the context panel but never appended to the spoken token."""
 
     def _stream_events(self, client, conversation_id):
         """POST audio to /message/stream and return the parsed SSE events."""
@@ -603,8 +603,8 @@ class TestStreamingCacheRagEnrichment:
                     events.append(json.loads(line[6:]))
         return events
 
-    def test_stream_cache_hit_with_rag_enrichment(self, client, mock_services):
-        """Streaming cache hit appends RAG context to the token and audio."""
+    def test_stream_cache_hit_returns_cached_answer_without_rag_text(self, client, mock_services):
+        """Streaming cache hit speaks only the cached answer; RAG never leaks."""
         mock_services["stt"].transcribe.return_value = "¿Qué es InterviewTTS?"
         mock_services["rag"].get_context_string.return_value = (
             "[Source: wiki/interviewtts.md | Tipo: project]\n"
@@ -623,16 +623,18 @@ class TestStreamingCacheRagEnrichment:
         audio_url_events = [e for e in events if e.get("event") == "audio_url"]
         done_events = [e for e in events if e.get("event") == "done"]
 
-        # Single token event with enriched text (cached + RAG)
+        # Single token event with ONLY the cached answer
         assert len(token_events) == 1
         token_text = token_events[0]["data"]["text"]
-        assert "InterviewTTS es mi proyecto" in token_text
-        assert "wiki/interviewtts.md" in token_text
+        assert token_text.startswith("InterviewTTS es mi proyecto de portfolio")
+        assert "wiki/interviewtts.md" not in token_text
+        assert "[Source:" not in token_text
         # Single audio file
         assert len(audio_url_events) == 1
         assert len(done_events) == 1
-        # LLM was NOT called
+        # LLM was NOT called and raw context string was never requested for speech
         mock_services["llm"].generate_stream_with_context.assert_not_called()
+        mock_services["rag"].get_context_string.assert_not_called()
 
     def test_stream_cache_hit_without_rag_returns_cache_only(self, client, mock_services):
         """Streaming cache hit returns only cached answer when RAG finds nothing."""

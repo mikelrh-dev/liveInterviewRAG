@@ -156,7 +156,7 @@ def test_mayor_logro_question():
     """'¿Cuál es tu mayor logro?' returns the biggest achievement."""
     answer = get_cached_response("¿Cuál es tu mayor logro?")
     assert answer is not None
-    assert "interviewtts" in answer.lower()
+    assert "autodidacta" in answer.lower()
 
 
 def test_apis_rest_question():
@@ -177,7 +177,7 @@ def test_dam_question():
     """'¿Por qué elegiste DAM?' returns the DAM answer."""
     answer = get_cached_response("¿Por qué elegiste DAM?")
     assert answer is not None
-    assert "dam" in answer.lower()
+    assert "tecnología" in answer.lower()
 
 
 # ─── get_cached_response: miss behavior ───────────────────
