@@ -19,7 +19,10 @@ import unicodedata
 _CACHED_QUESTIONS = [
     {
         # Combined question — must come before the separate strengths/weakness entries
-        "phrases": ["cuales son tus fortalezas y debilidades", "fortalezas y debilidades"],
+        "phrases": [
+            "cuales son tus fortalezas y debilidades",
+            "fortalezas y debilidades",
+        ],
         "keywords": [],
         "answer": (
             "Mis fortalezas son la disciplina y la constancia, el trabajo en equipo "
@@ -318,9 +321,10 @@ def get_cached_response(question: str) -> str | None:
     """Return a pre-generated answer for a common question, or None.
 
     Matching is case/accent-insensitive and ignores punctuation. An entry
-    matches when any of its phrases or keywords appears as a substring of the
-    normalized question. Entries are checked in order. Returns None when there
-    is no match, so the caller can fall back to the LLM.
+    matches when any of its phrases appears as a substring of the normalized
+    question, or any of its keywords appears as a whole word (word-boundary
+    match). Entries are checked in order. Returns None when there is no
+    match, so the caller can fall back to the LLM.
     """
     normalized = normalize_text(question)
     if not normalized:
@@ -331,7 +335,7 @@ def get_cached_response(question: str) -> str | None:
             if phrase in normalized:
                 return entry["answer"]
         for keyword in entry["keywords"]:
-            if keyword in normalized:
+            if re.search(rf"\b{re.escape(keyword)}\b", normalized):
                 return entry["answer"]
 
     return None

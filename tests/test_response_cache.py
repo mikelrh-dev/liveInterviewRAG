@@ -1,11 +1,9 @@
 """Tests for the response cache service (backend/services/response_cache.py)."""
 
-import pytest
-
 from backend.services.response_cache import get_cached_response, normalize_text
 
-
 # ─── normalize_text ───────────────────────────────────────
+
 
 def test_normalize_lowercases_and_strips_accents():
     """Normalization removes accents, case and question marks."""
@@ -24,6 +22,7 @@ def test_normalize_empty_input():
 
 
 # ─── get_cached_response: hit variants ────────────────────
+
 
 def test_pitch_question_cuentame():
     """'Cuéntame sobre ti' returns the 30-second pitch."""
@@ -182,6 +181,7 @@ def test_dam_question():
 
 # ─── get_cached_response: miss behavior ───────────────────
 
+
 def test_unknown_question_returns_none():
     """A non-cached question returns None so the caller falls back to the LLM."""
     assert get_cached_response("¿Qué stack usas en tus proyectos?") is None
@@ -200,3 +200,35 @@ def test_whitespace_only_question_returns_none():
 def test_punctuation_only_question_returns_none():
     """Punctuation-only input returns None."""
     assert get_cached_response("¿?!...") is None
+
+
+# ─── get_cached_response: word-boundary keyword matching ──
+
+
+def test_keyword_api_inside_word_misses():
+    """Keyword 'api' inside 'rápidamente' must NOT trigger the APIs answer."""
+    assert get_cached_response("Necesitas responder rápidamente") is None
+
+
+def test_keyword_rest_inside_word_misses():
+    """Keyword 'rest' inside 'restaurante' must NOT trigger the APIs answer."""
+    assert get_cached_response("¿Conoces un buen restaurante cerca de aquí?") is None
+
+
+def test_keyword_presenta_inside_word_misses():
+    """Keyword 'presenta' inside 'representa' must NOT trigger the pitch."""
+    assert get_cached_response("Este proyecto representa mucho para mí") is None
+
+
+def test_keyword_exact_word_hits():
+    """Keyword 'api' as a standalone word DOES trigger the APIs answer."""
+    answer = get_cached_response("¿Sabes trabajar con API?")
+    assert answer is not None
+    assert "APIs REST" in answer or "endpoints" in answer.lower()
+
+
+def test_multiword_keyword_hits():
+    """Multi-word keyword 'ia generativa' still triggers the AI answer."""
+    answer = get_cached_response("¿Has usado IA generativa en tus proyectos?")
+    assert answer is not None
+    assert "IA" in answer
