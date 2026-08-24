@@ -10,7 +10,7 @@
  * - Context panel: fetches from GET /api/conversation/{id}/context?turn=N
  */
 
-const API_BASE = '';
+const API_BASE = "";
 let conversationId = null;
 let mediaRecorder = null;
 let audioChunks = [];
@@ -24,16 +24,19 @@ let isUserScrolledUp = false;
 let audioContext = null;
 let analyserNode = null;
 let mediaStream = null;
+// Current MediaStream → analyser source. Reused across startRecording() calls
+// for the same stream; re-created (old one disconnected) when the stream changes.
+let micSourceNode = null;
 let audioBlocked = false;
 
-let selectedMimeType = '';
+let selectedMimeType = "";
 
 function chooseMimeType() {
     const candidates = [
-        'audio/webm;codecs=opus',
-        'audio/webm',
-        'audio/mp4;codecs=mp4a.40.2',
-        'audio/mp4',
+        "audio/webm;codecs=opus",
+        "audio/webm",
+        "audio/mp4;codecs=mp4a.40.2",
+        "audio/mp4",
     ];
     for (const mime of candidates) {
         if (MediaRecorder.isTypeSupported(mime)) {
@@ -43,11 +46,11 @@ function chooseMimeType() {
     }
     // No supported codec — leave selectedMimeType empty so callers can
     // surface a browser-compatibility error instead of a permission one.
-    selectedMimeType = '';
+    selectedMimeType = "";
 }
 
 async function ensureAudioContext() {
-    if (audioContext && audioContext.state === 'suspended') {
+    if (audioContext && audioContext.state === "suspended") {
         await audioContext.resume();
     }
 }
@@ -64,25 +67,25 @@ const SILENCE_TIMEOUT_MS = 1200;
 const RMS_THRESHOLD = 0.015;
 
 // Visualization state
-let currentState = 'idle'; // idle | listening | speaking | processing
+let currentState = "idle"; // idle | listening | speaking | processing
 let waveformBars = [];
 let waveformAnimationId = null;
 
 // DOM
-const btnMic = document.getElementById('btn-mic');
-const statusEl = document.getElementById('status');
-const conversation = document.getElementById('conversation');
-const micIcon = btnMic.querySelector('.mic-icon');
-const stopIconEl = btnMic.querySelector('.stop-icon');
-const orbitalRing = document.getElementById('orbital-ring');
-const waveformSvg = document.getElementById('waveform');
-const contextToggle = document.getElementById('context-toggle');
-const contextPanel = document.getElementById('context-panel');
-const contextClose = document.getElementById('context-close');
-const contextContent = document.getElementById('context-content');
-const audioOverlay = document.getElementById('audio-blocked-overlay');
-const avatarNeutralVideo = document.getElementById('avatar-neutral-video');
-const avatarTalkingVideo = document.getElementById('avatar-talking-video');
+const btnMic = document.getElementById("btn-mic");
+const statusEl = document.getElementById("status");
+const conversation = document.getElementById("conversation");
+const micIcon = btnMic.querySelector(".mic-icon");
+const stopIconEl = btnMic.querySelector(".stop-icon");
+const orbitalRing = document.getElementById("orbital-ring");
+const waveformSvg = document.getElementById("waveform");
+const contextToggle = document.getElementById("context-toggle");
+const contextPanel = document.getElementById("context-panel");
+const contextClose = document.getElementById("context-close");
+const contextContent = document.getElementById("context-content");
+const audioOverlay = document.getElementById("audio-blocked-overlay");
+const avatarNeutralVideo = document.getElementById("avatar-neutral-video");
+const avatarTalkingVideo = document.getElementById("avatar-talking-video");
 
 // Current candidate message
 let currentCandidateDiv = null;
@@ -90,11 +93,12 @@ let currentCandidateDiv = null;
 // Audio queue
 let audioQueue = [];
 let nextChunkId = 0;
+let skippedChunkIds = new Set();
 let isAudioPlaying = false;
 let allChunksReceived = false;
 
 // Typing animation
-let typingIntervals = [];
+const typingIntervals = [];
 
 // ─── Sidebar data population ─────────────────────────────
 
@@ -116,16 +120,22 @@ async function populateStaticSidebar() {
         const res = await fetch(`${API_BASE}/api/config`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const cfg = await res.json();
-        if (cfg.tts_voice)   setText('sidebar-tts',    `TTS: ${cfg.tts_voice}`);
-        if (cfg.stt_model)   setText('sidebar-stt',    `STT: ${cfg.stt_model} (${cfg.stt_device || 'cpu'})`);
-        if (cfg.llm_model)   setText('sidebar-llm',    `LLM: ${cfg.llm_model.split('/').pop()}`);
-        if (cfg.google_model) setText('sidebar-google', `Google: ${cfg.google_model}`);
+        if (cfg.tts_voice) setText("sidebar-tts", `TTS: ${cfg.tts_voice}`);
+        if (cfg.stt_model)
+            setText(
+                "sidebar-stt",
+                `STT: ${cfg.stt_model} (${cfg.stt_device || "cpu"})`,
+            );
+        if (cfg.llm_model)
+            setText("sidebar-llm", `LLM: ${cfg.llm_model.split("/").pop()}`);
+        if (cfg.google_model)
+            setText("sidebar-google", `Google: ${cfg.google_model}`);
     } catch (e) {
-        console.warn('Could not load /api/config:', e);
-        setText('sidebar-tts', 'TTS: —');
-        setText('sidebar-stt', 'STT: —');
-        setText('sidebar-llm', 'LLM: —');
-        setText('sidebar-google', 'Google: —');
+        console.warn("Could not load /api/config:", e);
+        setText("sidebar-tts", "TTS: —");
+        setText("sidebar-stt", "STT: —");
+        setText("sidebar-llm", "LLM: —");
+        setText("sidebar-google", "Google: —");
     }
 }
 
@@ -134,13 +144,13 @@ async function populateStaticSidebar() {
  * Resets whenever a new conversation is created.
  */
 function startSessionTimer() {
-    const el = document.getElementById('sidebar-timer');
+    const el = document.getElementById("sidebar-timer");
     if (!el) return;
     if (!sessionStartTime) sessionStartTime = Date.now();
     setInterval(() => {
         const s = Math.floor((Date.now() - sessionStartTime) / 1000);
-        const mm = String(Math.floor(s / 60)).padStart(2, '0');
-        const ss = String(s % 60).padStart(2, '0');
+        const mm = String(Math.floor(s / 60)).padStart(2, "0");
+        const ss = String(s % 60).padStart(2, "0");
         el.textContent = `⏱ ${mm}:${ss}`;
     }, 1000);
 }
@@ -151,20 +161,20 @@ function startSessionTimer() {
  */
 function updateSessionInfo(conversationId) {
     sessionStartTime = Date.now();
-    const shortId = conversationId ? conversationId.slice(0, 6) : '---';
-    setText('sidebar-session-id', `ID: ${shortId}`);
-    setText('sidebar-turns', 'Turnos: 0');
+    const shortId = conversationId ? conversationId.slice(0, 6) : "---";
+    setText("sidebar-session-id", `ID: ${shortId}`);
+    setText("sidebar-turns", "Turnos: 0");
 }
 
 function updateTurnCount(turnCount) {
-    setText('sidebar-turns', `Turnos: ${turnCount}`);
+    setText("sidebar-turns", `Turnos: ${turnCount}`);
 }
 
 // Cached VU bar elements (lazy)
 let vuBarsCache = null;
 function getVuBars() {
     if (!vuBarsCache) {
-        vuBarsCache = document.querySelectorAll('#sidebar-vu .vu-bar');
+        vuBarsCache = document.querySelectorAll("#sidebar-vu .vu-bar");
     }
     return vuBarsCache;
 }
@@ -179,9 +189,9 @@ function updateVuMeter(volume) {
     const activeCount = Math.round(volume * bars.length);
     bars.forEach((bar, i) => {
         if (i < activeCount) {
-            bar.classList.add('active');
+            bar.classList.add("active");
         } else {
-            bar.classList.remove('active');
+            bar.classList.remove("active");
         }
     });
 }
@@ -195,33 +205,37 @@ function init() {
     startSessionTimer();
 
     // Smart scroll
-    conversation.addEventListener('scroll', () => {
+    conversation.addEventListener("scroll", () => {
         const threshold = 50;
-        isUserScrolledUp = conversation.scrollHeight - conversation.scrollTop - conversation.clientHeight > threshold;
+        isUserScrolledUp =
+            conversation.scrollHeight -
+                conversation.scrollTop -
+                conversation.clientHeight >
+            threshold;
     });
 
     // Sidebar End Session button
-    const endBtn = document.getElementById('sidebar-end-btn');
+    const endBtn = document.getElementById("sidebar-end-btn");
     if (endBtn) {
-        endBtn.addEventListener('click', () => {
+        endBtn.addEventListener("click", () => {
             if (isInterviewActive) {
                 stopInterview();
-                setText('sidebar-session-id', 'ID: ---');
-                setText('sidebar-turns', 'Turnos: 0');
+                setText("sidebar-session-id", "ID: ---");
+                setText("sidebar-turns", "Turnos: 0");
                 sessionStartTime = null;
-                startSessionTimer();  // reset to 00:00
+                startSessionTimer(); // reset to 00:00
             }
         });
     }
 
     // Mobile END button — same logic as sidebar button
-    const mobileEndBtn = document.getElementById('mobile-end-btn');
+    const mobileEndBtn = document.getElementById("mobile-end-btn");
     if (mobileEndBtn) {
-        mobileEndBtn.addEventListener('click', () => {
+        mobileEndBtn.addEventListener("click", () => {
             if (isInterviewActive) {
                 stopInterview();
-                setText('sidebar-session-id', 'ID: ---');
-                setText('sidebar-turns', 'Turnos: 0');
+                setText("sidebar-session-id", "ID: ---");
+                setText("sidebar-turns", "Turnos: 0");
                 sessionStartTime = null;
                 startSessionTimer();
             }
@@ -230,44 +244,49 @@ function init() {
 
     // Debounced resize for Three.js avatar
     let resizeTimer = null;
-    window.addEventListener('resize', () => {
+    window.addEventListener("resize", () => {
         clearTimeout(resizeTimer);
         resizeTimer = setTimeout(() => {
             if (window.AvatarOrb && window.AvatarOrb.isInitialized()) {
-                const wrapper = document.getElementById('avatar-wrapper');
+                const wrapper = document.getElementById("avatar-wrapper");
                 if (wrapper) {
-                    window.AvatarOrb.resize(wrapper.clientWidth, wrapper.clientHeight);
+                    window.AvatarOrb.resize(
+                        wrapper.clientWidth,
+                        wrapper.clientHeight,
+                    );
                 }
             }
         }, 250);
     });
 
     // Context panel toggle
-    contextToggle.addEventListener('click', toggleContextPanel);
-    contextClose.addEventListener('click', () => {
-        contextPanel.classList.remove('open');
-        document.body.classList.remove('context-open');
+    contextToggle.addEventListener("click", toggleContextPanel);
+    contextClose.addEventListener("click", () => {
+        contextPanel.classList.remove("open");
+        document.body.classList.remove("context-open");
     });
 
     // Close context panel on outside click
-    document.addEventListener('click', (e) => {
-        if (contextPanel.classList.contains('open') &&
+    document.addEventListener("click", (e) => {
+        if (
+            contextPanel.classList.contains("open") &&
             !contextPanel.contains(e.target) &&
             e.target !== contextToggle &&
-            !contextToggle.contains(e.target)) {
-            contextPanel.classList.remove('open');
-            document.body.classList.remove('context-open');
+            !contextToggle.contains(e.target)
+        ) {
+            contextPanel.classList.remove("open");
+            document.body.classList.remove("context-open");
         }
     });
 
     // Audio blocked overlay — resume on click
-    audioOverlay.addEventListener('click', resumeAudioContext);
+    audioOverlay.addEventListener("click", resumeAudioContext);
 
     // Mic button
-    btnMic.addEventListener('click', toggleInterview);
+    btnMic.addEventListener("click", toggleInterview);
 
-    addMessage('system', 'Presioná el micrófono para empezar.');
-    setStatus('Preparado');
+    addMessage("system", "Presioná el micrófono para empezar.");
+    setStatus("Preparado");
 }
 
 /**
@@ -278,8 +297,8 @@ async function initAudio() {
 
     try {
         audioContext = new (window.AudioContext || window.webkitAudioContext)();
-        if (audioContext.state === 'suspended') {
-            throw new Error('AudioContext blocked');
+        if (audioContext.state === "suspended") {
+            throw new Error("AudioContext blocked");
         }
 
         analyserNode = audioContext.createAnalyser();
@@ -295,9 +314,9 @@ async function initAudio() {
             ttsAnalyser.connect(audioContext.destination);
         }
     } catch (e) {
-        console.warn('AudioContext init failed:', e.message);
+        console.warn("AudioContext init failed:", e.message);
         audioBlocked = true;
-        audioOverlay.classList.remove('hidden');
+        audioOverlay.classList.remove("hidden");
     }
 }
 
@@ -305,40 +324,40 @@ async function initAudio() {
  * Resume AudioContext on user interaction.
  */
 async function resumeAudioContext() {
-    if (audioContext && audioContext.state === 'suspended') {
+    if (audioContext && audioContext.state === "suspended") {
         await audioContext.resume();
     }
-    if (audioContext && audioContext.state === 'running') {
+    if (audioContext && audioContext.state === "running") {
         audioBlocked = false;
-        audioOverlay.classList.add('hidden');
+        audioOverlay.classList.add("hidden");
     }
 }
 
 // ─── Particles ─────────────────────────────────────────
 
 function initParticles() {
-    if (typeof tsParticles === 'undefined') {
-        console.warn('tsparticles not loaded — skipping particles');
+    if (typeof tsParticles === "undefined") {
+        console.warn("tsparticles not loaded — skipping particles");
         return;
     }
 
-    tsParticles.load('particles-bg', {
+    tsParticles.load("particles-bg", {
         fullScreen: { enable: false },
         particles: {
             number: { value: 60, density: { enable: true, value_area: 800 } },
-            color: { value: '#00d4ff' },
+            color: { value: "#00d4ff" },
             opacity: { value: 0.15, random: true },
             size: { value: 2, random: true },
             move: {
                 enable: true,
                 speed: 0.5,
-                direction: 'top',
-                out_mode: 'out',
+                direction: "top",
+                out_mode: "out",
             },
             line_linked: {
                 enable: true,
                 distance: 100,
-                color: '#00d4ff',
+                color: "#00d4ff",
                 opacity: 0.1,
                 width: 0.5,
             },
@@ -346,7 +365,7 @@ function initParticles() {
         interactivity: {
             events: {
                 onhover: { enable: false },
-                onclick: { enable: true, mode: 'repulse' },
+                onclick: { enable: true, mode: "repulse" },
             },
             modes: {
                 repulse: { distance: 100, duration: 0.4 },
@@ -358,15 +377,15 @@ function initParticles() {
 // ─── Avatar Orb ────────────────────────────────────────
 
 function initAvatarOrb() {
-    if (typeof window.AvatarOrb === 'undefined') {
-        console.warn('AvatarOrb not available');
+    if (typeof window.AvatarOrb === "undefined") {
+        console.warn("AvatarOrb not available");
         return;
     }
 
     const success = window.AvatarOrb.init();
     if (success) {
         // Fix initial render on mobile — measure wrapper and resize
-        const wrapper = document.getElementById('avatar-wrapper');
+        const wrapper = document.getElementById("avatar-wrapper");
         if (wrapper) {
             window.AvatarOrb.resize(wrapper.clientWidth, wrapper.clientHeight);
         }
@@ -382,31 +401,38 @@ function initWaveformBars() {
     const gap = 2;
 
     for (let i = 0; i < barCount; i++) {
-        const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-        rect.setAttribute('x', i * (barWidth + gap));
-        rect.setAttribute('y', 20);
-        rect.setAttribute('width', barWidth);
-        rect.setAttribute('height', 0);
-        rect.setAttribute('rx', '1');
+        const rect = document.createElementNS(
+            "http://www.w3.org/2000/svg",
+            "rect",
+        );
+        rect.setAttribute("x", i * (barWidth + gap));
+        rect.setAttribute("y", 20);
+        rect.setAttribute("width", barWidth);
+        rect.setAttribute("height", 0);
+        rect.setAttribute("rx", "1");
         waveformSvg.appendChild(rect);
     }
 }
 
 function updateWaveform() {
-    if (!analyserNode || currentState === 'idle' || currentState === 'processing') {
-        waveformSvg.classList.remove('visible');
+    if (
+        !analyserNode ||
+        currentState === "idle" ||
+        currentState === "processing"
+    ) {
+        waveformSvg.classList.remove("visible");
         return;
     }
 
-    waveformSvg.classList.add('visible');
+    waveformSvg.classList.add("visible");
     analyserNode.getByteFrequencyData(waveformBars);
 
-    const rects = waveformSvg.querySelectorAll('rect');
+    const rects = waveformSvg.querySelectorAll("rect");
     for (let i = 0; i < rects.length && i < waveformBars.length; i++) {
         const value = waveformBars[i];
         const height = Math.max(1, (value / 255) * 36);
-        rects[i].setAttribute('height', height);
-        rects[i].setAttribute('y', 20 - height / 2);
+        rects[i].setAttribute("height", height);
+        rects[i].setAttribute("y", 20 - height / 2);
     }
 }
 
@@ -427,7 +453,7 @@ function startVisualizationLoop() {
                 sum += v * v;
             }
             const rms = Math.sqrt(sum / timeData.length);
-            micVolume = Math.min(1, Math.pow(rms / 0.15, 0.7));
+            micVolume = Math.min(1, (rms / 0.15) ** 0.7);
 
             // Update orb
             if (window.AvatarOrb && window.AvatarOrb.isInitialized()) {
@@ -445,16 +471,19 @@ function startVisualizationLoop() {
                 sum += v * v;
             }
             const rms = Math.sqrt(sum / ttsVolumeBuffer.length);
-            ttsVolume = Math.min(1, Math.pow(rms / 0.10, 0.7));
+            ttsVolume = Math.min(1, (rms / 0.1) ** 0.7);
         }
 
         // Drive video crossfade from TTS volume — continuous blend, no hard cut
-        if (window.AvatarOrb && typeof window.AvatarOrb.setBlend === 'function') {
+        if (
+            window.AvatarOrb &&
+            typeof window.AvatarOrb.setBlend === "function"
+        ) {
             window.AvatarOrb.setBlend(ttsVolume);
         }
 
         // Drive talking video playback rate (new)
-        if (avatarTalkingVideo && currentState === 'speaking') {
+        if (avatarTalkingVideo && currentState === "speaking") {
             // Map TTS volume to playback rate: 0.7x (silent) to 1.6x (loud)
             avatarTalkingVideo.playbackRate = 0.7 + ttsVolume * 0.9;
         }
@@ -475,8 +504,8 @@ function setState(state) {
     currentState = state;
 
     // Update ring
-    orbitalRing.className = 'orbital-ring';
-    if (state !== 'idle') {
+    orbitalRing.className = "orbital-ring";
+    if (state !== "idle") {
         orbitalRing.classList.add(`state-${state}`);
     }
 
@@ -487,30 +516,30 @@ function setState(state) {
 
     // Energy field boost when AI is speaking
     if (window.AvatarOrb && window.AvatarOrb.isInitialized()) {
-        if (state === 'speaking') {
-            window.AvatarOrb.boost(1.5);  // more intense
+        if (state === "speaking") {
+            window.AvatarOrb.boost(1.5); // more intense
         } else {
-            window.AvatarOrb.boost(1.0);  // normal
+            window.AvatarOrb.boost(1.0); // normal
         }
     }
 
     // Update status text class
-    statusEl.className = 'hud-status';
-    if (state !== 'idle') {
+    statusEl.className = "hud-status";
+    if (state !== "idle") {
         statusEl.classList.add(state);
     }
 
     // Avatar video crossfade: show talking when speaking, neutral otherwise
     if (avatarTalkingVideo) {
-        if (state === 'speaking') {
+        if (state === "speaking") {
             avatarTalkingVideo.currentTime = 0.3;
             avatarTalkingVideo.play().catch(() => {});
-            avatarTalkingVideo.classList.add('active');
+            avatarTalkingVideo.classList.add("active");
         } else {
-            avatarTalkingVideo.classList.remove('active');
+            avatarTalkingVideo.classList.remove("active");
             // After crossfade completes, pause the talking video to save CPU
             setTimeout(() => {
-                if (currentState !== 'speaking') {
+                if (currentState !== "speaking") {
                     avatarTalkingVideo.pause();
                 }
             }, 300);
@@ -532,23 +561,25 @@ async function startInterview() {
     await initAudio();
 
     try {
-        const res = await fetch(`${API_BASE}/api/conversation`, { method: 'POST' });
+        const res = await fetch(`${API_BASE}/api/conversation`, {
+            method: "POST",
+        });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         conversationId = data.conversation_id;
         updateSessionInfo(conversationId);
-        addMessage('system', data.welcome_message);
+        addMessage("system", data.welcome_message);
     } catch (e) {
-        console.error('Failed to create conversation:', e);
-        setStatus('Error de conexión — recarga la página', true);
+        console.error("Failed to create conversation:", e);
+        setStatus("Error de conexión — recarga la página", true);
         return;
     }
 
     isInterviewActive = true;
-    btnMic.classList.add('active');
-    micIcon.classList.add('hidden');
-    stopIconEl.classList.remove('hidden');
-    setState('listening');
+    btnMic.classList.add("active");
+    micIcon.classList.add("hidden");
+    stopIconEl.classList.remove("hidden");
+    setState("listening");
 
     startListening();
 }
@@ -558,16 +589,16 @@ function stopInterview() {
     if (isRecording) stopRecording();
 
     if (mediaStream) {
-        mediaStream.getTracks().forEach(t => t.stop());
+        mediaStream.getTracks().forEach((t) => t.stop());
         mediaStream = null;
     }
 
-    btnMic.classList.remove('active');
-    micIcon.classList.remove('hidden');
-    stopIconEl.classList.add('hidden');
-    setState('idle');
-    setStatus('Entrevista finalizada');
-    addMessage('system', 'Entrevista finalizada.');
+    btnMic.classList.remove("active");
+    micIcon.classList.remove("hidden");
+    stopIconEl.classList.add("hidden");
+    setState("idle");
+    setStatus("Entrevista finalizada");
+    addMessage("system", "Entrevista finalizada.");
 }
 
 // ─── Recording + VAD ───────────────────────────────────
@@ -581,14 +612,30 @@ async function startRecording() {
     try {
         await ensureAudioContext();
 
-        if (!mediaStream || mediaStream.getTracks().some(t => t.readyState === 'ended')) {
-            mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        if (
+            !mediaStream ||
+            mediaStream.getTracks().some((t) => t.readyState === "ended")
+        ) {
+            mediaStream = await navigator.mediaDevices.getUserMedia({
+                audio: true,
+            });
         }
 
-        // Connect to analyser for visualization
+        // Connect to analyser for visualization.
+        // Reuse the existing source for the same stream — creating and
+        // connecting a new one per turn would stack sources into the
+        // analyser, inflating RMS until silence is never detected.
         if (audioContext && analyserNode && mediaStream) {
-            const source = audioContext.createMediaStreamSource(mediaStream);
-            source.connect(analyserNode);
+            if (!micSourceNode || micSourceNode.mediaStream !== mediaStream) {
+                if (micSourceNode) {
+                    try {
+                        micSourceNode.disconnect();
+                    } catch (_) {}
+                }
+                micSourceNode =
+                    audioContext.createMediaStreamSource(mediaStream);
+                micSourceNode.connect(analyserNode);
+            }
         }
 
         audioChunks = [];
@@ -596,10 +643,13 @@ async function startRecording() {
         if (!selectedMimeType) chooseMimeType();
 
         if (!selectedMimeType) {
-            console.error('No supported audio codec for MediaRecorder');
-            setStatus('Tu navegador no soporta grabación de audio compatible — usá Chrome o Safari actualizado', true);
-            setState('idle');
-            mediaStream.getTracks().forEach(t => t.stop());
+            console.error("No supported audio codec for MediaRecorder");
+            setStatus(
+                "Tu navegador no soporta grabación de audio compatible — usá Chrome o Safari actualizado",
+                true,
+            );
+            setState("idle");
+            mediaStream.getTracks().forEach((t) => t.stop());
             return;
         }
 
@@ -608,7 +658,9 @@ async function startRecording() {
             audioBitsPerSecond: 128000,
         });
 
-        mediaRecorder.ondataavailable = e => { if (e.data.size > 0) audioChunks.push(e.data); };
+        mediaRecorder.ondataavailable = (e) => {
+            if (e.data.size > 0) audioChunks.push(e.data);
+        };
         mediaRecorder.onstop = () => {
             stopVad();
             processRecordingStream();
@@ -618,18 +670,21 @@ async function startRecording() {
         isRecording = true;
         hasSpoken = false;
         startVad();
-        setStatus('Escuchando...');
-        setState('listening');
-
+        setStatus("Escuchando...");
+        setState("listening");
     } catch (e) {
-        console.error('Mic denied:', e);
-        setStatus('Acceso al micrófono denegado — revisá permisos del navegador', true);
-        setState('idle');
+        console.error("Mic denied:", e);
+        setStatus(
+            "Acceso al micrófono denegado — revisá permisos del navegador",
+            true,
+        );
+        setState("idle");
     }
 }
 
 function stopRecording() {
-    if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+    if (mediaRecorder && mediaRecorder.state !== "inactive")
+        mediaRecorder.stop();
     isRecording = false;
 }
 
@@ -660,8 +715,8 @@ function vadLoop() {
     } else if (hasSpoken) {
         if (silenceStart === null) silenceStart = Date.now();
         else if (Date.now() - silenceStart >= SILENCE_TIMEOUT_MS) {
-            setStatus('Procesando...');
-            setState('processing');
+            setStatus("Procesando...");
+            setState("processing");
             stopRecording();
             return;
         }
@@ -671,7 +726,10 @@ function vadLoop() {
 }
 
 function stopVad() {
-    if (vadAnimationId) { cancelAnimationFrame(vadAnimationId); vadAnimationId = null; }
+    if (vadAnimationId) {
+        cancelAnimationFrame(vadAnimationId);
+        vadAnimationId = null;
+    }
     silenceStart = null;
 }
 
@@ -680,19 +738,20 @@ function stopVad() {
 function resetAudioQueue() {
     audioQueue = [];
     nextChunkId = 0;
+    skippedChunkIds.clear();
     isAudioPlaying = false;
     allChunksReceived = false;
 }
 
 function addAudioIndicator() {
     if (!currentCandidateDiv) return;
-    const bubble = currentCandidateDiv.querySelector('.bubble');
-    if (!bubble || bubble.querySelector('.audio-indicator')) return;
-    const indicator = document.createElement('div');
-    indicator.className = 'audio-indicator';
+    const bubble = currentCandidateDiv.querySelector(".bubble");
+    if (!bubble || bubble.querySelector(".audio-indicator")) return;
+    const indicator = document.createElement("div");
+    indicator.className = "audio-indicator";
     for (let i = 0; i < 5; i++) {
-        const bar = document.createElement('span');
-        bar.className = 'bar';
+        const bar = document.createElement("span");
+        bar.className = "bar";
         indicator.appendChild(bar);
     }
     bubble.appendChild(indicator);
@@ -700,21 +759,29 @@ function addAudioIndicator() {
 
 function removeAudioIndicator() {
     if (currentCandidateDiv) {
-        const indicator = currentCandidateDiv.querySelector('.audio-indicator');
+        const indicator = currentCandidateDiv.querySelector(".audio-indicator");
         if (indicator) indicator.remove();
+    }
+}
+
+function advancePastSkippedChunks() {
+    if (isAudioPlaying) return;
+    while (skippedChunkIds.has(nextChunkId)) {
+nextChunkId++;
     }
 }
 
 function tryPlayNextChunk() {
     if (isAudioPlaying) return;
+    advancePastSkippedChunks();
 
-    const idx = audioQueue.findIndex(c => c.id === nextChunkId);
+    const idx = audioQueue.findIndex((c) => c.id === nextChunkId);
     if (idx === -1) return;
 
     const chunk = audioQueue.splice(idx, 1)[0];
     isAudioPlaying = true;
-    setStatus('Reproduciendo...');
-    setState('speaking');
+    setStatus("Reproduciendo...");
+    setState("speaking");
     addAudioIndicator();
 
     const audio = new Audio(chunk.url);
@@ -729,29 +796,39 @@ function tryPlayNextChunk() {
         }
     }
 
-    audio.addEventListener('ended', () => {
-        nextChunkId++;
-        isAudioPlaying = false;
-        removeAudioIndicator();
-        tryPlayNextChunk();
-        checkAllDone();
-    }, { once: true });
-    audio.addEventListener('error', () => {
-        console.error('Audio playback error for chunk', chunk.id);
-        nextChunkId++;
-        isAudioPlaying = false;
-        removeAudioIndicator();
-        tryPlayNextChunk();
-        checkAllDone();
-    }, { once: true });
-    ensureAudioContext().then(() => audio.play().catch(e => {
-        console.error('Audio play() failed:', e);
-        nextChunkId++;
-        isAudioPlaying = false;
-        removeAudioIndicator();
-        tryPlayNextChunk();
-        checkAllDone();
-    }));
+    audio.addEventListener(
+        "ended",
+        () => {
+            nextChunkId++;
+            isAudioPlaying = false;
+            removeAudioIndicator();
+            tryPlayNextChunk();
+            checkAllDone();
+        },
+        { once: true },
+    );
+    audio.addEventListener(
+        "error",
+        () => {
+            console.error("Audio playback error for chunk", chunk.id);
+            nextChunkId++;
+            isAudioPlaying = false;
+            removeAudioIndicator();
+            tryPlayNextChunk();
+            checkAllDone();
+        },
+        { once: true },
+    );
+    ensureAudioContext().then(() =>
+        audio.play().catch((e) => {
+            console.error("Audio play() failed:", e);
+            nextChunkId++;
+            isAudioPlaying = false;
+            removeAudioIndicator();
+            tryPlayNextChunk();
+            checkAllDone();
+        }),
+    );
 }
 
 function checkAllDone() {
@@ -775,8 +852,8 @@ async function fetchWithBackoff(url, options, maxRetries = 5) {
             return res;
         } catch (e) {
             if (attempt === maxRetries) throw e;
-            setStatus('Sin conexión — reintentando...', 'error');
-            await new Promise(r => setTimeout(r, delay));
+            setStatus("Sin conexión — reintentando...", "error");
+            await new Promise((r) => setTimeout(r, delay));
             delay = Math.min(delay * 2, 30000);
         }
     }
@@ -788,68 +865,76 @@ async function processRecordingStream() {
     if (audioChunks.length === 0) return;
     isProcessing = true;
     btnMic.disabled = true;
-    setStatus('Enviando audio...');
-    setState('processing');
+    setStatus("Enviando audio...");
+    setState("processing");
     resetAudioQueue();
     currentCandidateDiv = null;
     showTyping();
 
-    const blob = new Blob(audioChunks, { type: selectedMimeType || 'audio/webm' });
-            const ext = (selectedMimeType || '').includes('mp4') ? '.m4a' : '.webm';
+    const blob = new Blob(audioChunks, {
+        type: selectedMimeType || "audio/webm",
+    });
+    const ext = (selectedMimeType || "").includes("mp4") ? ".m4a" : ".webm";
     const fd = new FormData();
-    fd.append('audio', blob, `recording${ext}`);
+    fd.append("audio", blob, `recording${ext}`);
 
-    let fullText = '';
+    let fullText = "";
     let lastTurnNumber = -1;
 
     try {
         const res = await fetchWithBackoff(
             `${API_BASE}/api/conversation/${conversationId}/message/stream`,
-            { method: 'POST', body: fd },
+            { method: "POST", body: fd },
         );
 
         if (!res.ok) {
             let detail = `HTTP ${res.status}`;
-            try { detail = (await res.json()).detail || detail; } catch (_) {}
+            try {
+                detail = (await res.json()).detail || detail;
+            } catch (_) {}
             throw new Error(detail);
         }
 
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
-        let buffer = '';
+        let buffer = "";
 
         while (true) {
             const { done, value } = await reader.read();
             if (done) break;
 
             buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
+            const lines = buffer.split("\n");
+            buffer = lines.pop() || "";
 
             for (const line of lines) {
                 const trimmed = line.trim();
-                if (!trimmed || !trimmed.startsWith('data: ')) continue;
+                if (!trimmed || !trimmed.startsWith("data: ")) continue;
 
                 let event;
-                try { event = JSON.parse(trimmed.slice(6)); } catch (_) { continue; }
+                try {
+                    event = JSON.parse(trimmed.slice(6));
+                } catch (_) {
+                    continue;
+                }
 
-                const type = event.event || '';
+                const type = event.event || "";
 
-                if (type === 'transcription') {
-                    addMessage('user', event.data.text);
-                } else if (type === 'token') {
+                if (type === "transcription") {
+                    addMessage("user", event.data.text);
+                } else if (type === "token") {
                     fullText += event.data.text;
                     if (!currentCandidateDiv) {
-                        currentCandidateDiv = addMessage('candidate', '');
+                        currentCandidateDiv = addMessage("candidate", "");
                         hideTyping();
                     }
                     // Typing animation: append character by character
                     appendTypingText(currentCandidateDiv, event.data.text);
                     scrollToBottom();
-                } else if (type === 'audio_chunk') {
+                } else if (type === "audio_chunk") {
                     audioQueue.push({ id: event.data.id, url: event.data.url });
                     tryPlayNextChunk();
-                } else if (type === 'done') {
+                } else if (type === "done") {
                     allChunksReceived = true;
                     // Update sidebar turn count
                     updateTurnCount(Math.max(0, getCurrentTurnNumber() + 1));
@@ -861,22 +946,43 @@ async function processRecordingStream() {
                     if (audioQueue.length === 0 && !isAudioPlaying) {
                         if (isInterviewActive) startListening();
                     }
-                } else if (type === 'interview_end') {
+                } else if (type === "interview_end") {
                     if (currentCandidateDiv) {
-                        const indicator = currentCandidateDiv.querySelector('.audio-indicator');
+                        const indicator =
+                            currentCandidateDiv.querySelector(
+                                ".audio-indicator",
+                            );
                         if (indicator) indicator.remove();
                     }
                     stopInterview();
-                } else if (type === 'error') {
-                    throw new Error(event.data.detail || 'Error del servidor');
+                } else if (type === "error") {
+                    const chunkId = event.data ? event.data.id : undefined;
+                    if (
+                        typeof chunkId === "number" &&
+                        Number.isFinite(chunkId)
+                    ) {
+                        // Recoverable per-chunk TTS failure: skip past that
+                        // chunk instead of aborting the whole stream.
+                        console.warn(
+                            `TTS chunk ${chunkId} failed server-side — skipping:`,
+                            event.data.detail || "TTS synthesis failed",
+                        );
+                        skippedChunkIds.add(chunkId);
+                        advancePastSkippedChunks();
+                        tryPlayNextChunk();
+                    } else {
+                        throw new Error(
+                            event.data.detail || "Error del servidor",
+                        );
+                    }
                 }
             }
         }
     } catch (e) {
-        console.error('SSE pipeline error:', e);
+        console.error("SSE pipeline error:", e);
         hideTyping();
-        addMessage('error', e.message || 'Algo salió mal.');
-        setStatus('Error', true);
+        addMessage("error", e.message || "Algo salió mal.");
+        setStatus("Error", true);
         stopInterview();
     } finally {
         isProcessing = false;
@@ -890,7 +996,9 @@ async function processRecordingStream() {
  */
 function getCurrentTurnNumber() {
     // Count messages to estimate turn number (user+candidate pairs)
-    const messages = conversation.querySelectorAll('.message.user, .message.candidate');
+    const messages = conversation.querySelectorAll(
+        ".message.user, .message.candidate",
+    );
     // Each pair = 1 turn, so divide by 2 and subtract 1 (0-indexed)
     return Math.floor(messages.length / 2) - 1;
 }
@@ -898,40 +1006,42 @@ function getCurrentTurnNumber() {
 // ─── Typing animation ──────────────────────────────────
 
 function appendTypingText(messageDiv, text) {
-    const bubble = messageDiv.querySelector('.bubble');
+    const bubble = messageDiv.querySelector(".bubble");
     if (!bubble) return;
 
-    let p = bubble.querySelector('p');
+    let p = bubble.querySelector("p");
     if (!p) {
-        p = document.createElement('p');
+        p = document.createElement("p");
         bubble.appendChild(p);
     }
 
     // Remove existing cursor if any
-    const existingCursor = p.querySelector('.typing-cursor');
+    const existingCursor = p.querySelector(".typing-cursor");
     if (existingCursor) existingCursor.remove();
 
     // Append text
     p.textContent += text;
 
     // Add blinking cursor
-    const cursor = document.createElement('span');
-    cursor.className = 'typing-cursor';
+    const cursor = document.createElement("span");
+    cursor.className = "typing-cursor";
     p.appendChild(cursor);
 }
 
 // ─── Context panel ─────────────────────────────────────
 
 function toggleContextPanel() {
-    const isOpen = contextPanel.classList.toggle('open');
-    document.body.classList.toggle('context-open', isOpen);
+    const isOpen = contextPanel.classList.toggle("open");
+    document.body.classList.toggle("context-open", isOpen);
 }
 
 async function fetchContext(turnNumber) {
     if (!conversationId || turnNumber < 0) return;
 
     try {
-        const res = await fetch(`${API_BASE}/api/conversation/${conversationId}/context?turn=${turnNumber}`);
+        const res = await fetch(
+            `${API_BASE}/api/conversation/${conversationId}/context?turn=${turnNumber}`,
+        );
         if (!res.ok) {
             // Context endpoint fails silently — hide panel, no error
             return;
@@ -942,35 +1052,40 @@ async function fetchContext(turnNumber) {
 
         // Auto-close after 5s
         setTimeout(() => {
-            contextPanel.classList.remove('open');
-            document.body.classList.remove('context-open');
+            contextPanel.classList.remove("open");
+            document.body.classList.remove("context-open");
         }, 5000);
     } catch (e) {
         // Silently fail — interview unaffected
-        console.warn('Context fetch failed:', e.message);
+        console.warn("Context fetch failed:", e.message);
     }
 }
 
 function renderContext(chunks) {
     if (!chunks || chunks.length === 0) {
-        contextContent.innerHTML = '<p class="context-empty">No se recuperó contexto para esta respuesta</p>';
+        contextContent.innerHTML =
+            '<p class="context-empty">No se recuperó contexto para esta respuesta</p>';
         return;
     }
 
-    contextContent.innerHTML = chunks.map((chunk, i) => `
+    contextContent.innerHTML = chunks
+        .map(
+            (chunk, i) => `
         <div class="chunk-pill" data-index="${i}" onclick="toggleChunk(this)">
             <span class="chunk-score">${chunk.score.toFixed(2)}</span>
-            <span class="chunk-preview">${escapeHtml(chunk.text.substring(0, 100))}${chunk.text.length > 100 ? '...' : ''}</span>
+            <span class="chunk-preview">${escapeHtml(chunk.text.substring(0, 100))}${chunk.text.length > 100 ? "..." : ""}</span>
             <div class="chunk-full">
                 <p>${escapeHtml(chunk.text)}</p>
                 <p class="chunk-source">Fuente: ${escapeHtml(chunk.source)}</p>
             </div>
         </div>
-    `).join('');
+    `,
+        )
+        .join("");
 }
 
 function toggleChunk(el) {
-    el.classList.toggle('expanded');
+    el.classList.toggle("expanded");
 }
 // Make it global for onclick
 window.toggleChunk = toggleChunk;
@@ -979,7 +1094,7 @@ window.toggleChunk = toggleChunk;
 
 function setStatus(text, className) {
     statusEl.textContent = text;
-    statusEl.className = 'hud-status' + (className ? ' ' + className : '');
+    statusEl.className = "hud-status" + (className ? " " + className : "");
 }
 
 function scrollToBottom() {
@@ -989,9 +1104,9 @@ function scrollToBottom() {
 }
 
 function showTyping() {
-    if (document.querySelector('.typing-indicator')) return;
-    const div = document.createElement('div');
-    div.className = 'typing-indicator';
+    if (document.querySelector(".typing-indicator")) return;
+    const div = document.createElement("div");
+    div.className = "typing-indicator";
     div.innerHTML = `
         <div class="avatar">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
@@ -1009,27 +1124,27 @@ function showTyping() {
 }
 
 function hideTyping() {
-    const el = document.querySelector('.typing-indicator');
+    const el = document.querySelector(".typing-indicator");
     if (el) el.remove();
 }
 
 function addMessage(type, text) {
-    const div = document.createElement('div');
+    const div = document.createElement("div");
     div.className = `message ${type}`;
 
-    if (type === 'user' || type === 'candidate') {
-        const avatar = document.createElement('div');
+    if (type === "user" || type === "candidate") {
+        const avatar = document.createElement("div");
         avatar.className = `avatar ${type}-avatar`;
         avatar.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
             <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
             <circle cx="12" cy="7" r="4"/>
         </svg>`;
 
-        const bubble = document.createElement('div');
-        bubble.className = 'bubble';
-        bubble.innerHTML = `<p>${escapeHtml(text || '')}</p>`;
+        const bubble = document.createElement("div");
+        bubble.className = "bubble";
+        bubble.innerHTML = `<p>${escapeHtml(text || "")}</p>`;
 
-        if (type === 'candidate') {
+        if (type === "candidate") {
             div.appendChild(avatar);
             div.appendChild(bubble);
         } else {
@@ -1037,7 +1152,7 @@ function addMessage(type, text) {
             div.appendChild(avatar);
         }
     } else {
-        div.innerHTML = `<p>${escapeHtml(text || '')}</p>`;
+        div.innerHTML = `<p>${escapeHtml(text || "")}</p>`;
     }
 
     conversation.appendChild(div);
@@ -1046,7 +1161,7 @@ function addMessage(type, text) {
 }
 
 function escapeHtml(text) {
-    const d = document.createElement('div');
+    const d = document.createElement("div");
     d.textContent = text;
     return d.innerHTML;
 }
