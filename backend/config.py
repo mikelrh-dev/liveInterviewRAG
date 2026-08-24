@@ -43,7 +43,9 @@ class Config:
         self.FRONTEND_DIR: Path = self.BASE_DIR / "frontend"
 
         # RAG cache
-        self.RAG_CACHE_DIR: Path = Path(os.getenv("RAG_CACHE_DIR", str(self.BASE_DIR / "backend" / ".rag_cache")))
+        self.RAG_CACHE_DIR: Path = Path(
+            os.getenv("RAG_CACHE_DIR", str(self.BASE_DIR / "backend" / ".rag_cache"))
+        )
 
         # Server
         self.HOST: str = os.getenv("HOST", "0.0.0.0")
@@ -62,7 +64,9 @@ class Config:
         self.SESSION_TTL_HOURS: float = raw_ttl
 
         # Periodic audio cleanup interval in minutes
-        self.AUDIO_CLEANUP_INTERVAL_MIN: int = int(os.getenv("AUDIO_CLEANUP_INTERVAL_MIN", "30"))
+        self.AUDIO_CLEANUP_INTERVAL_MIN: int = int(
+            os.getenv("AUDIO_CLEANUP_INTERVAL_MIN", "30")
+        )
 
         # Audio limits
         self.MAX_AUDIO_DURATION: int = int(os.getenv("MAX_AUDIO_DURATION", "30"))

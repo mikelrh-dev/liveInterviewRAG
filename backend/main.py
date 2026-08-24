@@ -8,8 +8,6 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
-from pathlib import Path
-from typing import Dict
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
@@ -22,13 +20,13 @@ from starlette.middleware.base import BaseHTTPMiddleware
 load_dotenv()
 
 from backend.config import config
+from backend.prompts.candidate import build_system_prompt, sanitize_for_tts
 from backend.services.candidate import CandidateProfile
 from backend.services.llm import LLMService, SentenceBuffer
 from backend.services.rag import RAGPipeline
 from backend.services.response_cache import get_cached_response
 from backend.services.stt import STTService
 from backend.services.tts import TTSService
-from backend.prompts.candidate import build_system_prompt, sanitize_for_tts
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +45,7 @@ def _audio_extension(content_type: str) -> str:
     # Strip parameters (e.g. "audio/mp4; codecs=mp4a.40.2") and normalize case
     base_type = content_type.split(";")[0].strip().lower()
     return _CONTENT_TYPE_EXT.get(base_type, ".webm")
+
 
 # ─── SSE format helper ────────────────────────────────────
 def sse_format(event: str, data: dict) -> str:
@@ -84,10 +83,10 @@ def detect_farewell(text: str) -> bool:
 
 
 # In-memory conversation store
-conversations: Dict[str, Dict] = {}
+conversations: dict[str, dict] = {}
 
 # Rate limiting store: {ip: [timestamps]}
-_rate_limit_store: Dict[str, list] = {}
+_rate_limit_store: dict[str, list] = {}
 
 # Services (initialized at startup)
 stt_service = STTService(
@@ -152,7 +151,9 @@ async def lifespan(app: FastAPI):
 
     # Spawn periodic cleanup task
     cleanup_interval = config.AUDIO_CLEANUP_INTERVAL_MIN * 60
-    cleanup_task = asyncio.create_task(periodic_cleanup(interval_seconds=cleanup_interval))
+    cleanup_task = asyncio.create_task(
+        periodic_cleanup(interval_seconds=cleanup_interval)
+    )
 
     logger.info("InterviewTTS backend started")
     yield
@@ -168,7 +169,8 @@ async def lifespan(app: FastAPI):
 
 def cleanup_stale_audio():
     """Clean up audio files older than 1 hour from previous runs."""
-    from datetime import datetime, timedelta
+    from datetime import datetime
+
     cutoff = datetime.utcnow() - timedelta(hours=1)
     for f in config.AUDIO_DIR.rglob("*"):
         if f.is_file() and f.suffix in (".mp3", ".webm", ".wav"):
@@ -180,7 +182,7 @@ def cleanup_stale_audio():
 
 async def periodic_cleanup(interval_seconds: int) -> None:
     """Periodic background task: evict stale conversations, prune rate-limit store, clean audio."""
-    from datetime import datetime, timedelta
+    from datetime import datetime
 
     # Initial 30s delay so first cleanup doesn't fire during first request
     await asyncio.sleep(30)
@@ -188,7 +190,8 @@ async def periodic_cleanup(interval_seconds: int) -> None:
         try:
             cutoff = datetime.utcnow() - timedelta(hours=config.SESSION_TTL_HOURS)
             stale_ids = [
-                cid for cid, c in conversations.items()
+                cid
+                for cid, c in conversations.items()
                 if datetime.fromisoformat(c.get("last_activity_at", "")) < cutoff
             ]
             for cid in stale_ids:
@@ -199,7 +202,9 @@ async def periodic_cleanup(interval_seconds: int) -> None:
         try:
             now = time.time()
             for ip in list(_rate_limit_store.keys()):
-                _rate_limit_store[ip] = [t for t in _rate_limit_store[ip] if now - t < 60]
+                _rate_limit_store[ip] = [
+                    t for t in _rate_limit_store[ip] if now - t < 60
+                ]
                 if not _rate_limit_store[ip]:
                     del _rate_limit_store[ip]
         except Exception as e:
@@ -233,7 +238,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 logger.warning("Rate limit hit for IP: %s", client_ip)
                 return JSONResponse(
                     status_code=429,
-                    content={"detail": "Too many requests. Please wait before trying again."},
+                    content={
+                        "detail": "Too many requests. Please wait before trying again."
+                    },
                 )
 
             timestamps.append(now)
@@ -317,7 +324,9 @@ def update_conversation_summary(conversation_id: str, new_turn: dict) -> None:
         lines = combined.split("\n")
         while len("\n".join(lines)) > MAX_SUMMARY_CHARS and len(lines) > 1:
             lines.pop(0)
-        combined = "[Resumen — turnos más antiguos omitidos por longitud]\n" + "\n".join(lines)
+        combined = (
+            "[Resumen — turnos más antiguos omitidos por longitud]\n" + "\n".join(lines)
+        )
 
     conversations[conversation_id]["summary"] = combined
 
@@ -412,7 +421,9 @@ async def send_message(conversation_id: str, audio: UploadFile = File(...)):
         try:
             user_text = stt_service.transcribe(temp_audio)
         except Exception as e:
-            raise HTTPException(status_code=422, detail=f"Could not transcribe audio: {e}")
+            raise HTTPException(
+                status_code=422, detail=f"Could not transcribe audio: {e}"
+            )
         _t.append(time.time())
 
         if not user_text.strip():
@@ -434,8 +445,12 @@ async def send_message(conversation_id: str, audio: UploadFile = File(...)):
 
             # Step 3: LLM — generate response as candidate
             # Build conversation context (rolling summary + recent turns) for memory
-            conversation_context = build_conversation_context(conversation_id, recent_count=3)
-            system_prompt = build_system_prompt(context, conversation_context=conversation_context)
+            conversation_context = build_conversation_context(
+                conversation_id, recent_count=3
+            )
+            system_prompt = build_system_prompt(
+                context, conversation_context=conversation_context
+            )
             try:
                 response_text = await asyncio.to_thread(
                     llm_service.generate,
@@ -444,7 +459,10 @@ async def send_message(conversation_id: str, audio: UploadFile = File(...)):
                     system_prompt=system_prompt,
                 )
             except RuntimeError as e:
-                raise HTTPException(status_code=503, detail=f"Response generation temporarily unavailable: {e}")
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Response generation temporarily unavailable: {e}",
+                )
             _t.append(time.time())
 
         # Step 4: TTS — synthesize audio response
@@ -452,7 +470,9 @@ async def send_message(conversation_id: str, audio: UploadFile = File(...)):
         output_audio = config.AUDIO_DIR / f"{conversation_id}/{message_id}.mp3"
         try:
             clean_text = sanitize_for_tts(response_text)
-            audio_path = await tts_service.synthesize(clean_text, output_path=output_audio)
+            audio_path = await tts_service.synthesize(
+                clean_text, output_path=output_audio
+            )
         except RuntimeError as e:
             raise HTTPException(status_code=503, detail=f"TTS synthesis failed: {e}")
         _t.append(time.time())
@@ -463,8 +483,14 @@ async def send_message(conversation_id: str, audio: UploadFile = File(...)):
         t_llm = _t[3] - _t[2]
         t_tts = _t[4] - _t[3]
         t_total = _t[4] - _t[0]
-        logger.info("Pipeline: STT=%.2fs RAG=%.2fs LLM=%.2fs TTS=%.2fs TOTAL=%.2fs",
-                     t_stt, t_rag, t_llm, t_tts, t_total)
+        logger.info(
+            "Pipeline: STT=%.2fs RAG=%.2fs LLM=%.2fs TTS=%.2fs TOTAL=%.2fs",
+            t_stt,
+            t_rag,
+            t_llm,
+            t_tts,
+            t_total,
+        )
 
         # Store message in conversation with turn tracking
         turn_number = len(conversations[conversation_id].get("turns", []))
@@ -481,12 +507,16 @@ async def send_message(conversation_id: str, audio: UploadFile = File(...)):
         conversations[conversation_id]["turns"].append(new_turn)
         # Update rolling summary for conversation memory
         update_conversation_summary(conversation_id, new_turn)
-        conversations[conversation_id]["last_activity_at"] = datetime.utcnow().isoformat()
-        conversations[conversation_id]["messages"].append({
-            "user_text": user_text,
-            "response_text": response_text,
-            "audio_url": f"/audio/{conversation_id}/{message_id}.mp3",
-        })
+        conversations[conversation_id]["last_activity_at"] = (
+            datetime.utcnow().isoformat()
+        )
+        conversations[conversation_id]["messages"].append(
+            {
+                "user_text": user_text,
+                "response_text": response_text,
+                "audio_url": f"/audio/{conversation_id}/{message_id}.mp3",
+            }
+        )
 
         return {
             "user_text": user_text,
@@ -552,11 +582,13 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
                     yield sse_format("token", {"text": token + " "})
                 yield sse_format("interview_end", {"message": farewell})
                 # Store the farewell in conversation
-                conversations[conversation_id]["messages"].append({
-                    "user_text": user_text,
-                    "response_text": farewell,
-                    "audio_url": "",
-                })
+                conversations[conversation_id]["messages"].append(
+                    {
+                        "user_text": user_text,
+                        "response_text": farewell,
+                        "audio_url": "",
+                    }
+                )
                 return
 
             # ── Step 2: Response cache — instant answer in candidate's own voice ──
@@ -591,26 +623,38 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
                 }
                 conversations[conversation_id]["turns"].append(new_turn)
                 update_conversation_summary(conversation_id, new_turn)
-                conversations[conversation_id]["last_activity_at"] = datetime.utcnow().isoformat()
-                conversations[conversation_id]["messages"].append({
-                    "user_text": user_text,
-                    "response_text": response_text,
-                    "audio_url": f"/audio/{conversation_id}/{message_id}.mp3",
-                })
+                conversations[conversation_id]["last_activity_at"] = (
+                    datetime.utcnow().isoformat()
+                )
+                conversations[conversation_id]["messages"].append(
+                    {
+                        "user_text": user_text,
+                        "response_text": response_text,
+                        "audio_url": f"/audio/{conversation_id}/{message_id}.mp3",
+                    }
+                )
 
-                yield sse_format("audio_url", {"url": f"/audio/{conversation_id}/{message_id}.mp3"})
+                yield sse_format(
+                    "audio_url", {"url": f"/audio/{conversation_id}/{message_id}.mp3"}
+                )
                 yield sse_format("done", {})
                 return
 
             # ── Step 3: RAG ──────────────────────────────────────
-            context_chunks = rag_pipeline.get_chunks_with_scores(user_text, top_k=config.RAG_TOP_K)
+            context_chunks = rag_pipeline.get_chunks_with_scores(
+                user_text, top_k=config.RAG_TOP_K
+            )
             context = rag_pipeline.get_context_string(user_text, top_k=config.RAG_TOP_K)
             _t_rag = time.time()
 
             # ── Step 4: LLM streaming + sentence detection ──────
             # Build conversation context (rolling summary + recent turns) for memory
-            conversation_context = build_conversation_context(conversation_id, recent_count=3)
-            system_prompt = build_system_prompt(context, conversation_context=conversation_context)
+            conversation_context = build_conversation_context(
+                conversation_id, recent_count=3
+            )
+            system_prompt = build_system_prompt(
+                context, conversation_context=conversation_context
+            )
             loop = asyncio.get_running_loop()
             sentence_buf = SentenceBuffer()
             tts_futures: dict[asyncio.Task, int] = {}  # task → sentence_id
@@ -620,7 +664,9 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
             def run_llm_stream():
                 try:
                     for token in llm_service.generate_stream_with_context(
-                        prompt=user_text, context=context, system_prompt=system_prompt,
+                        prompt=user_text,
+                        context=context,
+                        system_prompt=system_prompt,
                         context_chunks=context_chunks,
                     )[0]:
                         loop.call_soon_threadsafe(queue.put_nowait, ("token", token))
@@ -649,7 +695,8 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
                     break
 
                 done_set, _ = await asyncio.wait(
-                    pending, return_when=asyncio.FIRST_COMPLETED,
+                    pending,
+                    return_when=asyncio.FIRST_COMPLETED,
                 )
 
                 for done in done_set:
@@ -662,7 +709,9 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
 
                         elif kind == "error":
                             logger.error("LLM streaming error: %s", data)
-                            yield sse_format("error", {"detail": f"Error en respuesta: {data}"})
+                            yield sse_format(
+                                "error", {"detail": f"Error en respuesta: {data}"}
+                            )
                             return
 
                         elif kind == "token":
@@ -678,33 +727,52 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
                             try:
                                 task = asyncio.create_task(
                                     tts_service.synthesize_sentence(
-                                        clean_sentence, sentence_id,
+                                        clean_sentence,
+                                        sentence_id,
                                         output_dir=config.AUDIO_DIR / conversation_id,
                                     )
                                 )
                                 tts_futures[task] = sentence_id
                                 sentence_id += 1
                             except Exception as e:
-                                logger.error("TTS task creation failed for sentence %d: %s", sentence_id, e)
-                                yield sse_format("error", {"detail": "TTS synthesis failed", "id": sentence_id})
+                                logger.error(
+                                    "TTS task creation failed for sentence %d: %s",
+                                    sentence_id,
+                                    e,
+                                )
+                                yield sse_format(
+                                    "error",
+                                    {
+                                        "detail": "TTS synthesis failed",
+                                        "id": sentence_id,
+                                    },
+                                )
                                 sentence_id += 1
                     else:
                         # A TTS task completed — yield the audio chunk immediately
                         try:
                             sid, audio_path = done.result()
-                            yield sse_format("audio_chunk", {
-                                "id": sid,
-                                "url": f"/audio/{conversation_id}/{audio_path.name}"
-                            })
+                            yield sse_format(
+                                "audio_chunk",
+                                {
+                                    "id": sid,
+                                    "url": f"/audio/{conversation_id}/{audio_path.name}",
+                                },
+                            )
                         except Exception as e:
                             logger.error("TTS task %s failed: %s", done, e)
                             sid = tts_futures.get(done, -1)
-                            yield sse_format("error", {"detail": "TTS synthesis failed", "id": sid})
+                            yield sse_format(
+                                "error", {"detail": "TTS synthesis failed", "id": sid}
+                            )
                         del tts_futures[done]
 
             _t_llm = time.time()
-            logger.info("Stream LLM + TTS interleaved: %.2fs total, %d sentences",
-                         _t_llm - _t_rag, sentence_id)
+            logger.info(
+                "Stream LLM + TTS interleaved: %.2fs total, %d sentences",
+                _t_llm - _t_rag,
+                sentence_id,
+            )
 
             # Store full message and turn with chunks_used
             turn_number = len(conversations[conversation_id].get("turns", []))
@@ -717,12 +785,16 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
             conversations[conversation_id]["turns"].append(new_turn)
             # Update rolling summary for conversation memory
             update_conversation_summary(conversation_id, new_turn)
-            conversations[conversation_id]["last_activity_at"] = datetime.utcnow().isoformat()
-            conversations[conversation_id]["messages"].append({
-                "user_text": user_text,
-                "response_text": full_response,
-                "audio_url": f"/audio/{conversation_id}/",  # multiple chunks
-            })
+            conversations[conversation_id]["last_activity_at"] = (
+                datetime.utcnow().isoformat()
+            )
+            conversations[conversation_id]["messages"].append(
+                {
+                    "user_text": user_text,
+                    "response_text": full_response,
+                    "audio_url": f"/audio/{conversation_id}/",  # multiple chunks
+                }
+            )
 
             yield sse_format("done", {})
 
@@ -756,4 +828,6 @@ async def get_conversation_context(conversation_id: str, turn: int = 0):
 
 # Serve frontend static files
 if config.FRONTEND_DIR.exists():
-    app.mount("/", StaticFiles(directory=str(config.FRONTEND_DIR), html=True), name="frontend")
+    app.mount(
+        "/", StaticFiles(directory=str(config.FRONTEND_DIR), html=True), name="frontend"
+    )
