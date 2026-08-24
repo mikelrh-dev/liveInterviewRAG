@@ -62,3 +62,5 @@ nul
 
 # Local env overrides
 *.local
+# Local Pi runtime state
+.atl/
