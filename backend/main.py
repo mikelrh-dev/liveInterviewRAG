@@ -600,7 +600,8 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
                 for token in farewell.split(" "):
                     yield sse_format("token", {"text": token + " "})
                 yield sse_format("interview_end", {"message": farewell})
-                # Store the farewell in conversation
+                # Store the farewell in conversation (messages + turns stay in
+                # sync so build_conversation_context sees the full history)
                 conversations[conversation_id]["messages"].append(
                     {
                         "user_text": user_text,
@@ -608,9 +609,20 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
                         "audio_url": "",
                     }
                 )
-                # Post-hoc report — must never break the SSE stream
-                report_service.generate(
-                    conversation_id, conversations.get(conversation_id)
+                farewell_turn = {
+                    "n": len(conversations[conversation_id].get("turns", [])),
+                    "user_text": user_text,
+                    "assistant_text": farewell,
+                    "chunks_used": [],
+                }
+                conversations[conversation_id]["turns"].append(farewell_turn)
+                update_conversation_summary(conversation_id, farewell_turn)
+                # Post-hoc report — must never break the SSE stream.
+                # to_thread keeps the event loop free during the file write.
+                await asyncio.to_thread(
+                    report_service.generate,
+                    conversation_id,
+                    conversations.get(conversation_id),
                 )
                 return
 
