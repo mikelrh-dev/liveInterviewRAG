@@ -266,6 +266,42 @@ The digital twin is fed by a structured candidate profile that gets embedded int
 
 The wiki system is the source of truth for the candidate data, with a compile script that regenerates these flat files. See `wiki/CONVENCIONES.md` for the wiki conventions.
 
+### Editing the wiki (content workflow)
+
+`wiki/` is the hand-authored source of truth. The full edit → deploy loop:
+
+```bash
+# 1. Edit pages under wiki/ (conventions in wiki/CONVENCIONES.md)
+
+# 2. Validate frontmatter, links, dates (read-only; exit 0/1/2)
+python scripts/wiki/validate.py --wiki wiki/
+
+# 3. Compile wiki/ -> candidate/ (atomic swap; aborts on any validation error)
+python scripts/wiki/compile.py --wiki wiki/ --out candidate/
+
+# 4. Deploy to the VPS (bash/systemd; run on-VPS or via SSH from WSL/Git-Bash):
+#    validate -> compile -> rsync -> systemctl restart interviewtts.service
+VPS_HOST=your-host VPS_USER=deploy ./scripts/deploy.sh
+```
+
+Notes:
+
+- `wiki/index.md` is **AUTO-GENERATED** by `scripts/wiki/generate_index.py` — never hand-edit it.
+- `deploy.sh` keeps one rollback copy on the VPS at `candidate.prev/`. Roll back with:
+  `ssh <host> 'mv candidate candidate.broken && mv candidate.prev candidate && sudo systemctl restart interviewtts.service'`
+- Further rollback anchors: git tag `pre/wiki-pipeline` (last pre-change commit) and an out-of-repo zip snapshot of `candidate/` taken before the change.
+
+#### Backing up `wiki/` (manual, private repo)
+
+`wiki/` contains personal data and is git-ignored in this repo. After editing, push it manually to a PRIVATE GitHub repository:
+
+```bash
+cd wiki/
+git add -A && git commit -m "docs: update wiki content" && git push
+```
+
+This backup is a documented manual workflow only — no automation hook is wired up.
+
 ---
 
 ## Deployment
