@@ -285,7 +285,7 @@ function init() {
     // Mic button
     btnMic.addEventListener("click", toggleInterview);
 
-    addMessage("system", "Presioná el micrófono para empezar.");
+    addMessage("system", "Presiona el micrófono para empezar.");
     setStatus("Preparado");
 }
 
@@ -501,6 +501,7 @@ function startVisualizationLoop() {
 // ─── State machine ─────────────────────────────────────
 
 function setState(state) {
+    document.body.dataset.state = state;
     currentState = state;
 
     // Update ring
@@ -645,7 +646,7 @@ async function startRecording() {
         if (!selectedMimeType) {
             console.error("No supported audio codec for MediaRecorder");
             setStatus(
-                "Tu navegador no soporta grabación de audio compatible — usá Chrome o Safari actualizado",
+                "Tu navegador no soporta grabación de audio compatible — usa Chrome o Safari actualizado",
                 true,
             );
             setState("idle");
@@ -670,12 +671,12 @@ async function startRecording() {
         isRecording = true;
         hasSpoken = false;
         startVad();
-        setStatus("Escuchando...");
+        setStatus("Escuchando…");
         setState("listening");
     } catch (e) {
         console.error("Mic denied:", e);
         setStatus(
-            "Acceso al micrófono denegado — revisá permisos del navegador",
+            "Acceso al micrófono denegado — revisa permisos del navegador",
             true,
         );
         setState("idle");
@@ -715,7 +716,7 @@ function vadLoop() {
     } else if (hasSpoken) {
         if (silenceStart === null) silenceStart = Date.now();
         else if (Date.now() - silenceStart >= SILENCE_TIMEOUT_MS) {
-            setStatus("Procesando...");
+            setStatus("Procesando…");
             setState("processing");
             stopRecording();
             return;
@@ -780,7 +781,7 @@ function tryPlayNextChunk() {
 
     const chunk = audioQueue.splice(idx, 1)[0];
     isAudioPlaying = true;
-    setStatus("Reproduciendo...");
+    setStatus("Reproduciendo…");
     setState("speaking");
     addAudioIndicator();
 
@@ -852,7 +853,7 @@ async function fetchWithBackoff(url, options, maxRetries = 5) {
             return res;
         } catch (e) {
             if (attempt === maxRetries) throw e;
-            setStatus("Sin conexión — reintentando...", "error");
+            setStatus("Sin conexión — reintentando…", "error");
             await new Promise((r) => setTimeout(r, delay));
             delay = Math.min(delay * 2, 30000);
         }
@@ -862,10 +863,15 @@ async function fetchWithBackoff(url, options, maxRetries = 5) {
 // ─── SSE pipeline ──────────────────────────────────────
 
 async function processRecordingStream() {
-    if (audioChunks.length === 0) return;
+    if (audioChunks.length === 0) {
+        // Nothing captured (e.g. instant stop): release the processing
+        // state so body[data-state] doesn't strand the mic on amber.
+        setState("idle");
+        return;
+    }
     isProcessing = true;
     btnMic.disabled = true;
-    setStatus("Enviando audio...");
+    setStatus("Enviando audio…");
     setState("processing");
     resetAudioQueue();
     currentCandidateDiv = null;
@@ -1073,7 +1079,7 @@ function renderContext(chunks) {
             (chunk, i) => `
         <div class="chunk-pill" data-index="${i}" onclick="toggleChunk(this)">
             <span class="chunk-score">${chunk.score.toFixed(2)}</span>
-            <span class="chunk-preview">${escapeHtml(chunk.text.substring(0, 100))}${chunk.text.length > 100 ? "..." : ""}</span>
+            <span class="chunk-preview">${escapeHtml(chunk.text.substring(0, 100))}${chunk.text.length > 100 ? "…" : ""}</span>
             <div class="chunk-full">
                 <p>${escapeHtml(chunk.text)}</p>
                 <p class="chunk-source">Fuente: ${escapeHtml(chunk.source)}</p>
