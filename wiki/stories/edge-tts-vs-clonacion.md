@@ -6,7 +6,7 @@ updated: 2026-06-16
 confidence: high
 tags: [tts, tradeoffs, optimization, streaming, deployment, voice]
 related: [projects/interview-tts.md, decisions/por-que-interviewtts.md, skills/backend.md, skills/devops.md]
-summary_1line: Elegir Edge TTS gratis en vez de clonación de voz o ElevenLabs para no sacrificar fluidez en el VPS
+summary_1line: "Edge TTS gratis en vez de clonar voz: prioricé fluidez y costo cero en el VPS"
 ---
 
 # Edge TTS vs clonación de voz

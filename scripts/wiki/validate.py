@@ -80,8 +80,10 @@ def _check_fields(relpath, folder, meta, errors):
     if ftype not in TYPE_TO_FOLDER:
         err(f"type '{ftype}' is not one of {sorted(TYPE_TO_FOLDER)}")
     elif not folder or TYPE_TO_FOLDER[ftype] != folder:
-        err(f"type '{ftype}' does not match parent folder '{folder}/' "
-            f"(expected '{TYPE_TO_FOLDER[ftype]}/')")
+        err(
+            f"type '{ftype}' does not match parent folder '{folder}/' "
+            f"(expected '{TYPE_TO_FOLDER[ftype]}/')"
+        )
 
     title = meta.get("title")
     stem = Path(relpath).stem
@@ -114,10 +116,16 @@ def _check_link_symmetry(pages, warnings):
         for raw in meta.get("related") or []:
             target = normalize_related(str(raw))
             if target in pages:
-                back = [normalize_related(str(r)) for r in pages[target].get("related") or []]
+                back = [
+                    normalize_related(str(r))
+                    for r in pages[target].get("related") or []
+                ]
                 if relpath not in back:
                     warnings.append(
-                        (target, f"link asymmetry: '{relpath}' relates here but no reciprocal entry")
+                        (
+                            target,
+                            f"link asymmetry: '{relpath}' relates here but no reciprocal entry",
+                        )
                     )
 
 
@@ -132,15 +140,19 @@ def _check_stale_low_confidence(pages, warnings):
             except ValueError:
                 continue
             if age > STALE_DAYS:
-                warnings.append((
-                    relpath,
-                    f"stale content: confidence=low and updated {age} days ago (> {STALE_DAYS})",
-                ))
+                warnings.append(
+                    (
+                        relpath,
+                        f"stale content: confidence=low and updated {age} days ago (> {STALE_DAYS})",
+                    )
+                )
 
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Validate wiki/ against CONVENCIONES.")
-    parser.add_argument("--wiki", default="wiki", help="Path to the wiki root (default: wiki)")
+    parser.add_argument(
+        "--wiki", default="wiki", help="Path to the wiki root (default: wiki)"
+    )
     args = parser.parse_args(argv)
 
     wiki_root = Path(args.wiki).resolve()

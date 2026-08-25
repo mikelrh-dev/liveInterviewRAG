@@ -6,7 +6,7 @@ updated: 2026-08-16
 confidence: high
 tags: [testing, tdd, pytest, quality, skills]
 related: [projects/interview-tts.md, opinions/importancia-tests.md, profile/mikel.md]
-summary_1line: Testing autodidacta, unitarios e integración, pytest, después de cada cambio significativo
+summary_1line: "Testing autodidacta: pytest unitario e integración tras cada cambio"
 ---
 
 # Testing

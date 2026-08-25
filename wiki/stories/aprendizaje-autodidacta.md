@@ -6,7 +6,7 @@ updated: 2026-08-16
 confidence: high
 tags: [learning, autodidact, methodology, ai, open-source]
 related: [profile/mikel.md, stories/autodidacta-fastapi-docker-async.md, opinions/opinion-ia-desarrollo.md]
-summary_1line: Metodología de aprendizaje autodidacta: YouTube, referentes, open source e IA
+summary_1line: "Metodología de aprendizaje autodidacta: YouTube, referentes, open source e IA"
 ---
 
 # Cómo aprendo algo nuevo — Metodología autodidacta (STAR)

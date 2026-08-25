@@ -6,7 +6,7 @@ updated: 2026-08-16
 confidence: high
 tags: [teamwork, crisis-management, logistics, mercadona]
 related: [experience/gerente-mercadona-2019-2025.md, stories/liderazgo-covid-mercadona.md]
-summary_1line: Gestión de huelga de camiones: coordinar equipo para recibir y almacenar días de stock de golpe
+summary_1line: "Huelga de camiones: coordiné al equipo para recibir y almacenar días de stock"
 ---
 
 # Huelga de camiones — Coordinación de equipo (STAR)

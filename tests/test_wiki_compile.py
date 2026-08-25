@@ -71,7 +71,12 @@ class TestProfileMapping:
         assert run_compile(wiki, tmp_path / "candidate").returncode == 0
         profile = read_profile(tmp_path / "candidate")
         assert profile["skills"] == [
-            "Python (FastAPI)", "Java", "SQL", "JavaScript", "HTML", "CSS",
+            "Python (FastAPI)",
+            "Java",
+            "SQL",
+            "JavaScript",
+            "HTML",
+            "CSS",
         ]
 
     def test_experience_parsed_from_timeline(self, tmp_path):
@@ -79,47 +84,60 @@ class TestProfileMapping:
         assert run_compile(wiki, tmp_path / "candidate").returncode == 0
         profile = read_profile(tmp_path / "candidate")
         assert profile["experience"] == [
-            {"role": "Frutero", "company": "BM Supermercados",
-             "period": "2015\u20132016", "highlights": []},
-            {"role": "Encargado", "company": "BM Supermercados",
-             "period": "2016\u20132019", "highlights": []},
-            {"role": "Gerente B", "company": "Mercadona",
-             "period": "2019\u2013Nov 2025", "highlights": []},
+            {
+                "role": "Frutero",
+                "company": "BM Supermercados",
+                "period": "2015\u20132016",
+                "highlights": [],
+            },
+            {
+                "role": "Encargado",
+                "company": "BM Supermercados",
+                "period": "2016\u20132019",
+                "highlights": [],
+            },
+            {
+                "role": "Gerente B",
+                "company": "Mercadona",
+                "period": "2019\u2013Nov 2025",
+                "highlights": [],
+            },
         ]
 
     def test_projects_from_projects_folder(self, tmp_path):
         wiki = copy_fixture("good", tmp_path)
         assert run_compile(wiki, tmp_path / "candidate").returncode == 0
         profile = read_profile(tmp_path / "candidate")
-        assert profile["projects"] == [{
-            "name": "interview-tts",
-            "description":
-                "Voice-based AI interview digital twin for recruiter conversations",
-            "technologies": ["project", "voice", "fullstack"],
-            "highlights": [
-                "Full-stack solo build: FastAPI backend plus vanilla JS frontend",
-                "Faster Whisper STT wired to an LLM and Edge TTS output",
-                "RAG retrieval over candidate documents for grounded answers",
-            ],
-        }]
+        assert profile["projects"] == [
+            {
+                "name": "interview-tts",
+                "description": "Voice-based AI interview digital twin for recruiter conversations",
+                "technologies": ["project", "voice", "fullstack"],
+                "highlights": [
+                    "Full-stack solo build: FastAPI backend plus vanilla JS frontend",
+                    "Faster Whisper STT wired to an LLM and Edge TTS output",
+                    "RAG retrieval over candidate documents for grounded answers",
+                ],
+            }
+        ]
 
     def test_stories_star_from_h2_sections(self, tmp_path):
         wiki = copy_fixture("good", tmp_path)
         assert run_compile(wiki, tmp_path / "candidate").returncode == 0
         profile = read_profile(tmp_path / "candidate")
-        assert profile["stories"] == [{
-            "situation":
-                "En el d\u00eda a d\u00eda de Mercadona cada d\u00eda era "
+        assert profile["stories"] == [
+            {
+                "situation": "En el d\u00eda a d\u00eda de Mercadona cada d\u00eda era "
                 "diferente y surg\u00edan imprevistos.",
-            "task": "Garantizar que todo estuviera planificado sin perder flexibilidad.",
-            "action": (
-                "- Planificaci\u00f3n del d\u00eda previo por escrito\n"
-                "- Priorizaci\u00f3n bajo presi\u00f3n reasignando tareas"
-            ),
-            "result":
-                "El equipo arrancaba con claridad y los imprevistos no frenaban "
+                "task": "Garantizar que todo estuviera planificado sin perder flexibilidad.",
+                "action": (
+                    "- Planificaci\u00f3n del d\u00eda previo por escrito\n"
+                    "- Priorizaci\u00f3n bajo presi\u00f3n reasignando tareas"
+                ),
+                "result": "El equipo arrancaba con claridad y los imprevistos no frenaban "
                 "la operaci\u00f3n.",
-        }]
+            }
+        ]
 
     def test_key_order_and_no_documents_key(self, tmp_path):
         wiki = copy_fixture("good", tmp_path)
@@ -127,8 +145,13 @@ class TestProfileMapping:
         raw = (tmp_path / "candidate" / "profile.json").read_text(encoding="utf-8")
         profile = json.loads(raw)
         assert list(profile.keys()) == [
-            "name", "title", "summary", "skills",
-            "experience", "projects", "stories",
+            "name",
+            "title",
+            "summary",
+            "skills",
+            "experience",
+            "projects",
+            "stories",
         ]
         assert "documents" not in profile
 
@@ -144,8 +167,10 @@ class TestProfileMapping:
         wiki = copy_fixture("good", tmp_path)
         mikel = wiki / "profile" / "mikel.md"
         text = mikel.read_text(encoding="utf-8")
-        mikel.write_text(text.replace("- **Role:** Software Developer (Junior)\n", ""),
-                         encoding="utf-8")
+        mikel.write_text(
+            text.replace("- **Role:** Software Developer (Junior)\n", ""),
+            encoding="utf-8",
+        )
         result = run_compile(wiki, tmp_path / "candidate")
         assert result.returncode != 0
         assert "Role" in (result.stdout + result.stderr)
@@ -163,7 +188,8 @@ class TestDocsOutput:
         wiki = copy_fixture("good", tmp_path)
         assert run_compile(wiki, tmp_path / "candidate").returncode == 0
         body = (tmp_path / "candidate" / "docs" / "skills-backend.md").read_text(
-            encoding="utf-8")
+            encoding="utf-8"
+        )
         assert not body.startswith("---")
         assert "# Backend" in body
         assert "confidence" not in body.split("# Backend")[0]
@@ -181,8 +207,9 @@ class TestBlockingGate:
         assert "[ERROR]" in result.stdout
         after = {p: p.read_bytes() for p in out.rglob("*") if p.is_file()}
         assert before == after, "gate failure must leave candidate untouched"
-        assert not list(tmp_path.glob("candidate.tmp-*")), \
+        assert not list(tmp_path.glob("candidate.tmp-*")), (
             "temp dir must never be created on gate failure"
+        )
 
     def test_type_folder_mismatch_rejected_by_cli_gate(self, tmp_path):
         wiki = copy_fixture("good", tmp_path)
@@ -201,10 +228,16 @@ class TestAtomicSwapAndIdempotency:
         wiki = copy_fixture("good", tmp_path)
         assert run_compile(wiki, tmp_path / "c1").returncode == 0
         assert run_compile(wiki, tmp_path / "c2").returncode == 0
-        files1 = {p.relative_to(tmp_path / "c1"): p.read_bytes()
-                  for p in sorted((tmp_path / "c1").rglob("*")) if p.is_file()}
-        files2 = {p.relative_to(tmp_path / "c2"): p.read_bytes()
-                  for p in sorted((tmp_path / "c2").rglob("*")) if p.is_file()}
+        files1 = {
+            p.relative_to(tmp_path / "c1"): p.read_bytes()
+            for p in sorted((tmp_path / "c1").rglob("*"))
+            if p.is_file()
+        }
+        files2 = {
+            p.relative_to(tmp_path / "c2"): p.read_bytes()
+            for p in sorted((tmp_path / "c2").rglob("*"))
+            if p.is_file()
+        }
         assert files1 == files2
 
     def test_rerun_into_existing_dir_swaps_atomically(self, tmp_path):
@@ -233,8 +266,10 @@ class TestAtomicSwapAndIdempotency:
             encoding="utf-8",
         )
         import importlib.util
+
         spec = importlib.util.spec_from_file_location(
-            "wiki_compile", REPO_ROOT / "scripts" / "wiki" / "compile.py")
+            "wiki_compile", REPO_ROOT / "scripts" / "wiki" / "compile.py"
+        )
         assert spec is not None and spec.loader is not None
         compile_mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(compile_mod)

@@ -6,7 +6,7 @@ updated: 2026-06-16
 confidence: high
 tags: [learning, autonomy, initiative, fastapi, docker, async, python, ai, agents, sdd, tdd]
 related: [projects/interview-tts.md, decisions/dejar-mercadona-para-dam.md, skills/backend.md, skills/devops.md, skills/data.md]
-summary_1line: Soy una persona curiosa que en el FP de DAM aprovechaba para ampliar más allá del temario: Python, web, y desarrollo con IA
+summary_1line: "Curiosidad en DAM: Python, web y desarrollo con IA más allá del temario"
 ---
 
 # Curiosidad más allá del FP

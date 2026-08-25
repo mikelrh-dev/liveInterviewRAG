@@ -5,7 +5,7 @@ created: 2026-06-13
 updated: 2026-08-16
 confidence: high
 tags: [management, retail, leadership, mercadona]
-related: [profile/mikel.md, stories/conflicto-en-equipo-retail.md]
+related: [profile/mikel.md]
 summary_1line: Gerente B (Encargado) at Mercadona, 2019-Nov 2025
 ---
 

@@ -6,7 +6,7 @@ updated: 2026-06-16
 confidence: high
 tags: [error, debugging, config, learning, deployment, stt]
 related: [projects/interview-tts.md, decisions/por-que-interviewtts.md, skills/backend.md, skills/devops.md]
-summary_1line: Se me pasó el default del config al migrar Whisper y el sistema siguió días corriendo con el modelo viejo sin que me diera cuenta
+summary_1line: "Se me pasó un default al migrar Whisper y prod corrió días con el modelo viejo"
 ---
 
 # Whisper config default escondido

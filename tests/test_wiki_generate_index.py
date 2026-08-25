@@ -126,12 +126,20 @@ class TestSorting:
     def test_sorted_by_updated_desc(self, tmp_path):
         wiki = make_wiki(tmp_path)
         add_page(
-            wiki, "projects", "aaa-old",
-            updated="2026-01-15", title="aaa-old", summary="older project page",
+            wiki,
+            "projects",
+            "aaa-old",
+            updated="2026-01-15",
+            title="aaa-old",
+            summary="older project page",
         )
         add_page(
-            wiki, "projects", "zzz-new",
-            updated="2026-12-01", title="zzz-new", summary="newer project page",
+            wiki,
+            "projects",
+            "zzz-new",
+            updated="2026-12-01",
+            title="zzz-new",
+            summary="newer project page",
         )
         assert run_generate(wiki).returncode == 0
         index = read_index(wiki)
@@ -159,9 +167,7 @@ class TestDeterminismAndIsolation:
         assert run_generate(wiki).returncode == 0
         assert read_index(wiki) == first, "regeneration is not byte-stable"
 
-    def test_regenerates_unconditionally_overwriting_stale_content(
-        self, tmp_path
-    ):
+    def test_regenerates_unconditionally_overwriting_stale_content(self, tmp_path):
         wiki = make_wiki(tmp_path)
         (wiki / "index.md").write_text("STALE HAND-EDITED CONTENT", encoding="utf-8")
         assert run_generate(wiki).returncode == 0
@@ -176,9 +182,7 @@ class TestDeterminismAndIsolation:
         assert run_generate(wiki).returncode == 0
         after = snapshot_mtimes(wiki)
         assert set(before) == set(after)
-        changed = {
-            name for name, ts in after.items() if ts != before[name]
-        }
+        changed = {name for name, ts in after.items() if ts != before[name]}
         assert changed == {"index.md"}, f"unexpected modified files: {changed}"
 
 

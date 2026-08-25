@@ -6,7 +6,7 @@ updated: 2026-08-16
 confidence: high
 tags: [leadership, crisis-management, mercadona, covid, teamwork]
 related: [experience/gerente-mercadona-2019-2025.md, profile/mikel.md]
-summary_1line: Liderazgo y coordinación de equipo durante los primeros días del COVID en Mercadona
+summary_1line: "Liderazgo y coordinación del equipo en los primeros días del COVID"
 ---
 
 # Liderazgo bajo presión — COVID en Mercadona (STAR)
