@@ -81,7 +81,8 @@ def _parse_skills(body: str, relpath: str) -> list[str]:
         skills.extend(item.strip() for item in items if item.strip())
     if not skills:
         raise CompileError(
-            f"{relpath}: '## Top skills (summary)' has no '- **Domain:** a, b' bullets")
+            f"{relpath}: '## Top skills (summary)' has no '- **Domain:** a, b' bullets"
+        )
     return skills
 
 
@@ -97,11 +98,13 @@ def _parse_experience(body: str, relpath: str) -> list[dict]:
         else:
             role, company = remainder, ""
         experience.append(
-            {"role": role, "company": company, "period": period, "highlights": []})
+            {"role": role, "company": company, "period": period, "highlights": []}
+        )
     if not experience:
         raise CompileError(
             f"{relpath}: '## Career timeline (corrected)' has no "
-            f"'- **PERIOD:** Role, Company' bullets")
+            f"'- **PERIOD:** Role, Company' bullets"
+        )
     return experience
 
 
@@ -115,7 +118,8 @@ def _story_fields(body: str) -> dict:
             found_any = True
     if not found_any:
         story["situation"] = "\n".join(
-            line.strip() for line in body.splitlines() if line.strip())
+            line.strip() for line in body.splitlines() if line.strip()
+        )
         story["task"] = story["action"] = story["result"] = ""
     return story
 
@@ -134,15 +138,16 @@ def _build_profile(pages: list[tuple[str, str, dict, str]]) -> dict:
         if folder != "projects":
             continue
         stem = Path(rel).stem
-        projects.append({
-            "name": stem,
-            "description": pmeta.get("summary_1line", ""),
-            "technologies": list(pmeta.get("tags") or []),
-            "highlights": [
-                line.lstrip("-").strip()
-                for line in _bullet_and_text_lines(pbody)
-            ],
-        })
+        projects.append(
+            {
+                "name": stem,
+                "description": pmeta.get("summary_1line", ""),
+                "technologies": list(pmeta.get("tags") or []),
+                "highlights": [
+                    line.lstrip("-").strip() for line in _bullet_and_text_lines(pbody)
+                ],
+            }
+        )
 
     stories = []
     for _rel, folder, _smeta, sbody in sorted(pages, key=lambda page: page[0]):
@@ -196,7 +201,8 @@ def build(wiki_root: Path, dest: Path) -> tuple[int, list[str]]:
 
     profile = _build_profile(pages)
     (dest / "profile.json").write_text(
-        json.dumps(profile, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        json.dumps(profile, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
 
     count = 1  # profile.json
     for relpath, folder, meta, body in sorted(pages, key=lambda page: page[0]):
@@ -210,9 +216,12 @@ def build(wiki_root: Path, dest: Path) -> tuple[int, list[str]]:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
-        description="Compile wiki/ into the candidate/ deployment tree.")
+        description="Compile wiki/ into the candidate/ deployment tree."
+    )
     parser.add_argument("--wiki", default="wiki", help="Wiki root (default: wiki)")
-    parser.add_argument("--out", default="candidate", help="Output dir (default: candidate)")
+    parser.add_argument(
+        "--out", default="candidate", help="Output dir (default: candidate)"
+    )
     args = parser.parse_args(argv)
 
     wiki_root = Path(args.wiki).resolve()
@@ -267,8 +276,10 @@ def main(argv=None) -> int:
         os.replace(tmp, out)
     except OSError as exc:
         shutil.rmtree(tmp, ignore_errors=True)
-        print(f"[ERROR] atomic swap failed (prior state may be at {prev}): {exc}",
-              file=sys.stderr)
+        print(
+            f"[ERROR] atomic swap failed (prior state may be at {prev}): {exc}",
+            file=sys.stderr,
+        )
         return 2
     if had_prev_out:
         try:
@@ -276,8 +287,10 @@ def main(argv=None) -> int:
         except OSError:
             print(f"[WARN] could not remove {prev}", file=sys.stderr)
 
-    print(f"Replaced: {n_built} files written to {out} "
-          f"(from {n_files} wiki files, {len(skipped)} skipped)")
+    print(
+        f"Replaced: {n_built} files written to {out} "
+        f"(from {n_files} wiki files, {len(skipped)} skipped)"
+    )
     return 0
 
 
