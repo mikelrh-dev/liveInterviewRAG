@@ -24,6 +24,8 @@ env/
 venv/
 ENV/
 audio/
+# Generated interview transcripts (operator-only, personal data)
+reports/
 *.mp3
 *.wav
 *.webm

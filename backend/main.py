@@ -6,7 +6,7 @@ import logging
 import os
 import time
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta
 
 from dotenv import load_dotenv
@@ -24,6 +24,7 @@ from backend.prompts.candidate import build_system_prompt, sanitize_for_tts
 from backend.services.candidate import CandidateProfile
 from backend.services.llm import LLMService, SentenceBuffer
 from backend.services.rag import RAGPipeline
+from backend.services.report import ReportService
 from backend.services.response_cache import get_cached_response
 from backend.services.stt import STTService
 from backend.services.tts import TTSService
@@ -114,6 +115,11 @@ rag_pipeline = RAGPipeline(
 )
 candidate_profile = CandidateProfile(config.CANDIDATE_DIR, wiki_dir=config.WIKI_DIR)
 
+report_service = ReportService(
+    output_dir=config.REPORTS_DIR,
+    retention_days=config.REPORT_RETENTION_DAYS,
+)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -149,6 +155,13 @@ async def lifespan(app: FastAPI):
     # Clean up stale audio files from previous runs
     cleanup_stale_audio()
 
+    # Ensure reports directory exists and prune expired reports (30d retention)
+    try:
+        config.REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+        report_service.cleanup_expired()
+    except Exception as e:
+        logger.warning("Report dir/cleanup failed at startup: %s", e)
+
     # Spawn periodic cleanup task
     cleanup_interval = config.AUDIO_CLEANUP_INTERVAL_MIN * 60
     cleanup_task = asyncio.create_task(
@@ -160,10 +173,8 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     cleanup_task.cancel()
-    try:
+    with suppress(asyncio.CancelledError):
         await cleanup_task
-    except asyncio.CancelledError:
-        pass
     logger.info("InterviewTTS backend stopped")
 
 
@@ -196,6 +207,10 @@ async def periodic_cleanup(interval_seconds: int) -> None:
             ]
             for cid in stale_ids:
                 logger.debug("Evicting stale conversation: %s", cid)
+                try:
+                    report_service.generate(cid, conversations.get(cid))
+                except Exception as e:  # defense-in-depth; service already swallows
+                    logger.warning("Report on eviction failed for %s: %s", cid, e)
                 del conversations[cid]
         except Exception as e:
             logger.error("Conversation eviction failed: %s", e)
@@ -213,6 +228,10 @@ async def periodic_cleanup(interval_seconds: int) -> None:
             cleanup_stale_audio()
         except Exception as e:
             logger.error("Audio cleanup failed: %s", e)
+        try:
+            report_service.cleanup_expired()
+        except Exception as e:
+            logger.error("Report cleanup failed: %s", e)
         await asyncio.sleep(interval_seconds)
 
 
@@ -423,7 +442,7 @@ async def send_message(conversation_id: str, audio: UploadFile = File(...)):
         except Exception as e:
             raise HTTPException(
                 status_code=422, detail=f"Could not transcribe audio: {e}"
-            )
+            ) from e
         _t.append(time.time())
 
         if not user_text.strip():
@@ -462,7 +481,7 @@ async def send_message(conversation_id: str, audio: UploadFile = File(...)):
                 raise HTTPException(
                     status_code=503,
                     detail=f"Response generation temporarily unavailable: {e}",
-                )
+                ) from e
             _t.append(time.time())
 
         # Step 4: TTS — synthesize audio response
@@ -470,11 +489,11 @@ async def send_message(conversation_id: str, audio: UploadFile = File(...)):
         output_audio = config.AUDIO_DIR / f"{conversation_id}/{message_id}.mp3"
         try:
             clean_text = sanitize_for_tts(response_text)
-            audio_path = await tts_service.synthesize(
-                clean_text, output_path=output_audio
-            )
+            await tts_service.synthesize(clean_text, output_path=output_audio)
         except RuntimeError as e:
-            raise HTTPException(status_code=503, detail=f"TTS synthesis failed: {e}")
+            raise HTTPException(
+                status_code=503, detail=f"TTS synthesis failed: {e}"
+            ) from e
         _t.append(time.time())
 
         # Log pipeline timing
@@ -588,6 +607,10 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
                         "response_text": farewell,
                         "audio_url": "",
                     }
+                )
+                # Post-hoc report — must never break the SSE stream
+                report_service.generate(
+                    conversation_id, conversations.get(conversation_id)
                 )
                 return
 

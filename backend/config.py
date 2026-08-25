@@ -7,6 +7,22 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+def _env_int(name: str, default: str) -> int:
+    """Read an integer env var; fail fast naming the offending variable."""
+    try:
+        return int(os.getenv(name, default))
+    except ValueError:
+        raise ValueError(f"Invalid integer for {name}: {os.getenv(name)!r}") from None
+
+
+def _env_float(name: str, default: str) -> float:
+    """Read a float env var; fail fast naming the offending variable."""
+    try:
+        return float(os.getenv(name, default))
+    except ValueError:
+        raise ValueError(f"Invalid float for {name}: {os.getenv(name)!r}") from None
+
+
 class Config:
     """Application configuration loaded from environment variables."""
 
@@ -26,14 +42,14 @@ class Config:
 
         # LLM settings
         self.LLM_MODEL: str = os.getenv("LLM_MODEL", "openrouter/owl-alpha")
-        self.LLM_TEMPERATURE: float = float(os.getenv("LLM_TEMPERATURE", "0.7"))
-        self.LLM_MAX_TOKENS: int = int(os.getenv("LLM_MAX_TOKENS", "200"))
+        self.LLM_TEMPERATURE: float = _env_float("LLM_TEMPERATURE", "0.7")
+        self.LLM_MAX_TOKENS: int = _env_int("LLM_MAX_TOKENS", "200")
 
         # RAG settings
         self.EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
-        self.RAG_TOP_K: int = int(os.getenv("RAG_TOP_K", "3"))
-        self.CHUNK_SIZE: int = int(os.getenv("CHUNK_SIZE", "400"))
-        self.CHUNK_OVERLAP: int = int(os.getenv("CHUNK_OVERLAP", "50"))
+        self.RAG_TOP_K: int = _env_int("RAG_TOP_K", "3")
+        self.CHUNK_SIZE: int = _env_int("CHUNK_SIZE", "400")
+        self.CHUNK_OVERLAP: int = _env_int("CHUNK_OVERLAP", "50")
 
         # Paths
         self.BASE_DIR: Path = Path(__file__).resolve().parent.parent
@@ -42,20 +58,30 @@ class Config:
         self.AUDIO_DIR: Path = self.BASE_DIR / "audio"
         self.FRONTEND_DIR: Path = self.BASE_DIR / "frontend"
 
+        # Reports — persisted Markdown interview transcripts
+        self.REPORTS_DIR: Path = Path(
+            os.getenv("REPORTS_DIR", str(self.BASE_DIR / "reports"))
+        )
+
+        # Reports — retention window in days for cleanup_expired()
+        self.REPORT_RETENTION_DAYS: int = _env_int("REPORT_RETENTION_DAYS", "30")
+
         # RAG cache
         self.RAG_CACHE_DIR: Path = Path(
             os.getenv("RAG_CACHE_DIR", str(self.BASE_DIR / "backend" / ".rag_cache"))
         )
 
         # Server
+        # Intentional 0.0.0.0 binding: app sits behind nginx on the same VPS host.
+        # pi-lens-ignore: B104
         self.HOST: str = os.getenv("HOST", "0.0.0.0")
-        self.PORT: int = int(os.getenv("PORT", "8000"))
+        self.PORT: int = _env_int("PORT", "8000")
 
         # Rate limiting
-        self.RATE_LIMIT_PER_MINUTE: int = int(os.getenv("RATE_LIMIT_PER_MINUTE", "10"))
+        self.RATE_LIMIT_PER_MINUTE: int = _env_int("RATE_LIMIT_PER_MINUTE", "10")
 
         # Session TTL — hours before idle conversation eviction (floor 0.1)
-        raw_ttl = float(os.getenv("SESSION_TTL_HOURS", "2"))
+        raw_ttl = _env_float("SESSION_TTL_HOURS", "2")
         if raw_ttl < 0.1:
             logger.warning(
                 "SESSION_TTL_HOURS=%s is below floor of 0.1; defaulting to 2", raw_ttl
@@ -64,12 +90,12 @@ class Config:
         self.SESSION_TTL_HOURS: float = raw_ttl
 
         # Periodic audio cleanup interval in minutes
-        self.AUDIO_CLEANUP_INTERVAL_MIN: int = int(
-            os.getenv("AUDIO_CLEANUP_INTERVAL_MIN", "30")
+        self.AUDIO_CLEANUP_INTERVAL_MIN: int = _env_int(
+            "AUDIO_CLEANUP_INTERVAL_MIN", "30"
         )
 
         # Audio limits
-        self.MAX_AUDIO_DURATION: int = int(os.getenv("MAX_AUDIO_DURATION", "30"))
+        self.MAX_AUDIO_DURATION: int = _env_int("MAX_AUDIO_DURATION", "30")
 
 
 config = Config()
