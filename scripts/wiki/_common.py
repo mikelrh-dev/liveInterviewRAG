@@ -25,8 +25,14 @@ TYPE_TO_FOLDER = {
 FOLDER_TO_TYPE = {folder: t for t, folder in TYPE_TO_FOLDER.items()}
 
 REQUIRED_FIELDS = (
-    "type", "title", "created", "updated",
-    "confidence", "tags", "related", "summary_1line",
+    "type",
+    "title",
+    "created",
+    "updated",
+    "confidence",
+    "tags",
+    "related",
+    "summary_1line",
 )
 CONFIDENCE_ENUM = {"high", "medium", "low"}
 KEBAB_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
@@ -51,7 +57,7 @@ def parse_frontmatter(text: str):
         return None, text
     if not isinstance(meta, dict):
         return None, text
-    return meta, text[match.end():]
+    return meta, text[match.end() :]
 
 
 def normalize_related(entry: str) -> str:

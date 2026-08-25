@@ -127,7 +127,7 @@ sequenceDiagram
 ## Tech stack
 
 | Layer | Technology | Why |
-|---|---|---|
+| --- | --- | --- |
 | Backend | Python 3.10 + FastAPI | Async-first, OpenAPI docs auto-generated, Pydantic validation |
 | STT | faster-whisper (CTranslate2) | CTranslate2 is way faster than vanilla Whisper on CPU, int8 quantization keeps RAM at ~1.4 GB |
 | Embeddings | sentence-transformers (all-MiniLM-L6-v2) | Small model, runs on CPU, good enough for semantic search over a small doc set |
@@ -161,7 +161,7 @@ These are documented tradeoffs, not bugs. The point is that every decision has a
 Every optimization targets real latency in the voice pipeline. Here's what I implemented and why:
 
 | Optimization | Latency saved | Technique | Risk |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | System prompt trimming | -0.5-1.5s | Reduced 50% of tokens, kept essential instructions | Low |
 | FAQ response cache | -4-8s (hits) | 20 common questions with pre-generated answers | None |
 | Cache + RAG enrichment | 0s + rich context | Instant answer enriched with wiki-sourced details | Low |
@@ -245,7 +245,7 @@ uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
 ## API endpoints
 
 | Method | Path | Description |
-|---|---|---|
+| --- | --- | --- |
 | `GET` | `/api/health` | Service health, including model load status |
 | `GET` | `/api/config` | Public config values (no secrets) |
 | `POST` | `/api/conversation` | Create new conversation session |
