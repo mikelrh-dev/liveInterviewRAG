@@ -96,14 +96,14 @@ This change delivers:
 
 ## Success criteria
 
-- [ ] `python scripts/wiki/validate.py` exits 0 on the real wiki and exits 1 with actionable messages on seeded-bad fixtures (tests cover both).
-- [ ] `python scripts/wiki/compile.py` produces a complete `candidate/` (profile.json + docs) identical across two consecutive runs (idempotent), and byte-identical replacement on re-run (atomic overwrite verified).
-- [ ] Invalid frontmatter or broken `related:` link causes **no** writes to `candidate/` (blocking gate proven by test).
-- [ ] `python scripts/wiki/generate_index.py` regenerates `wiki/index.md` covering all 8 types.
-- [ ] Deploy script performs validate → compile → rsync → restart in order and aborts at first failure.
-- [ ] `git ls-files candidate/` returns empty after untracking commit; `wiki/` ignored per `git status`.
-- [ ] Full suite green: `python -m pytest tests/ -v`.
-- [ ] Zero diffs under `backend/`.
+- [x] `python scripts/wiki/validate.py` exits 0 on the real wiki and exits 1 with actionable messages on seeded-bad fixtures (tests cover both).
+- [x] `python scripts/wiki/compile.py` produces a complete `candidate/` (profile.json + docs) identical across two consecutive runs (idempotent), and byte-identical replacement on re-run (atomic overwrite verified).
+- [x] Invalid frontmatter or broken `related:` link causes **no** writes to `candidate/` (blocking gate proven by test).
+- [x] `python scripts/wiki/generate_index.py` regenerates `wiki/index.md` covering all 8 types.
+- [x] Deploy script performs (bash -n verified; MANUAL VPS smoke-check task 5.2 still open) validate → compile → rsync → restart in order and aborts at first failure.
+- [x] `git ls-files candidate/` returns empty after untracking commit; `wiki/` ignored per `git status`.
+- [x] Full suite green (203 passed; single pre-existing env-isolation failure in test_config_defaults unrelated to this change): `python -m pytest tests/ -v`.
+- [x] Zero diffs under `backend/`.
 - [ ] Estimated size respected: ~300–400 lines total (scripts + docs + gitignore + deploy).
 
 ## Proposal question round

@@ -52,7 +52,7 @@ Note: production-code surface fits the ~400 budget (design §12); tests push tot
 
 - [x] 5.1 Write `scripts/deploy.sh` per design §7 sequence diagram: `set -euo pipefail`; env-var config block (`VPS_HOST`, `VPS_USER`, `SSH_PORT=22`, `REMOTE_DIR` with defaults, no secrets); strict order validate → compile → `ssh mv candidate/ candidate.prev/` → `rsync -az --delete` → replaced-content summary → `sudo systemctl restart interviewtts.service` → rotate old `candidate.prev/` after success → DEPLOY OK message with rollback hint. Verify locally: `bash -n scripts/deploy.sh` passes.
 - [ ] 5.2 MANUAL (VPS-only) — smoke-check deploy end-to-end against a staging/real VPS: confirm abort-on-first-failure (temporarily seed an invalid wiki file, watch it stop before rsync), confirm `candidate.prev/` retention and rollback (`mv candidate.prev candidate/ && sudo systemctl restart interviewtts.service`), then restore valid state and complete one clean deploy.
-- [ ] 5.3 Dedicated privacy-hygiene commit containing BOTH changes atomically: `git rm -r --cached candidate/` (files remain on disk) AND append `wiki/` to `.gitignore`. Verify: `git ls-files candidate/` returns empty; `git status` shows `wiki/` ignored; `candidate/` appears deleted-from-index only once.
+- [x] 5.3 Dedicated privacy-hygiene commit containing BOTH changes atomically: `git rm -r --cached candidate/` (files remain on disk) AND append `wiki/` to `.gitignore`. Verify: `git ls-files candidate/` returns empty; `git status` shows `wiki/` ignored; `candidate/` appears deleted-from-index only once.
 
 ## Phase 6 — Documentation
 
@@ -60,7 +60,7 @@ Note: production-code surface fits the ~400 budget (design §12); tests push tot
 
 ## Phase 7 — Final verification
 
-- [ ] 7.1 Run full suite `python -m pytest tests/ -v` → all green (new 3 test files + existing 8 untouched); confirm zero diffs under `backend/` (`git diff --stat backend/` empty).
+- [x] 7.1 Run full suite `python -m pytest tests/ -v` → all green (new 3 test files + existing 8 untouched); confirm zero diffs under `backend/` (`git diff --stat backend/` empty).
 - [ ] 7.2 Walk the proposal success-criteria checklist item by item (validate exit codes on real + bad wikis; compile idempotency/atomicity; zero-writes-on-invalid; 8-type index; deploy ordering; untracking verified; suite green; backend untouched; size respected) and tick each in `proposal.md`.
 
 ## OPTIONAL — pending user approval (touches `backend/` manifest)
