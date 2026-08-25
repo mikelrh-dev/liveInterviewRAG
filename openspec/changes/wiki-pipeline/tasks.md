@@ -61,7 +61,7 @@ Note: production-code surface fits the ~400 budget (design §12); tests push tot
 ## Phase 7 — Final verification
 
 - [x] 7.1 Run full suite `python -m pytest tests/ -v` → all green (new 3 test files + existing 8 untouched); confirm zero diffs under `backend/` (`git diff --stat backend/` empty).
-- [ ] 7.2 Walk the proposal success-criteria checklist item by item (validate exit codes on real + bad wikis; compile idempotency/atomicity; zero-writes-on-invalid; 8-type index; deploy ordering; untracking verified; suite green; backend untouched; size respected) and tick each in `proposal.md`.
+- [x] 7.2 Walk the proposal success-criteria checklist item by item (validate exit codes on real + bad wikis; compile idempotency/atomicity; zero-writes-on-invalid; 8-type index; deploy ordering; untracking verified; suite green; backend untouched; size respected) and tick each in `proposal.md`.
 
 ## OPTIONAL — pending user approval (touches `backend/` manifest)
 
