@@ -2,6 +2,7 @@
 
 import json
 import logging
+import threading
 from typing import Generator, List, Optional
 
 import httpx
@@ -10,6 +11,39 @@ logger = logging.getLogger(__name__)
 
 OPENROUTER_BASE = "https://openrouter.ai/api/v1"
 GOOGLE_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
+
+# ── Shared HTTP client (Cap-1 keep-alive) ─────────────────
+#
+# One process-wide httpx.Client is created lazily and reused by every
+# provider call site, eliminating the per-call TCP+TLS handshake. The
+# double-checked lock makes lazy init race-free for asyncio.to_thread
+# callers. Lifespan shutdown calls close_http_clients() exactly once.
+
+_client: Optional[httpx.Client] = None
+_client_lock = threading.Lock()
+
+
+def _get_client() -> httpx.Client:
+    """Return the shared HTTP client, constructing it on first use."""
+    global _client
+    if _client is None:
+        with _client_lock:
+            if _client is None:
+                _client = httpx.Client(timeout=60.0)
+    return _client
+
+
+def close_http_clients() -> None:
+    """Close and forget the shared client. Idempotent; safe if never created.
+
+    Resetting to None lets a later _get_client() build a fresh client,
+    so a closed client is never handed back to call sites.
+    """
+    global _client
+    with _client_lock:
+        if _client is not None:
+            _client.close()
+            _client = None
 
 
 class SentenceBuffer:
@@ -152,25 +186,25 @@ class LLMService:
         messages = self._build_messages(prompt, context, system_prompt)
 
         try:
-            with httpx.Client(timeout=60.0) as client:
-                response = client.post(
-                    f"{OPENROUTER_BASE}/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {self.api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json=self._request_kwargs(messages, stream=False),
-                )
+            client = _get_client()
+            response = client.post(
+                f"{OPENROUTER_BASE}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=self._request_kwargs(messages, stream=False),
+            )
 
-                if response.status_code == 429:
-                    raise RuntimeError("Rate limit exceeded. Please try again later.")
-                if response.status_code in (401, 403):
-                    raise RuntimeError("Authentication failed. Check your OPENROUTER_API_KEY.")
-                if response.status_code != 200:
-                    raise RuntimeError(f"Response generation temporarily unavailable: HTTP {response.status_code}")
+            if response.status_code == 429:
+                raise RuntimeError("Rate limit exceeded. Please try again later.")
+            if response.status_code in (401, 403):
+                raise RuntimeError("Authentication failed. Check your OPENROUTER_API_KEY.")
+            if response.status_code != 200:
+                raise RuntimeError(f"Response generation temporarily unavailable: HTTP {response.status_code}")
 
-                data = response.json()
-                return data["choices"][0]["message"]["content"]
+            data = response.json()
+            return data["choices"][0]["message"]["content"]
 
         except httpx.TimeoutException:
             raise RuntimeError("Response generation timed out. Try again.")
@@ -191,37 +225,40 @@ class LLMService:
         messages = self._build_messages(prompt, context, system_prompt)
 
         try:
-            with httpx.Client(timeout=60.0) as client:
-                with client.stream(
-                    "POST",
-                    f"{OPENROUTER_BASE}/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {self.api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json=self._request_kwargs(messages, stream=True),
-                ) as response:
+            client = _get_client()
+            with client.stream(
+                "POST",
+                f"{OPENROUTER_BASE}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=self._request_kwargs(messages, stream=True),
+            ) as response:
 
-                    if response.status_code != 200:
-                        error_body = response.text[:200]
-                        if response.status_code == 429:
-                            raise RuntimeError("Rate limit exceeded.")
-                        raise RuntimeError(f"OpenRouter streaming error: HTTP {response.status_code} - {error_body}")
+                if response.status_code != 200:
+                    # Inside client.stream() the body is not buffered:
+                    # .text would raise httpx.ResponseNotRead. Read it
+                    # explicitly so the REAL upstream error surfaces.
+                    error_body = response.read().decode("utf-8", errors="replace")[:200]
+                    if response.status_code == 429:
+                        raise RuntimeError("Rate limit exceeded.")
+                    raise RuntimeError(f"OpenRouter streaming error: HTTP {response.status_code} - {error_body}")
 
-                    for line in response.iter_lines():
-                        line = line.strip()
-                        if not line or not line.startswith("data: "):
-                            continue
-                        payload = line[6:].strip()
-                        if payload == "[DONE]":
-                            break
-                        try:
-                            chunk = json.loads(payload)
-                        except json.JSONDecodeError:
-                            continue
-                        delta = chunk.get("choices", [{}])[0].get("delta", {}).get("content", "")
-                        if delta:
-                            yield delta
+                for line in response.iter_lines():
+                    line = line.strip()
+                    if not line or not line.startswith("data: "):
+                        continue
+                    payload = line[6:].strip()
+                    if payload == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(payload)
+                    except json.JSONDecodeError:
+                        continue
+                    delta = chunk.get("choices", [{}])[0].get("delta", {}).get("content", "")
+                    if delta:
+                        yield delta
 
         except httpx.TimeoutException:
             raise RuntimeError("Response generation timed out.")
@@ -256,30 +293,30 @@ class LLMService:
             body["system_instruction"] = {"parts": [{"text": system_prompt}]}
 
         try:
-            with httpx.Client(timeout=60.0) as client:
-                response = client.post(
-                    f"{GOOGLE_API_BASE}/models/{self.google_model}:generateContent",
-                    headers={
-                        "x-goog-api-key": self.google_api_key,
-                        "Content-Type": "application/json",
-                    },
-                    json=body,
+            client = _get_client()
+            response = client.post(
+                f"{GOOGLE_API_BASE}/models/{self.google_model}:generateContent",
+                headers={
+                    "x-goog-api-key": self.google_api_key,
+                    "Content-Type": "application/json",
+                },
+                json=body,
+            )
+
+            if response.status_code != 200:
+                error_body = response.text[:300]
+                if response.status_code == 429:
+                    raise RuntimeError("Google AI rate limit exceeded.")
+                raise RuntimeError(
+                    f"Google AI generate error: HTTP {response.status_code} - {error_body}"
                 )
 
-                if response.status_code != 200:
-                    error_body = response.text[:300]
-                    if response.status_code == 429:
-                        raise RuntimeError("Google AI rate limit exceeded.")
-                    raise RuntimeError(
-                        f"Google AI generate error: HTTP {response.status_code} - {error_body}"
-                    )
-
-                data = response.json()
-                candidates = data.get("candidates", [])
-                if not candidates:
-                    raise RuntimeError("Google AI returned empty response")
-                parts = candidates[0].get("content", {}).get("parts", [])
-                return "".join(p.get("text", "") for p in parts)
+            data = response.json()
+            candidates = data.get("candidates", [])
+            if not candidates:
+                raise RuntimeError("Google AI returned empty response")
+            parts = candidates[0].get("content", {}).get("parts", [])
+            return "".join(p.get("text", "") for p in parts)
 
         except httpx.TimeoutException:
             raise RuntimeError("Google AI request timed out.")
@@ -315,51 +352,52 @@ class LLMService:
             body["system_instruction"] = {"parts": [{"text": system_prompt}]}
 
         try:
-            with httpx.Client(timeout=60.0) as client:
-                url = (
-                    f"{GOOGLE_API_BASE}/models/{self.google_model}"
-                    ":streamGenerateContent?alt=sse"
-                )
-                with client.stream(
-                    "POST",
-                    url,
-                    headers={
-                        "x-goog-api-key": self.google_api_key,
-                        "Content-Type": "application/json",
-                    },
-                    json=body,
-                ) as response:
+            client = _get_client()
+            url = (
+                f"{GOOGLE_API_BASE}/models/{self.google_model}"
+                ":streamGenerateContent?alt=sse"
+            )
+            with client.stream(
+                "POST",
+                url,
+                headers={
+                    "x-goog-api-key": self.google_api_key,
+                    "Content-Type": "application/json",
+                },
+                json=body,
+            ) as response:
 
-                    if response.status_code != 200:
-                        error_body = response.text[:300]
-                        if response.status_code == 429:
-                            raise RuntimeError("Google AI rate limit exceeded.")
-                        raise RuntimeError(
-                            f"Google AI streaming error: HTTP {response.status_code} - {error_body}"
-                        )
+                if response.status_code != 200:
+                    # Same as OpenRouter: read() required inside stream().
+                    error_body = response.read().decode("utf-8", errors="replace")[:300]
+                    if response.status_code == 429:
+                        raise RuntimeError("Google AI rate limit exceeded.")
+                    raise RuntimeError(
+                        f"Google AI streaming error: HTTP {response.status_code} - {error_body}"
+                    )
 
-                    # Google AI SSE: each `data: ` line is a JSON chunk
-                    for line in response.iter_lines():
-                        line = line.strip()
-                        if not line or not line.startswith("data: "):
-                            continue
-                        payload = line[6:]
-                        try:
-                            data = json.loads(payload)
-                        except json.JSONDecodeError:
-                            continue
+                # Google AI SSE: each `data: ` line is a JSON chunk
+                for line in response.iter_lines():
+                    line = line.strip()
+                    if not line or not line.startswith("data: "):
+                        continue
+                    payload = line[6:]
+                    try:
+                        data = json.loads(payload)
+                    except json.JSONDecodeError:
+                        continue
 
-                        candidates = data.get("candidates", [])
-                        if not candidates:
-                            continue
-                        finish = candidates[0].get("finishReason")
-                        parts = candidates[0].get("content", {}).get("parts", [])
-                        for part in parts:
-                            text = part.get("text", "")
-                            if text:
-                                yield text
-                        if finish:
-                            break  # STOP, MAX_TOKENS, SAFETY, etc.
+                    candidates = data.get("candidates", [])
+                    if not candidates:
+                        continue
+                    finish = candidates[0].get("finishReason")
+                    parts = candidates[0].get("content", {}).get("parts", [])
+                    for part in parts:
+                        text = part.get("text", "")
+                        if text:
+                            yield text
+                    if finish:
+                        break  # STOP, MAX_TOKENS, SAFETY, etc.
 
         except httpx.TimeoutException:
             raise RuntimeError("Google AI streaming timed out.")
