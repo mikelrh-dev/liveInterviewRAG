@@ -6,6 +6,7 @@ and Report Survival · Failure Isolation.
 
 import logging
 import sqlite3
+from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -276,6 +277,98 @@ class TestCrashSafety:
         assert b"definitely not a sqlite" in quarantined[0].read_bytes()
 
 
+class TestPruneConversations:
+    """Prune stale conversation/turn/message rows (reports survive)."""
+
+    def test_prune_conversations_deletes_stale_rows(self, tmp_path):
+        """Insert 2 old + 1 fresh conversation, prune, verify 2 deleted,
+        1 survived, and reports intact."""
+        db_path = tmp_path / "prune.db"
+        svc = _make_service(tmp_path, name="prune.db")
+
+        now_ts = datetime.utcnow().isoformat()
+
+        # Create old conversations with fresh timestamps, then backdate via UPDATE
+        # (record_turn upserts last_activity_at to now, so we must UPDATE after)
+        svc.record_conversation("old1", "", now_ts, now_ts)
+        svc.record_turn(
+            "old1",
+            {"n": 0, "user_text": "q1", "assistant_text": "a1", "chunks_used": []},
+            {"user_text": "q1", "response_text": "a1", "audio_url": ""},
+        )
+        svc.record_report("old1", "/reports/old1.md")
+
+        svc.record_conversation("old2", "", now_ts, now_ts)
+        svc.record_turn(
+            "old2",
+            {"n": 0, "user_text": "q2", "assistant_text": "a2", "chunks_used": []},
+            {"user_text": "q2", "response_text": "a2", "audio_url": ""},
+        )
+
+        # Create fresh conversation
+        svc.record_conversation("fresh1", "", now_ts, now_ts)
+        svc.record_turn(
+            "fresh1",
+            {"n": 0, "user_text": "qf", "assistant_text": "af", "chunks_used": []},
+            {"user_text": "qf", "response_text": "af", "audio_url": ""},
+        )
+        svc.record_report("fresh1", "/reports/fresh1.md")
+
+        # Backdate old1 and old2 beyond the 2-hour TTL (like test_report_prune)
+        con = sqlite3.connect(str(db_path))
+        try:
+            con.execute(
+                "UPDATE conversations SET last_activity_at = ? WHERE id IN ('old1', 'old2')",
+                ("2026-08-25T00:00:00",),
+            )
+            con.commit()
+        finally:
+            con.close()
+
+        # Prune with 2-hour TTL (older_than_hours=2)
+        pruned = svc.prune_conversations(older_than_hours=2)
+        assert pruned == 2, "must return count of pruned conversations"
+
+        # Verify old1 and old2 are gone from conversations/turns/messages
+        con = sqlite3.connect(str(db_path))
+        try:
+            remaining_cids = [
+                r[0] for r in con.execute("SELECT id FROM conversations ORDER BY id")
+            ]
+            turns_count = con.execute("SELECT COUNT(*) FROM turns").fetchone()[0]
+            messages_count = con.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+        finally:
+            con.close()
+        assert remaining_cids == ["fresh1"], "only fresh conversation must survive"
+        assert turns_count == 1, "only fresh turn must remain"
+        assert messages_count == 1, "only fresh message must remain"
+
+        # Reports must survive for both old and fresh
+        counts_old1 = _raw_counts(db_path, "old1")
+        counts_fresh = _raw_counts(db_path, "fresh1")
+        assert counts_old1["reports"] == 1, "old conversation's report MUST survive prune"
+        assert counts_fresh["reports"] == 1, "fresh conversation's report MUST survive prune"
+
+    def test_prune_conversations_failure_is_silent(self, tmp_path, monkeypatch, caplog):
+        """If execute raises, prune_conversations returns 0 and never propagates."""
+        svc = _make_service(tmp_path)
+
+        def _dead_connect():
+            raise RuntimeError("database locked")
+
+        monkeypatch.setattr(svc, "_connect", _dead_connect)
+        caplog.set_level(logging.WARNING, logger="backend.services.persistence")
+
+        result = svc.prune_conversations(older_than_hours=2)
+        assert result == 0
+
+        warnings = [
+            r for r in caplog.records
+            if "database locked" in r.getMessage() and r.levelno == logging.WARNING
+        ]
+        assert warnings, "failures must be logged as warnings, never raised"
+
+
 class TestDisabledFlag:
     """enabled=False gates every method to a no-op."""
 
@@ -294,6 +387,7 @@ class TestDisabledFlag:
         assert svc.evict_conversation("c1") is None
         assert svc.record_report("c1", "/x.md") is None
         assert svc.prune_reports(30) == 0
+        assert svc.prune_conversations(2) == 0
         assert not db_path.exists(), "disabled store must never touch disk"
 
 

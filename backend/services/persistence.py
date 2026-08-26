@@ -363,6 +363,33 @@ class PersistenceService:
         except Exception as e:
             logger.warning("Persistence record_report failed for %s: %s", cid, e)
 
+    def prune_conversations(self, older_than_hours: int) -> int:
+        """Delete conversation/turn/message rows older than ``older_than_hours``.
+
+        Reports survive per spec — only conversations, turns, and messages
+        are removed.  Returns the count of pruned conversations.
+        """
+        if not self._enabled:
+            return 0
+        try:
+            cutoff = (
+                datetime.utcnow() - timedelta(hours=int(older_than_hours))
+            ).isoformat()
+            con = self._connect()
+            try:
+                self._ensure_schema(con)
+                with con:
+                    cur = con.execute(
+                        "DELETE FROM conversations WHERE last_activity_at < ?",
+                        (cutoff,),
+                    )
+                    return cur.rowcount
+            finally:
+                con.close()
+        except Exception as e:
+            logger.warning("Persistence prune_conversations failed: %s", e)
+            return 0
+
     def prune_reports(self, days: int) -> int:
         """Delete report rows older than ``days``; return count removed."""
         if not self._enabled:

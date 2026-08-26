@@ -253,7 +253,6 @@ _CACHED_QUESTIONS = [
     {
         "phrases": [
             "cual es tu mayor logro",
-            "cuál es tu mayor logro",
             "que logro te enorgullece mas",
         ],
         "keywords": [],
