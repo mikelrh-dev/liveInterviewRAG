@@ -637,3 +637,28 @@ class TestEmbeddingCache:
         h1 = RAGPipeline._compute_documents_hash(self.DOCS)
         h2 = RAGPipeline._compute_documents_hash({"other.md": "Completely different content."})
         assert h1 != h2
+
+
+class TestEmbedderProperty:
+    """Read-only embedder exposure for the semantic answer cache (design D8)."""
+
+    def test_embedder_none_before_initialization(self):
+        """Property returns None while the pipeline has never been initialized."""
+        rag = RAGPipeline()
+        assert rag.embedder is None
+
+    def test_embedder_none_in_tfidf_fallback_mode(self):
+        """TF-IDF fallback vectors are unstable — must never be exposed."""
+        rag = RAGPipeline()
+        rag._initialized = True
+        rag._use_tfidf = True
+        rag._embedder = object()  # sentinel: even a live object must be hidden
+        assert rag.embedder is None
+
+    def test_embedder_exposed_when_active(self):
+        """An initialized sentence-transformer pipeline exposes its embedder."""
+        rag = RAGPipeline()
+        rag._initialized = True
+        sentinel = object()
+        rag._embedder = sentinel
+        assert rag.embedder is sentinel

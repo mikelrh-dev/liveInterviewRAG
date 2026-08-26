@@ -154,6 +154,18 @@ class RAGPipeline:
             self._tfidf_vectorizer = TfidfVectorizer(max_features=384)
         self._initialized = True
 
+    @property
+    def embedder(self):
+        """Active sentence-transformer embedder, or None when unusable.
+
+        Returns None before initialization and in TF-IDF fallback mode:
+        TF-IDF vectors are unstable across restarts, so the semantic answer
+        cache must never store or serve them (design D8).
+        """
+        if not self._initialized or self._use_tfidf:
+            return None
+        return self._embedder
+
     # ── Embedding cache helpers ──────────────────────────────────────────
 
     @staticmethod
