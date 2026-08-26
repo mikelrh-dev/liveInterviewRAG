@@ -3,14 +3,19 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>01 Arquitectura — InterviewTTS</title>
+  <title>01 — Arquitectura — InterviewTTS</title>
+  <meta name="description" content="Arquitectura end-to-end de InterviewTTS: pipeline de voz STT → cachés → RAG → LLM → TTS por frases con eventos SSE, más los servicios de persistencia e informes.">
+  <meta property="og:title" content="01 — Arquitectura — InterviewTTS">
+  <meta property="og:description" content="El pipeline completo de voz: del micrófono del navegador al audio sintetizado, con persistencia SQLite y generación de informes.">
+  <meta property="og:type" content="website">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230f1214'/%3E%3Crect x='12' y='5' width='8' height='14' rx='4' fill='%2300d4ff'/%3E%3Cpath d='M8 14a8 8 0 0 0 16 0' fill='none' stroke='%2300d4ff' stroke-width='2' stroke-linecap='round'/%3E%3Cpath d='M16 22v4' stroke='%2300d4ff' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;0,6..72,700;1,6..72,400&family=Source+Sans+3:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <nav class="nav" role="navigation" aria-label="Navegacion principal">
+  <nav class="nav" role="navigation" aria-label="Navegación principal">
     <div class="nav-inner">
       <a href="index.html" class="nav-logo">InterviewTTS</a>
       <ul class="nav-links">
@@ -19,31 +24,32 @@
         <li><a href="whisper-stt.html">02 Whisper</a></li>
         <li><a href="rag.html">03 RAG</a></li>
         <li><a href="llm-prompting.html">04 LLM</a></li>
-        <li><a href="cache-latencia.html">05 Latencia</a></li>
-        <li><a href="despliegue.html">06 Despliegue</a></li>
-        <li><a href="aprendizajes.html">07 Aprendizajes</a></li>
+        <li><a href="cache-latencia.html">05 Caché</a></li>
+        <li><a href="persistencia.html">06 Persistencia</a></li>
+        <li><a href="despliegue.html">07 Despliegue</a></li>
+        <li><a href="aprendizajes.html">08 Aprendizajes</a></li>
       </ul>
     </div>
   </nav>
 
   <main class="main">
     <header class="chapter-header">
-      <span class="chapter-num">Capitulo 01</span>
+      <span class="chapter-num">Capítulo 01</span>
       <h1 class="chapter-title">Arquitectura End-to-End</h1>
-      <p class="chapter-subtitle">El pipeline completo de voz: del microfono del navegador al audio sintetizado que responde a la pregunta del reclutador.</p>
+      <p class="chapter-subtitle">El pipeline completo de voz: del micrófono del navegador al audio sintetizado que responde a la pregunta del reclutador.</p>
     </header>
 
     <section class="reveal">
-      <h2>Vision General</h2>
-      <img src="assets/stitch-architecture-labeled.png" alt="Diagrama de arquitectura etiquetado: Browser envia audio a FastAPI, que orquesta Whisper STT, RAG con wiki del candidato, LLM para generar respuesta, y TTS para sintetizar voz de vuelta al navegador" class="img-full" width="860" height="486">
+      <h2>Visión general</h2>
+      <img src="assets/stitch-architecture-labeled.png" alt="Diagrama de arquitectura etiquetado: el navegador envía audio a FastAPI, que orquesta Whisper STT, RAG con la wiki del candidato, LLM para generar respuesta y TTS para sintetizar voz de vuelta al navegador" class="img-full" width="860" height="486" loading="lazy" decoding="async">
       <p class="img-label">Arquitectura del sistema: Browser &rarr; FastAPI &rarr; Whisper &rarr; RAG+Wiki &rarr; LLM &rarr; TTS &rarr; SSE</p>
 
-      <p>El sistema se compone de <strong>cinco componentes principales</strong> orquestados por un servidor FastAPI. Cada componente tiene una responsabilidad clara y acotada, lo que facilita tanto el desarrollo independiente como la optimizacion de cada etapa del pipeline.</p>
+      <p>El sistema se compone de <strong>cinco componentes de inferencia</strong> (STT, RAG, LLM, TTS y el orquestador FastAPI) apoyados por <strong>dos servicios de soporte</strong>: la capa de persistencia en SQLite y el servicio de informes. Cada pieza tiene una responsabilidad clara y acotada, lo que facilita tanto el desarrollo independiente como la optimización de cada etapa del pipeline.</p>
     </section>
 
     <section class="reveal">
-      <h2>Flujo por Turno</h2>
-      <p>Cada interaccion sigue el mismo patron. Divide la conversacion en turnos, donde cada turno es un ciclo completo de procesamiento:</p>
+      <h2>Flujo por turno</h2>
+      <p>Cada interacción sigue el mismo patrón. La conversación se divide en turnos, donde cada turno es un ciclo completo de procesamiento:</p>
 
       <div class="pipeline-flow">
         <div class="pipeline-step">
@@ -54,6 +60,11 @@
         <div class="pipeline-step">
           <span class="step-icon" aria-hidden="true">📝</span>
           <span class="step-label">Whisper STT</span>
+        </div>
+        <span class="pipeline-arrow" aria-hidden="true">&rarr;</span>
+        <div class="pipeline-step">
+          <span class="step-icon" aria-hidden="true">⚡</span>
+          <span class="step-label">Cachés</span>
         </div>
         <span class="pipeline-arrow" aria-hidden="true">&rarr;</span>
         <div class="pipeline-step">
@@ -68,7 +79,7 @@
         <span class="pipeline-arrow" aria-hidden="true">&rarr;</span>
         <div class="pipeline-step">
           <span class="step-icon" aria-hidden="true">🔊</span>
-          <span class="step-label">TTS</span>
+          <span class="step-label">Edge TTS</span>
         </div>
         <span class="pipeline-arrow" aria-hidden="true">&rarr;</span>
         <div class="pipeline-step">
@@ -78,61 +89,89 @@
       </div>
 
       <ol>
-        <li><strong>Captura de audio:</strong> El navegador graba audio del microfono y lo envia como WAV/PCM al servidor.</li>
-        <li><strong>STT (Speech-to-Text):</strong> Faster-Whisper transcribe el audio a texto en espanol.</li>
-        <li><strong>RAG (Retrieval-Augmented Generation):</strong> Se busca contexto relevante en la wiki del candidato (~30 documentos Markdown con frontmatter YAML).</li>
-        <li><strong>LLM:</strong> Un modelo de lenguaje genera una respuesta informada usando el contexto recuperado.</li>
-        <li><strong>TTS (Text-to-Speech):</strong> Pocket TTS sintetiza la respuesta en audio.</li>
-        <li><strong>SSE (Server-Sent Events):</strong> El audio se envia de vuelta al navegador, token por token, para reproducirse en tiempo real.</li>
+        <li><strong>Captura de audio:</strong> El navegador graba con la MediaRecorder API y envía el archivo en un <strong>POST multipart</strong> (<code class="code-inline">FormData</code>). El backend acepta webm o m4a según el tipo MIME.</li>
+        <li><strong>STT (Speech-to-Text):</strong> Faster-Whisper transcribe el audio a texto en español (modelo small cuantizado a int8).</li>
+        <li><strong>Dos cachés antes de gastar cómputo:</strong> primero el cache literal de preguntas frecuentes y después el cache semántico (solo en el primer turno sustantivo). Si alguno acierta, la respuesta pre-generada sale al instante y se salta RAG y LLM.</li>
+        <li><strong>RAG (Retrieval-Augmented Generation):</strong> Se busca contexto relevante en los 34 documentos Markdown de la wiki del candidato.</li>
+        <li><strong>LLM:</strong> Un modelo de lenguaje genera la respuesta en streaming usando el contexto recuperado.</li>
+        <li><strong>TTS (Text-to-Speech):</strong> Edge TTS (voz es-ES-AlvaroNeural) sintetiza <strong>cada frase completa</strong> como tarea paralela en cuanto está lista.</li>
+        <li><strong>SSE (Server-Sent Events):</strong> El servidor emite eventos <code class="code-inline">transcription</code>, <code class="code-inline">token</code>, <code class="code-inline">audio_chunk</code>, <code class="code-inline">audio_url</code> y <code class="code-inline">done</code>; en caso de error añade <code class="code-inline">error</code>; si detecta una despedida, añade <code class="code-inline">interview_end</code>.</li>
       </ol>
+
+      <p class="see-also"><strong>Ver también:</strong> <a href="cache-latencia.html">capítulo 05</a> detalla los contratos de ambos cachés, y <a href="arquitectura.html#soporte">la sección de servicios de soporte</a> explica qué ocurre con cada turno una vez terminado.</p>
     </section>
 
     <section class="reveal">
-      <h2>Por que SSE y no WebSockets</h2>
-      <img src="assets/stitch-pipeline-infographic.png" alt="Infografia del pipeline STT a LLM a TTS mostrando el flujo de datos unidireccional del servidor al cliente" class="img-full" width="860" height="486">
+      <h2>Streaming real: frases, no tokens sueltos</h2>
+      <p>Una decisión sutil pero crítica: el TTS <strong>no se dispara token a token</strong>. Un <code class="code-inline">SentenceBuffer</code> acumula los tokens del LLM y solo cuando detecta un límite gramatical (. ! ? salto de línea) libera la frase completa para síntesis.</p>
+      <ul>
+        <li><strong>Prosodia:</strong> Edge TTS necesita la frase entera para entonarla de forma natural; cortar a mitad genera micro-pausas audibles entre fragmentos.</li>
+        <li><strong>Menos llamadas de síntesis:</strong> una respuesta de tres frases produce tres archivos MP3 en lugar de decenas de fragmentos diminutos.</li>
+        <li><strong>Paralelismo real:</strong> cada frase se sintetiza como tarea asyncio independiente mientras el LLM sigue generando; cada MP3 listo se emite como evento <code class="code-inline">audio_chunk</code> con su identificador para que el navegador lo reproduzca en orden.</li>
+      </ul>
+      <div class="callout roadmap">
+        <div class="callout-title">Hoja de ruta</div>
+        <p>Pocket TTS y Piper (clonación de voz local) aparecen mencionadas en algunos materiales del proyecto: son <strong>exploración futura</strong>, no el motor enviado a producción. Hoy la voz es Edge TTS.</p>
+      </div>
+      <p class="see-also"><strong>Ver también:</strong> el capítulo <a href="llm-prompting.html">04 — LLM</a> muestra el código del buffer de frases.</p>
+    </section>
+
+    <section class="reveal">
+      <h2>Por qué SSE y no WebSockets</h2>
+      <img src="assets/stitch-pipeline-infographic.png" alt="Infografía del pipeline de STT a LLM a TTS mostrando el flujo de datos unidireccional del servidor al cliente" class="img-full" width="860" height="486" loading="lazy" decoding="async">
       <p class="img-label">Pipeline STT &rarr; LLM &rarr; TTS con streaming unidireccional</p>
 
-      <p>Esta fue una de las decisiones arquitectonicas mas importantes. Los WebSockets permiten comunicacion bidireccional, pero en nuestro caso el flujo es <strong>fundamentalmente unidireccional</strong> durante la fase de respuesta: el servidor genera tokens y los envia al cliente.</p>
+      <p>Esta fue una de las decisiones arquitectónicas más importantes. Los WebSockets permiten comunicación bidireccional, pero en este caso el flujo es <strong>fundamentalmente unidireccional</strong> durante la fase de respuesta: el servidor genera tokens y los envía al cliente.</p>
 
       <div class="callout">
-        <div class="callout-title">Decision de Diseno</div>
-        <p>SSE es mas simple, se integra nativamente con HTTP, y funciona detras de proxies y load balancers sin configuracion adicional. Para nuestro caso de uso — streaming de audio generado — es la herramienta correcta.</p>
+        <div class="callout-title">Decisión de diseño</div>
+        <p>SSE es más simple, se integra nativamente con HTTP, y funciona detrás de proxies y load balancers sin configuración adicional (salvo desactivar el buffering de Nginx). Para streaming de eventos generados, es la herramienta correcta.</p>
       </div>
 
-      <p><strong>Ventajas de SSE para nuestro caso:</strong></p>
+      <p><strong>Ventajas de SSE para este caso:</strong></p>
       <ul>
-        <li><strong>Simplicidad:</strong> No requiere handshake como WebSockets. Una conexion HTTP simple.</li>
-        <li><strong>Compatibilidad:</strong> Funciona con proxies HTTP estandar, Nginx, y CDNs sin configuracion especial.</li>
-        <li><strong>Auto-reconexion:</strong> El navegador reconecta automaticamente si la conexion se cae.</li>
-        <li><strong>Direccion unidireccional:</strong> El cliente envia la pregunta via POST, el servidor responde via SSE. No necesitamos bidireccionalidad.</li>
+        <li><strong>Simplicidad:</strong> No requiere handshake propio como WebSockets. Una conexión HTTP simple.</li>
+        <li><strong>Compatibilidad:</strong> Funciona con proxies HTTP estándar y Nginx sin configuración especial.</li>
+        <li><strong>Dirección unidireccional:</strong> El cliente envía la pregunta vía POST multipart; el servidor responde vía SSE. No se necesita bidireccionalidad.</li>
       </ul>
 
-      <p>Cuando el cliente necesita enviar algo (una nueva pregunta), simplemente hace una nueva peticion POST. Cada turno es independiente.</p>
+      <p>Cuando el cliente necesita enviar algo nuevo (otra pregunta), simplemente hace otra petición POST. Cada turno es independiente.</p>
     </section>
 
     <section class="reveal">
-      <h2>FastAPI como Orquestador</h2>
-      <p>FastAPI no es solo un framework HTTP aqui — es el <strong>orquestador central</strong> que coordina todos los componentes. Gracias a su soporte nativo para <code class="code-inline">async/await</code> y <code class="code-inline">StreamingResponse</code>, podemos:</p>
+      <h2>FastAPI como orquestador</h2>
+      <p>FastAPI no es solo un framework HTTP aquí — es el <strong>orquestador central</strong> que coordina todos los componentes. Gracias a su soporte nativo para <code class="code-inline">async/await</code> y <code class="code-inline">StreamingResponse</code>:</p>
       <ul>
-        <li>Recibir audio del navegador como upload</li>
-        <li>Ejecutar Whisper STT en un thread pool separado (para no bloquear el event loop)</li>
-        <li>Invocar el pipeline RAG para recuperar contexto</li>
-        <li>Hacer streaming token-by-token del LLM al TTS</li>
-        <li>Enviar el audio resultante via SSE</li>
+        <li>Recibe el audio del navegador como upload multipart</li>
+        <li>Ejecuta Whisper STT fuera del event loop (vía <code class="code-inline">asyncio.to_thread</code>) para no bloquear otros clientes</li>
+        <li>Corre el stream del LLM en un executor y puentea los tokens al loop con una cola thread-safe</li>
+        <li>Lanza las tareas de TTS por frase en paralelo y emite cada <code class="code-inline">audio_chunk</code> al terminar</li>
+        <li>Escribe en SQLite y genera informes post-hoc sin bloquear la respuesta</li>
       </ul>
 
-      <p>Todo esto manteniendo la concurrencia y sin bloquear el servidor para otros clientes.</p>
+      <p>Todo esto manteniendo la concurrencia: un turno lento nunca congela el servidor para el resto.</p>
+    </section>
+
+    <section class="reveal" id="soporte">
+      <h2>Servicios de soporte: persistencia e informes</h2>
+      <p>Dos servicios rodean al pipeline sin meter ruido en él:</p>
+      <ul>
+        <li><strong>Capa de persistencia (SQLite en modo WAL):</strong> escritura write-through en cada evento relevante (creación de conversación, turno, despedida, informe). Si el proceso muere, la entrevista sobrevive: al llegar un id conocido pero ausente en memoria, la conversación se hidrata desde la base de datos.</li>
+        <li><strong>Servicio de informes:</strong> al detectarse la despedida (o al expulsarse una conversación por TTL), se escribe la transcripción completa en Markdown bajo <code class="code-inline">reports/{cid}/{timestamp}.md</code>, siempre vía <code class="code-inline">asyncio.to_thread</code>.</li>
+      </ul>
+      <p>Ambos comparten una filosofía: <strong>nunca rompen el turno en vivo</strong>. Si la base de datos o el disco fallan, el error se registra y la entrevista continúa.</p>
+      <p class="see-also"><strong>Ver también:</strong> el capítulo <a href="persistencia.html">06 — Persistencia y memoria</a> cubre esquema, WAL, hidratación y política de fallos en detalle.</p>
     </section>
 
     <section class="reveal">
-      <h2>El Rol del Frontend</h2>
+      <h2>El rol del frontend</h2>
       <p>El navegador no es un simple reproductor. El frontend maneja:</p>
       <ul>
-        <li><strong>Grabacion de audio:</strong> MediaRecorder API del navegador</li>
-        <li><strong>Envio de audio:</strong> POST multipart con el audio capturado</li>
-        <li><strong>Recepcion SSE:</strong> Escucha tokens de audio generados</li>
-        <li><strong>Reproduccion:</strong> AudioContext para reproducir los chunks de audio</li>
-        <li><strong>Avatar audio-reactivo:</strong> Un avatar que reacciona a la amplitud del audio</li>
+        <li><strong>Grabación de audio:</strong> MediaRecorder API del navegador</li>
+        <li><strong>Envío de audio:</strong> POST multipart con el audio capturado</li>
+        <li><strong>Recepción SSE:</strong> procesa los eventos <code class="code-inline">transcription</code>, <code class="code-inline">token</code> y <code class="code-inline">audio_chunk</code></li>
+        <li><strong>Reproducción ordenada:</strong> encadena los chunks de audio respetando el identificador de frase</li>
+        <li><strong>Avatar audio-reactivo:</strong> un avatar que reacciona a la amplitud del audio</li>
       </ul>
     </section>
   </main>
@@ -145,10 +184,10 @@
       </div>
       <div class="footer-col">
         <p><a href="https://github.com/mikelrh-dev/liveInterviewRAG" target="_blank" rel="noopener">Ver repositorio en GitHub &rarr;</a></p>
-        <p>Stack: Python, FastAPI, Whisper, RAG, Pocket TTS</p>
+        <p>Stack: Python, FastAPI, Whisper, RAG, Edge TTS</p>
       </div>
     </div>
-    <p class="footer-copy">Documento tecnico construido para fines educativos. 2025.</p>
+    <p class="footer-copy">Documento técnico construido para fines educativos. 2025.</p>
   </footer>
 
   <script src="script.js"></script>

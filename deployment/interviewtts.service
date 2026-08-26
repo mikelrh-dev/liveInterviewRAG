@@ -22,7 +22,7 @@ SyslogIdentifier=interviewtts
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/opt/interviewtts/audio
+ReadWritePaths=/opt/interviewtts/audio /opt/interviewtts/data /opt/interviewtts/reports
 PrivateTmp=true
 
 [Install]

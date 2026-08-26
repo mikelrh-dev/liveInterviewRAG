@@ -3,14 +3,19 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>06 Despliegue en Produccion - InterviewTTS</title>
+  <title>07 — Despliegue — InterviewTTS</title>
+  <meta name="description" content="Despliegue de InterviewTTS en Oracle Free Tier ARM64 ($0/mes, sin GPU): Nginx y systemd reales del repositorio, hardening con ReadWritePaths y backup de datos.">
+  <meta property="og:title" content="07 — Despliegue — InterviewTTS">
+  <meta property="og:description" content="La configuración real de Nginx y systemd que sirve InterviewTTS en producción, con sus tradeoffs documentados.">
+  <meta property="og:type" content="website">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230f1214'/%3E%3Crect x='12' y='5' width='8' height='14' rx='4' fill='%2300d4ff'/%3E%3Cpath d='M8 14a8 8 0 0 0 16 0' fill='none' stroke='%2300d4ff' stroke-width='2' stroke-linecap='round'/%3E%3Cpath d='M16 22v4' stroke='%2300d4ff' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;0,6..72,700;1,6..72,400&family=Source+Sans+3:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <nav class="nav" role="navigation" aria-label="Navegacion principal">
+  <nav class="nav" role="navigation" aria-label="Navegación principal">
     <div class="nav-inner">
       <a href="index.html" class="nav-logo">InterviewTTS</a>
       <ul class="nav-links">
@@ -19,23 +24,24 @@
         <li><a href="whisper-stt.html">02 Whisper</a></li>
         <li><a href="rag.html">03 RAG</a></li>
         <li><a href="llm-prompting.html">04 LLM</a></li>
-        <li><a href="cache-latencia.html">05 Latencia</a></li>
-        <li><a href="despliegue.html" class="active">06 Despliegue</a></li>
-        <li><a href="aprendizajes.html">07 Aprendizajes</a></li>
+        <li><a href="cache-latencia.html">05 Caché</a></li>
+        <li><a href="persistencia.html">06 Persistencia</a></li>
+        <li><a href="despliegue.html" class="active">07 Despliegue</a></li>
+        <li><a href="aprendizajes.html">08 Aprendizajes</a></li>
       </ul>
     </div>
   </nav>
 
   <main class="main">
     <header class="chapter-header">
-      <span class="chapter-num">Capitulo 06</span>
-      <h1 class="chapter-title">Despliegue en Produccion</h1>
-      <p class="chapter-subtitle">Restricciones reales: Oracle Free Tier ARM64, 4 cores, 24GB RAM, $0/mes. Sin GPU, toda inferencia CPU-bound.</p>
+      <span class="chapter-num">Capítulo 07</span>
+      <h1 class="chapter-title">Despliegue en Producción</h1>
+      <p class="chapter-subtitle">Restricciones reales: Oracle Free Tier ARM64, 4 cores, 24 GB RAM, $0/mes. Sin GPU, toda la inferencia CPU-bound. Nginx y systemd tal como viven en el repositorio.</p>
     </header>
 
     <section class="reveal">
-      <h2>La Restriccion: $0/Mes</h2>
-      <p>Uno de los objetivos del proyecto era demostrar que se puede construir un sistema de IA funcional <strong>sin gastar dinero en infraestructura</strong>. Esto es relevante para estudiantes sin presupuesto para GPUs, prototipos donde el costo no debe superar el MVP, y aprendizaje: cuando no puedes escalar con dinero, aprendes a escalar con ingenieria.</p>
+      <h2>La restricción: $0/mes</h2>
+      <p>Uno de los objetivos del proyecto era demostrar que se puede construir un sistema de IA funcional <strong>sin gastar dinero en infraestructura</strong>. Esto es relevante para estudiantes sin presupuesto para GPUs, prototipos donde el costo no debe superar al MVP, y aprendizaje: cuando no puedes escalar con dinero, aprendes a escalar con ingeniería.</p>
     </section>
 
     <section class="reveal">
@@ -43,68 +49,124 @@
       <div class="stat-card"><span class="stat-value">4</span><span class="stat-label">Cores ARM64 (Ampere A1)</span></div>
       <div class="stat-card"><span class="stat-value">24 GB</span><span class="stat-label">RAM compartida (hasta 4 instancias)</span></div>
       <div class="stat-card"><span class="stat-value">$0</span><span class="stat-label">Costo mensual (siempre-disponible, no trial)</span></div>
-      <p>Oracle Cloud Free Tier ofrece computo ARM64 con hasta 4 OCPU y 24GB de RAM <strong>siempre gratis</strong>. Es suficiente para correr todo nuestro pipeline.</p>
-      <div class="callout"><div class="callout-title">ARM64 vs x86</div><p>ARM64 es una arquitectura RISC con mejor eficiencia energetica. Para inferencia CPU, ARM64 ofrece buen balance precio/rendimiento. CTranslate2 y PyTorch tienen soporte nativo.</p></div>
+      <p>Oracle Cloud Free Tier ofrece cómputo ARM64 con hasta 4 OCPU y 24 GB de RAM <strong>siempre gratis</strong>. Es suficiente para correr todo el pipeline en carga de conversación única. Solo Whisper consume ~1,4 GB en memoria (valor aproximado del README), así que el margen es holgado para el modelo elegido — la restricción real es tiempo de CPU, no RAM.</p>
+      <div class="callout"><div class="callout-title">ARM64 vs x86</div><p>ARM64 es una arquitectura RISC con mejor eficiencia energética. Para inferencia CPU ofrece buen balance precio/rendimiento. CTranslate2 y PyTorch tienen soporte nativo.</p></div>
+      <p class="see-also"><strong>Ver también:</strong> cómo se eligió entre tamaños de Whisper bajo esta restricción, en el capítulo <a href="whisper-stt.html">02 — Whisper</a>.</p>
     </section>
 
     <section class="reveal">
-      <h2>Sin GPU: CPU-Bound</h2>
-      <p>Sin GPU, toda la inferencia es <strong>CPU-bound</strong>. Esto impacta directamente: Whisper STT toma ~1.5-2.5s por turno (vs ~200-500ms en GPU), embeddings ~50ms por chunk (vs ~5ms en GPU), y Pocket TTS funciona bien en CPU.</p>
-      <p>El bottleneck principal es Whisper. Con 4 cores ARM64, procesamos ~1.5s de audio por segundo real. No es tiempo real, pero es suficiente para una conversacion con pausas naturales.</p>
+      <h2>Sin GPU: CPU-bound</h2>
+      <p>Sin GPU, toda la inferencia es <strong>CPU-bound</strong>. El impacto por componente: Whisper STT domina el presupuesto de cada turno (ver capítulo 02), los embeddings de RAG son rápidos (<code class="code-inline">all-MiniLM-L6-v2</code> está pensado exactamente para esto), y Edge TTS ni siquiera compite por la CPU local: sintetiza en el servicio de Microsoft y devuelve MP3 listo para servir, sin GPU propia.</p>
+      <p>El README lo resume: el presupuesto del pipeline ronda los 8 segundos en CPU, y es el endpoint de streaming el que hace que la experiencia se sienta responsiva pese a ello.</p>
     </section>
 
     <section class="reveal">
-      <h2>Nginx + Systemd</h2>
-      <p>El stack de despliegue es deliberadamente simple:</p>
-      <div class="code-block" data-lang="nginx"><span class="cm"># /etc/nginx/sites-available/interviewtts</span>
+      <h2>Nginx: el conf real del repositorio</h2>
+      <p>Este es el contenido de <code class="code-inline">nginx/interview.conf</code>, versión resumida pero fiel:</p>
+      <div class="code-block" data-lang="nginx"><span class="cm"># nginx/interview.conf (espejo fiel)</span>
 <span class="kw">server</span> {
-    <span class="pr">listen</span> <span class="nm">443</span> ssl;
-    <span class="pr">server_name</span> <span class="st">interviewtts.example.com</span>;
+    <span class="pr">listen</span> <span class="nm">80</span>;
+    <span class="pr">server_name</span> _;
+
+    <span class="cm"># Frontend estático servido directamente del disco</span>
     <span class="pr">location</span> / {
+        <span class="pr">root</span> /opt/interviewtts/frontend;
+        <span class="pr">index</span> index.html;
+        <span class="pr">try_files</span> $uri $uri/ /index.html;
+    }
+
+    <span class="cm"># Proxy API → FastAPI</span>
+    <span class="pr">location</span> /api/ {
         <span class="pr">proxy_pass</span> http://127.0.0.1:<span class="nm">8000</span>;
-        <span class="pr">proxy_buffering</span> off;  <span class="cm"># Critical para SSE</span>
+        <span class="pr">proxy_set_header</span> Host $host;
+        <span class="pr">proxy_set_header</span> X-Forwarded-For $proxy_add_x_forwarded_for;
+        <span class="pr">proxy_buffering</span> off;   <span class="cm"># crítico para SSE</span>
         <span class="pr">proxy_cache</span> off;
     }
+
+    <span class="cm"># Audio generado, servido directo con caché corta</span>
+    <span class="pr">location</span> /audio/ {
+        <span class="pr">alias</span> /opt/interviewtts/audio/;
+        <span class="pr">expires</span> <span class="nm">1h</span>;
+        add_header Cache-Control <span class="st">"public, immutable"</span>;
+    }
+
+    <span class="cm"># Cabeceras de seguridad + gzip</span>
+    add_header X-Frame-Options <span class="st">"SAMEORIGIN"</span> always;
+    add_header X-Content-Type-Options <span class="st">"nosniff"</span> always;
+    <span class="pr">gzip</span> on;
 }</div>
-      <p>Lo critico: <strong>proxy_buffering off</strong>. Sin esto, Nginx buffera las respuestas y el streaming SSE se rompe.</p>
-      <div class="code-block" data-lang="ini"><span class="cm"># /etc/systemd/system/interviewtts.service</span>
-[Service]
-ExecStart=/usr/bin/python3 main.py
-WorkingDirectory=/opt/interviewtts
-Restart=always
-RestartSec=5</div>
+      <p>Tres detalles que importan:</p>
+      <ul>
+        <li><strong><code class="code-inline">proxy_buffering off</code></strong>: sin esto, Nginx acumula las respuestas en búfer y el streaming SSE se rompe (los eventos llegan a chorros tardíos).</li>
+        <li><strong>/audio/ no pasa por FastAPI:</strong> el alias sirve los MP3 directamente del disco con caché de una hora — Python ni se entera.</li>
+        <li><strong>Frontend estático separado:</strong> el SPA vive en <code class="code-inline">try_files</code>; solo <code class="code-inline">/api/*</code> toca el backend.</li>
+      </ul>
     </section>
 
     <section class="reveal">
-      <h2>Tradeoffs Documentados</h2>
+      <h2>Systemd: la unidad real, con hardening</h2>
+      <div class="code-block" data-lang="ini"><span class="cm"># deployment/interviewtts.service (espejo fiel)</span>
+[Service]
+Type=simple
+User=interviewtts
+WorkingDirectory=/opt/interviewtts
+ExecStart=/opt/interviewtts/venv/bin/uvicorn backend.main:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=5
+EnvironmentFile=/opt/interviewtts/.env
+
+<span class="cm"># Hardening</span>
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/interviewtts/audio /opt/interviewtts/data /opt/interviewtts/reports
+PrivateTmp=true</div>
+      <p><strong>El gotcha de <code class="code-inline">ProtectSystem=strict</code>:</strong> deja TODO el sistema de archivos en solo lectura salvo lo listado en <code class="code-inline">ReadWritePaths</code>. Sin esa línea, el servicio arranca limpio pero falla la primera vez que toca crear la base SQLite, un MP3 o un informe — un error diferido que solo aparece en producción.</p>
+      <p class="see-also"><strong>Ver también:</strong> qué escribe exactamente el servicio en esos tres directorios, en el capítulo <a href="persistencia.html">06 — Persistencia y memoria</a>.</p>
+    </section>
+
+    <section class="reveal">
+      <h2>Copia de seguridad</h2>
+      <p>Todo el estado durable cabe en dos rutas: <strong><code class="code-inline">data/interviewtts.db</code> (la base WAL) y <code class="code-inline">reports/</code> (transcripciones Markdown)</strong>. Copiar ambas con el servicio detenido — o usando <code class="code-inline">BACKUP</code> de SQLite — captura conversaciones, turnos e informes completos. El audio y la caché de embeddings son regenerables y no merecen espacio de backup.</p>
+    </section>
+
+    <section class="reveal">
+      <h2>Tradeoffs documentados</h2>
       <div class="table-wrapper">
         <table>
-          <thead><tr><th>Decision</th><th>Alternativa</th><th>Por que</th></tr></thead>
+          <caption>Decisiones de despliegue y su alternativa descartada</caption>
+          <thead><tr><th scope="col">Decisión</th><th scope="col">Alternativa</th><th scope="col">Por qué</th></tr></thead>
           <tbody>
-            <tr><td>Pocket TTS (local)</td><td>ElevenLabs</td><td>ElevenLabs requiere plan de pago. Pocket TTS es gratuito y offline.</td></tr>
-            <tr><td>Whisper medium (CPU)</td><td>LLM local (Ollama)</td><td>Sin GPU, LLMs locales son demasiado lentos para conversacion real-time.</td></tr>
-            <tr><td>SSE</td><td>WebSockets</td><td>SSE es unidireccional, simple, y funciona con proxies HTTP estandar.</td></tr>
+            <tr><td>Edge TTS (voz gratuita)</td><td>ElevenLabs / clonación local</td><td>ElevenLabs requiere plan de pago; los modelos de clonación exigen GPU. Voz es-ES-AlvaroNeural sin coste.</td></tr>
+            <tr><td>Whisper small + int8 (CPU)</td><td>medium / large</td><td>Cargan en 24 GB de RAM, pero su latencia en CPU no compensa; small es el punto dulce documentado.</td></tr>
+            <tr><td>SSE</td><td>WebSockets</td><td>SSE es unidireccional, simple, y funciona con proxies HTTP estándar.</td></tr>
             <tr><td>FastAPI async</td><td>Flask sync</td><td>FastAPI maneja concurrencia nativamente con async/await.</td></tr>
+            <tr><td>SQLite (WAL)</td><td>Postgres / Redis</td><td>Una sola conversación activa: stdlib, cero ops, suficiente.</td></tr>
           </tbody>
         </table>
       </div>
+      <div class="callout roadmap">
+        <div class="callout-title">Hoja de ruta de voz</div>
+        <p>Pocket TTS y Piper (clonación de voz local, offline) figuran como exploración futura del proyecto. No forman parte del stack desplegado: hoy la voz en producción es Edge TTS.</p>
+      </div>
     </section>
-
   </main>
 
   <footer class="footer">
     <div class="footer-inner">
       <div class="footer-col">
-        <p><strong>InterviewTTS</strong> &mdash; Proyecto de aprendizaje</p>
+        <p><strong>InterviewTTS</strong> — Proyecto de aprendizaje</p>
         <p>Construido por <strong>Mikel</strong> como proyecto de portafolio en IA/ML.</p>
       </div>
       <div class="footer-col">
         <p><a href="https://github.com/mikelrh-dev/liveInterviewRAG" target="_blank" rel="noopener">Ver repositorio en GitHub &rarr;</a></p>
-        <p>Stack: Python, FastAPI, Whisper, RAG, Pocket TTS</p>
+        <p>Stack: Python, FastAPI, Whisper, RAG, Edge TTS</p>
       </div>
     </div>
-    <p class="footer-copy">Documento tecnico construido para fines educativos. 2025.</p>
+    <p class="footer-copy">Documento técnico construido para fines educativos. 2025.</p>
   </footer>
+
   <script src="script.js"></script>
 </body>
 </html>

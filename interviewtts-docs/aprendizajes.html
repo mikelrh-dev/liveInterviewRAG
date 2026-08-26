@@ -3,14 +3,19 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>07 Aprendizajes y Reflexion - InterviewTTS</title>
+  <title>08 — Aprendizajes — InterviewTTS</title>
+  <meta name="description" content="Lo aprendido construyendo InterviewTTS: FastAPI async, Docker en ARM64, RAG desde cero, TDD con 256 tests, portabilidad de hardware y documentación revisada como código.">
+  <meta property="og:title" content="08 — Aprendizajes — InterviewTTS">
+  <meta property="og:description" content="Lecciones reales del proyecto: float16 vs hardware, el bug de leer contexto recuperado en voz alta, y la auditoría que cazó fabricaciones en este propio dossier.">
+  <meta property="og:type" content="website">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230f1214'/%3E%3Crect x='12' y='5' width='8' height='14' rx='4' fill='%2300d4ff'/%3E%3Cpath d='M8 14a8 8 0 0 0 16 0' fill='none' stroke='%2300d4ff' stroke-width='2' stroke-linecap='round'/%3E%3Cpath d='M16 22v4' stroke='%2300d4ff' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;0,6..72,700;1,6..72,400&family=Source+Sans+3:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <nav class="nav" role="navigation" aria-label="Navegacion principal">
+  <nav class="nav" role="navigation" aria-label="Navegación principal">
     <div class="nav-inner">
       <a href="index.html" class="nav-logo">InterviewTTS</a>
       <ul class="nav-links">
@@ -19,112 +24,148 @@
         <li><a href="whisper-stt.html">02 Whisper</a></li>
         <li><a href="rag.html">03 RAG</a></li>
         <li><a href="llm-prompting.html">04 LLM</a></li>
-        <li><a href="cache-latencia.html">05 Latencia</a></li>
-        <li><a href="despliegue.html">06 Despliegue</a></li>
-        <li><a href="aprendizajes.html" class="active">07 Aprendizajes</a></li>
+        <li><a href="cache-latencia.html">05 Caché</a></li>
+        <li><a href="persistencia.html">06 Persistencia</a></li>
+        <li><a href="despliegue.html">07 Despliegue</a></li>
+        <li><a href="aprendizajes.html" class="active">08 Aprendizajes</a></li>
       </ul>
     </div>
   </nav>
 
   <main class="main">
     <header class="chapter-header">
-      <span class="chapter-num">Capitulo 07</span>
-      <h1 class="chapter-title">Aprendizajes y Reflexion</h1>
-      <p class="chapter-subtitle">Lo que aprendi construyendo esto: FastAPI async, Docker, RAG desde cero, TDD con 155+ tests, y decisiones de producto bajo restricciones.</p>
+      <span class="chapter-num">Capítulo 08</span>
+      <h1 class="chapter-title">Aprendizajes y Reflexión</h1>
+      <p class="chapter-subtitle">Lo aprendido construyendo esto: FastAPI async, Docker en ARM64, RAG desde cero, TDD con 256 tests — y las lecciones que solo aparecen cuando algo se rompe.</p>
     </header>
 
     <section class="reveal">
-      <h2>FastAPI Async Patterns</h2>
+      <h2>Patrones async de FastAPI</h2>
       <p>FastAPI no es solo un framework HTTP. Su soporte nativo para <strong>async/await</strong> y <code class="code-inline">StreamingResponse</code> lo convierte en un orquestador ideal para pipelines de IA.</p>
-      <p>Lo que aprendi:</p>
+      <p>Lo aprendido:</p>
       <ul>
-        <li><strong>async no es magia:</strong> Si tu componente bloquea (como Whisper en CPU), necesitas <code class="code-inline">run_in_executor</code> para no bloquear el event loop</li>
-        <li><strong>StreamingResponse</strong> es perfecto para SSE: yields tokens a medida que se generan</li>
-        <li><strong>Background tasks</strong> sirven para invalidar caches sin bloquear la respuesta al cliente</li>
+        <li><strong>async no es magia:</strong> si tu componente bloquea (como Whisper en CPU), necesitas <code class="code-inline">asyncio.to_thread</code> o un executor para no bloquear el event loop.</li>
+        <li><strong>StreamingResponse es perfecto para SSE:</strong> emite eventos a medida que se generan, sin acumular la respuesta entera.</li>
+        <li><strong>El puente thread→loop importa:</strong> correr el LLM en un executor exige devolver los tokens al event loop con una cola thread-safe (<code class="code-inline">call_soon_threadsafe</code>) — un detalle que ningún tutorial menciona hasta que lo necesitas.</li>
       </ul>
     </section>
 
     <section class="reveal">
-      <h2>Docker por Prueba y Error</h2>
-      <p>Docker fue una de las partes mas frustrantes y formativas del proyecto. El problema: <strong>ARM64</strong>. Muchas imagenes Docker no estan compiladas para ARM64, y las que estan pueden tener problemas sutiles.</p>
-      <p>Aprendi a:</p>
+      <h2>Docker por prueba y error</h2>
+      <p>Docker fue una de las partes más frustrantes y formativas del proyecto. El problema: <strong>ARM64</strong>. Muchas imágenes Docker no están compiladas para ARM64, y las que están pueden tener problemas sutiles.</p>
+      <p>Aprendí a:</p>
       <ul>
-        <li>Construir imagenes multi-arch con <code class="code-inline">docker buildx</code></li>
-        <li>Usar <code class="code-inline">python:3.11-slim</code> en lugar de imagenes full para reducir tamano</li>
-        <li>Montar volumes para embeddings persistidos</li>
-        <li>Manejar dependencias del sistema (libros, codecs) que varian entre arquitecturas</li>
+        <li>Construir imágenes multi-arch con <code class="code-inline">docker buildx</code></li>
+        <li>Usar <code class="code-inline">python:3.11-slim</code> en lugar de imágenes full para reducir tamaño</li>
+        <li>Montar volúmenes para los embeddings persistidos</li>
+        <li>Manejar dependencias del sistema (<strong>librerías nativas y codecs</strong>) que varían entre arquitecturas</li>
       </ul>
     </section>
 
     <section class="reveal">
-      <h2>Arquitectura RAG Desde Cero</h2>
-      <p>Antes de este proyecto, RAG era solo un concepto que habia leido. Ahora lo entiendo como un <strong>sistema de ingenieria</strong> con componentes concretos:</p>
+      <h2>Arquitectura RAG desde cero</h2>
+      <p>Antes de este proyecto, RAG era solo un concepto leído por ahí. Ahora se entiende como un <strong>sistema de ingeniería</strong> con componentes concretos:</p>
       <ul>
-        <li><strong>Chunking:</strong> No es trivial. La estrategia de division afecta directamente la calidad de recuperacion</li>
-        <li><strong>Embeddings:</strong> Elegir el modelo correcto importa. all-MiniLM-L6-v2 es el sweet spot para CPU</li>
-        <li><strong>Metadata:</strong> El frontmatter YAML es poderoso para filtrado y boost</li>
-        <li><strong>Persistencia:</strong> Calcular embeddings es costoso; persistirlos en disco es obligatorio</li>
-        <li><strong>Invalidacion:</strong> SHA256 de documentos es simple y efectivo</li>
+        <li><strong>Chunking:</strong> No es trivial. La estrategia de división afecta directamente la calidad de recuperación.</li>
+        <li><strong>Embeddings:</strong> Elegir el modelo correcto importa. all-MiniLM-L6-v2 es el punto dulce para CPU.</li>
+        <li><strong>Metadatos:</strong> El frontmatter YAML permite filtrado por tipo antes de gastar similitudes.</li>
+        <li><strong>Persistencia:</strong> Calcular embeddings es costoso; persistirlos en disco es obligatorio.</li>
+        <li><strong>Invalidación:</strong> SHA256 de los documentos: simple y efectivo.</li>
       </ul>
+      <p class="see-also"><strong>Ver también:</strong> cada uno de estos componentes en detalle, en el capítulo <a href="rag.html">03 — RAG</a>.</p>
     </section>
 
     <section class="reveal">
-      <h2>TDD: 155+ Tests</h2>
-      <p>El proyecto tiene <strong>155+ tests</strong> siguiendo el ciclo estricto: <strong>rojo - verde - refactor</strong>.</p>
+      <h2>TDD: 256 tests</h2>
+      <p>El proyecto tiene <strong>256 tests</strong> pasando, escritos siguiendo el ciclo estricto: <strong>rojo → verde → refactor</strong>.</p>
       <ul>
         <li><strong>Rojo:</strong> Escribo el test primero. Falla porque la funcionalidad no existe.</li>
-        <li><strong>Verde:</strong> Implemento lo minimo necesario para que pase.</li>
-        <li><strong>Refactor:</strong> Limpio el codigo sin cambiar el comportamiento.</li>
+        <li><strong>Verde:</strong> Implemento lo mínimo necesario para que pase.</li>
+        <li><strong>Refactor:</strong> Limpio el código sin cambiar el comportamiento.</li>
       </ul>
-      <p>Lo que aprendi: TDD no es sobre tests. Es sobre <strong>diseñar antes de implementar</strong>. Cada test es un mini-diseno de como deberia funcionar el codigo.</p>
-      <div class="callout"><div class="callout-title">Disciplina TDD</div><p>La tentacion de "escribir el codigo primero y los tests despues" es constante. Pero cada vez que cedi, el codigo resultante era peor: mas acoplado, menos claro, mas dificil de cambiar. TDD fuerza una separation of concerns natural.</p></div>
+      <p>La conclusión: TDD no va sobre tests. Va sobre <strong>diseñar antes de implementar</strong>. Cada test es un mini-diseño de cómo debería funcionar el código.</p>
+      <div class="callout"><div class="callout-title">Disciplina TDD</div><p>La tentación de "escribir el código primero y los tests después" es constante. Pero cada vez que cede, el código resultante era peor: más acoplado, menos claro, más difícil de cambiar. TDD fuerza una separación natural de responsabilidades.</p></div>
     </section>
 
     <section class="reveal">
-      <h2>Orquestacion Multi-Proveedor</h2>
-      <p>Diseñar un sistema que funcione con multiples proveedores de LLM (Google AI, OpenRouter) me enseno sobre <strong>abstraccion y degradacion elegante</strong>.</p>
-      <p>El patron es simple pero poderoso: un adaptador por proveedor, una interfaz comun, y un fallback automatico. Si el primario falla, el secundario toma el control sin que el usuario note nada.</p>
+      <h2>Especificación de papel ≠ silicio real</h2>
+      <p>Versión temprana de este dossier presumía de float16 «porque hay RAM de sobra». La realidad: CTranslate2 rechaza float16 en CPUs sin soporte FP16 eficiente con un <code class="code-inline">ValueError</code>. La memoria nunca fue la restricción — el hardware disponible sí.</p>
+      <ul>
+        <li><strong>int8 ganó por portabilidad:</strong> funciona en cualquier CPU moderna; float16 solo donde hay aceleración FP16.</li>
+        <li><strong>Las specs venden promedios:</strong> "float16 es más rápido" es cierto en algunos chips y falso en otros. La única spec confiable es la tuya medida en tu máquina.</li>
+        <li><strong>Cambiar de opinión es señal de salud:</strong> small + int8 salió a producción porque sobrevivió al contacto con el hardware real, no al papel.</li>
+      </ul>
+      <p class="see-also"><strong>Ver también:</strong> la historia completa en el capítulo <a href="whisper-stt.html">02 — Whisper</a>.</p>
     </section>
 
     <section class="reveal">
-      <h2>SSE vs WebSockets</h2>
-      <p>Elegir SSE sobre WebSockets fue una decision basada en <strong>analisis del caso de uso</strong>, no en preferencia personal.</p>
-      <p>WebSockets son perfectos para chat bidireccional. Pero nuestro flujo es: cliente envia audio (POST), servidor responde con streaming de audio (SSE). Es fundamentalmente unidireccional durante la fase de respuesta. SSE es la herramienta correcta.</p>
+      <h2>Nunca hables con la voz de tus datos crudos</h2>
+      <p>Un bug temprano y formativo: concatenar la salida cruda de recuperación de RAG a la respuesta hizo que el TTS leyera literalmente <em>"[Source: cv.md | Tipo: experience]"</em> al reclutador.</p>
+      <ul>
+        <li><strong>Dos canales, dos formatos:</strong> lo que ve el panel de contexto (metadatos, fuentes, scores) y lo que se pronuncia (texto limpio y saneado) son contratos distintos. Mezclarlos produce momentos surrealistas.</li>
+        <li><strong>Saneamiento como barrera obligatoria:</strong> hoy todo texto pasa por <code class="code-inline">sanitize_for_tts</code> (fuera Markdown y emojis) antes de sintetizarse.</li>
+        <li><strong>Los bugs embarazosos enseñan más:</strong> nadie olvida el día en que su gemelo lee metadatos en voz alta.</li>
+      </ul>
+      <p class="see-also"><strong>Ver también:</strong> el contrato actual de chunks-solo-al-panel, en el capítulo <a href="cache-latencia.html">05 — Caché</a>.</p>
     </section>
 
     <section class="reveal">
-      <h2>OpenSpec: Spec-Driven Development</h2>
-      <p>Usar OpenSpec para documentar decisiones arquitectonicas antes de implementar cambio la forma en que trabajo. Escribir que voy a hacer <strong>antes</strong> de hacerlo me obliga a pensar en edge cases, tradeoffs, y consecuencias.</p>
-      <p>Las specs no son burocracia. Son <strong>contratos con mi futuro yo</strong>.</p>
+      <h2>Revisa tu documentación como código</h2>
+      <p>Una auditoría técnica adversarial sobre este dossier encontró <strong>fabricaciones factuales</strong>: float16 presentado como decisión enviada, un "entity boost" que nunca existió en el código, un parámetro top_p que jamás se envió, Pocket TTS acreditado como motor activo y un conteo de tests desactualizado (155+, cuando son 256).</p>
+      <ul>
+        <li><strong>La documentación también es código:</strong> se le escapan bugs igual — solo que sus bugs se llaman mentiras involuntarias.</li>
+        <li><strong>La revisión adversarial funciona:</strong> contrastar cada afirmación contra la fuente (grep incluido) atrapa lo que la auto-revisión normaliza.</li>
+        <li><strong>Números sin método = rumores:</strong> toda cifra de este dossier ahora declara cómo se obtuvo o se marca explícitamente como estimado.</li>
+      </ul>
     </section>
 
     <section class="reveal">
-      <h2>Decisiones de Producto Bajo Restricciones</h2>
+      <h2>Decisiones de producto bajo restricciones</h2>
       <p>Las mejores lecciones vinieron de las restricciones:</p>
       <ul>
-        <li><strong>$0/mes:</strong> Me obligo a buscar alternativas open source y a optimizar lo que ya tenia</li>
-        <li><strong>Sin GPU:</strong> Me enseño a medir y optimizar cada milisegundo del pipeline</li>
-        <li><strong>ARM64:</strong> Me expuso a problemas reales de compatibilidad entre arquitecturas</li>
-        <li><strong>Solo CPU:</strong> Me mostro que la ingenieria correcta puede compensar hardware limitado</li>
+        <li><strong>$0/mes:</strong> me obligó a buscar alternativas open source y a optimizar lo que ya tenía.</li>
+        <li><strong>Sin GPU:</strong> me enseñó a medir y optimizar cada fase del pipeline.</li>
+        <li><strong>ARM64:</strong> me expuso a problemas reales de compatibilidad entre arquitecturas.</li>
+        <li><strong>Solo CPU:</strong> me mostró que la ingeniería correcta puede compensar hardware limitado.</li>
       </ul>
-      <p>Las restricciones no son enemigas. Son <strong>maestras</strong>. Te fuerzan a ser creativo, a entender realmente los sistemas con los que trabajas, y a tomar decisiones informadas en lugar de random.</p>
+      <p>Las restricciones no son enemigas. Son <strong>maestras</strong>: fuerzan a ser creativo, a entender realmente los sistemas con los que trabajas, y a tomar decisiones informadas en lugar de al azar.</p>
     </section>
 
+    <section class="reveal">
+      <h2>Glosario mínimo</h2>
+      <div class="glossary">
+        <dl>
+          <dt>Embedding</dt>
+          <dd>Representación de un texto como vector numérico (aquí, 384 dimensiones) que captura su significado. Textos parecidos producen vectores cercanos.</dd>
+          <dt>Cuantización</dt>
+          <dd>Reducir la precisión numérica de los pesos de un modelo (float32 → int8) para ahorrar memoria y cómputo, perdiendo poca precisión.</dd>
+          <dt>WAL</dt>
+          <dd>Write-Ahead Logging: modo de SQLite donde las escrituras van primero a un registro. Efecto práctico: lectores y escritor no se bloquean entre sí.</dd>
+          <dt>RAG</dt>
+          <dd>Retrieval-Augmented Generation: recuperar documentos relevantes y entregárselos al LLM como contexto para que responda con datos reales en vez de memoria entrenada.</dd>
+          <dt>SSE</dt>
+          <dd>Server-Sent Events: protocolo HTTP unidireccional servidor→cliente, ideal para streaming de tokens y fragmentos de audio.</dd>
+          <dt>Similitud coseno</dt>
+          <dd>Métrica de parecido entre dos vectores según su ángulo, ignorando magnitud: 1 significa misma dirección, 0 nada en común.</dd>
+        </dl>
+      </div>
+    </section>
   </main>
 
   <footer class="footer">
     <div class="footer-inner">
       <div class="footer-col">
-        <p><strong>InterviewTTS</strong> &mdash; Proyecto de aprendizaje</p>
+        <p><strong>InterviewTTS</strong> — Proyecto de aprendizaje</p>
         <p>Construido por <strong>Mikel</strong> como proyecto de portafolio en IA/ML.</p>
       </div>
       <div class="footer-col">
         <p><a href="https://github.com/mikelrh-dev/liveInterviewRAG" target="_blank" rel="noopener">Ver repositorio en GitHub &rarr;</a></p>
-        <p>Stack: Python, FastAPI, Whisper, RAG, Pocket TTS</p>
+        <p>Stack: Python, FastAPI, Whisper, RAG, Edge TTS</p>
       </div>
     </div>
-    <p class="footer-copy">Documento tecnico construido para fines educativos. 2025.</p>
+    <p class="footer-copy">Documento técnico construido para fines educativos. 2025.</p>
   </footer>
+
   <script src="script.js"></script>
 </body>
 </html>

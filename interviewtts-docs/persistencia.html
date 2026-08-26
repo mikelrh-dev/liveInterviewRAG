@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>06 — Persistencia y Memoria — InterviewTTS</title>
+  <meta name="description" content="SQLite en modo WAL como memoria durable de InterviewTTS: write-through, hidratación tras reinicio, informes que sobreviven a la expulsión y filosofía log-and-continue.">
+  <meta property="og:title" content="06 — Persistencia y Memoria — InterviewTTS">
+  <meta property="og:description" content="Cómo una entrevista sobrevive a un reinicio: esquema SQLite, WAL explicado sin humo, hidratación on-miss y el gotcha de ReadWritePaths en systemd.">
+  <meta property="og:type" content="website">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230f1214'/%3E%3Crect x='12' y='5' width='8' height='14' rx='4' fill='%2300d4ff'/%3E%3Cpath d='M8 14a8 8 0 0 0 16 0' fill='none' stroke='%2300d4ff' stroke-width='2' stroke-linecap='round'/%3E%3Cpath d='M16 22v4' stroke='%2300d4ff' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;0,6..72,700;1,6..72,400&family=Source+Sans+3:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <nav class="nav" role="navigation" aria-label="Navegación principal">
+    <div class="nav-inner">
+      <a href="index.html" class="nav-logo">InterviewTTS</a>
+      <ul class="nav-links">
+        <li><a href="index.html">00 Inicio</a></li>
+        <li><a href="arquitectura.html">01 Arquitectura</a></li>
+        <li><a href="whisper-stt.html">02 Whisper</a></li>
+        <li><a href="rag.html">03 RAG</a></li>
+        <li><a href="llm-prompting.html">04 LLM</a></li>
+        <li><a href="cache-latencia.html">05 Caché</a></li>
+        <li><a href="persistencia.html" class="active">06 Persistencia</a></li>
+        <li><a href="despliegue.html">07 Despliegue</a></li>
+        <li><a href="aprendizajes.html">08 Aprendizajes</a></li>
+      </ul>
+    </div>
+  </nav>
+
+  <main class="main">
+    <header class="chapter-header">
+      <span class="chapter-num">Capítulo 06</span>
+      <h1 class="chapter-title">Persistencia y Memoria</h1>
+      <p class="chapter-subtitle">SQLite en modo WAL como memoria durable del gemelo: cada turno escrito al vuelo, conversaciones que sobreviven a reinicios e informes que sobreviven a todo.</p>
+    </header>
+
+    <section class="reveal">
+      <h2>El problema: un diccionario en memoria no es memoria</h2>
+      <p>Las conversaciones vivían en un diccionario Python en memoria. Consecuencias directas: un reinicio del servicio borraba toda entrevista en curso, y los informes generados quedaban huérfanos, desconectados de su historial. En un VPS con despliegues frecuentes, eso significaba perder la entrevista exactamente cuando más interesaba conservarla.</p>
+      <p>La solución deliberadamente aburrida: <strong>SQLite</strong>. Librería estándar de Python, cero dependencias nuevas, cero servidores que operar. Para una carga de conversación única sobre un VPS gratuito, Postgres o Redis serían over-engineering.</p>
+    </section>
+
+    <section class="reveal">
+      <h2>WAL explicado sin humo</h2>
+      <p>La base (<code class="code-inline">data/interviewtts.db</code>) opera en modo <strong>WAL</strong> (Write-Ahead Logging): cada escritura va primero a un archivo de registro y se consolida después. La consecuencia práctica que importa aquí:</p>
+      <div class="callout">
+        <div class="callout-title">WAL en una frase</div>
+        <p><strong>Los lectores no bloquean al escritor, y el escritor no bloquea a los lectores.</strong> Mientras el pipeline escribe el turno actual, cualquier otra lectura (hidratar una conversación vieja, consultar el caché semántico) sigue funcionando sin esperarse mutuamente.</p>
+      </div>
+      <p>Junto a WAL, cada conexión aplica dos pragmas más: <code class="code-inline">foreign_keys=ON</code> (para que las cascadas de borrado funcionen de verdad) y <code class="code-inline">busy_timeout=5000</code> (ante contención, esperar hasta 5 s en vez de fallar al instante).</p>
+      <p>El modelo de concurrencia es de conexiones cortas: <strong>una conexión por operación</strong>, siempre ejecutada fuera del event loop vía <code class="code-inline">asyncio.to_thread</code>. Nada de conexiones eternas compartidas ni bloqueos gestionados a mano.</p>
+    </section>
+
+    <section class="reveal">
+      <h2>El esquema</h2>
+      <div class="table-wrapper">
+        <table>
+          <caption>Cinco tablas en data/interviewtts.db</caption>
+          <thead><tr><th scope="col">Tabla</th><th scope="col">Contenido</th><th scope="col">Notas</th></tr></thead>
+          <tbody>
+            <tr><td><span class="code-inline">conversations</span></td><td>id, resumen continuado, marcas de tiempo</td><td>Borrado en cascada hacia turns/messages</td></tr>
+            <tr><td><span class="code-inline">turns</span></td><td>Pregunta, respuesta, chunks usados por turno</td><td>Único por (conversación, número)</td></tr>
+            <tr><td><span class="code-inline">messages</span></td><td>Texto usuario/respuesta + URL de audio</td><td>Vista "chat" de lo mismo</td></tr>
+            <tr><td><span class="code-inline">reports</span></td><td>cid → ruta del informe Markdown</td><td><strong>Sobrevive a la expulsión</strong></td></tr>
+            <tr><td><span class="code-inline">semantic_cache</span></td><td>pregunta, embedding (blob f32), respuesta, hit_count</td><td>Compartida con el caché semántico (capítulo 05)</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="see-also"><strong>Ver también:</strong> los guardrails del caché semántico que habita esta tabla están detallados en el capítulo <a href="cache-latencia.html">05 — Caché</a>.</p>
+    </section>
+
+    <section class="reveal">
+      <h2>Escritura write-through</h2>
+      <p>No hay flush periódico ni cola diferida: <strong>cada evento relevante se escribe en el momento</strong>, antes de continuar. Los puntos de escritura son: creación de conversación, cada turno nuevo (turno + mensaje + actividad en una transacción atómica), la despedida detectada y cada informe generado. El caché semántico añade su store solo tras respuesta exitosa del primer turno sustantivo.</p>
+      <p>Si el proceso muere entre turno y turno, se pierde exactamente nada de lo ya respondido: la base siempre refleja el estado confirmado al reclutador.</p>
+    </section>
+
+    <section class="reveal">
+      <h2>Hidratación: sobrevivir a un reinicio</h2>
+      <p>Al llegar un <code class="code-inline">conversation_id</code> que no está en memoria pero sí en la base, el endpoint no devuelve 404: <strong>reconstruye la conversación completa desde SQLite</strong> — turnos, mensajes y actividad — y la devuelve al mapa en memoria para seguir como si nada.</p>
+      <p>El detalle fino es el resumen continuado (la memoria comprimida que viaja en el prompt): no se guarda tal cual, sino que se <strong>recalcula replicando el mismo algoritmo</strong> del resumen en vivo (breves de 80/120 caracteres por turno, tope de 1500, descartando lo más antiguo). Así, una conversación hidratada produce prompts idénticos a los de una que nunca dejó la memoria.</p>
+      <p class="see-also"><strong>Ver también:</strong> cómo ese resumen entra en el system prompt, en el capítulo <a href="llm-prompting.html">04 — LLM</a>.</p>
+    </section>
+
+    <section class="reveal">
+      <h2>Los informes sobreviven a la expulsión</h2>
+      <p>Un servicio aparte (<code class="code-inline">ReportService</code>) renderiza la transcripción completa en Markdown bajo <code class="code-inline">reports/{cid}/{timestamp}.md</code>. Se genera en dos momentos: al detectarse la despedida y al expulsarse una conversación inactiva por TTL. Siempre vía <code class="code-inline">asyncio.to_thread</code> — escribir el archivo nunca congela el stream SSE.</p>
+      <p>La asimetría intencional del esquema brilla aquí: la expulsión borra <code class="code-inline">conversations</code> (y por cascada turns/messages), pero <strong>la fila de reports queda intacta</strong> — quién entrevistó, cuándo, y dónde está la transcripción completa. Una poda posterior elimina filas y archivos con más de <code class="code-inline">REPORT_RETENTION_DAYS=30</code> días. La generación además es idempotente: si ya existe un informe para esa conversación, gana el primero.</p>
+    </section>
+
+    <section class="reveal">
+      <h2>Filosofía log-and-continue</h2>
+      <p>Todos los métodos públicos de persistencia comparten contrato: ante cualquier fallo, <strong>registran el warning y devuelven un centinela</strong> — jamás propagan la excepción hacia el pipeline.</p>
+      <ul>
+        <li><strong>Una base muerta no rompe un turno vivo:</strong> peor cosa posible si SQLite falla es seguir sin durabilidad, no dejar al reclutador colgado a mitad de entrevista.</li>
+        <li><strong>Recuperación de corrupción:</strong> si la base está corrupta al arrancar, se renombra como <code class="code-inline">{db}.corrupt-{timestamp}</code> (preservando el cadáver para autopsia) y se recrea limpia desde el esquema.</li>
+        <li><strong>Loud errors, silent degradation:</strong> el fallo se grita en los logs; el servicio, susurra y continúa.</li>
+      </ul>
+    </section>
+
+    <section class="reveal">
+      <h2>Keep-alive HTTP: la otra memoria</h2>
+      <p>La persistencia también existe en la salida hacia los proveedores LLM. Antes, cada llamada construía un cliente httpx nuevo: handshake TCP+TLS completo (~200-500 ms, coste estimado) tirado a la basura en cada turno.</p>
+      <p>Ahora un único cliente compartido (<code class="code-inline">_get_client()</code> en <code class="code-inline">llm.py</code>) se crea perezosamente bajo doble chequeo con lock (thread-safe para los llamantes vía <code class="code-inline">asyncio.to_thread</code>) y sirve a los cuatro puntos de llamada: generate/stream × OpenRouter/Google AI. El lifespan lo cierra exactamente una vez en el apagado, y cerrarlo lo resetea para que nunca se reutilice un cliente cerrado.</p>
+    </section>
+
+    <section class="reveal">
+      <h2>Gotcha de despliegue: ProtectSystem se come tus datos</h2>
+      <div class="callout roadmap">
+        <div class="callout-title">El bug que solo apareció en producción</div>
+        <p>La unidad systemd usa <code class="code-inline">ProtectSystem=strict</code>: todo el sistema de archivos pasa a <strong>solo lectura</strong> salvo lo que se liste explícitamente en <code class="code-inline">ReadWritePaths</code>. Sin la línea <code class="code-inline">ReadWritePaths=/opt/interviewtts/audio /opt/interviewtts/data /opt/interviewtts/reports</code>, el servicio arranca perfecto… y falla la primera vez que intenta crear la base, un MP3 o un informe.</p>
+      </div>
+      <p>Moral: el hardening sin lista blanca de escritura convierte cualquier almacenamiento local en un error diferido. El capítulo <a href="despliegue.html">07 — Despliegue</a> muestra la unidad completa.</p>
+    </section>
+
+    <section class="reveal">
+      <h2>Copia de seguridad</h2>
+      <p>El backup mínimo de todo el estado durable cabe en una línea: <strong>copiar <code class="code-inline">data/interviewtts.db</code> y el directorio <code class="code-inline">reports/</code></strong>. Con WAL activo, hazlo con el servicio detenido (o usa la sentencia <code class="code-inline">BACKUP</code> de SQLite) para no capturar un estado a mitad de transacción junto a sus sidecars <code class="code-inline">-wal</code>/<code class="code-inline">-shm</code>.</p>
+      <p>Lo demás es regenerable: audio (TTL de horas), caché de embeddings (se reconstruye del corpus), entradas del FAQ (viven en código).</p>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="footer-inner">
+      <div class="footer-col">
+        <p><strong>InterviewTTS</strong> — Proyecto de aprendizaje</p>
+        <p>Construido por <strong>Mikel</strong> como proyecto de portafolio en IA/ML.</p>
+      </div>
+      <div class="footer-col">
+        <p><a href="https://github.com/mikelrh-dev/liveInterviewRAG" target="_blank" rel="noopener">Ver repositorio en GitHub &rarr;</a></p>
+        <p>Stack: Python, FastAPI, Whisper, RAG, Edge TTS</p>
+      </div>
+    </div>
+    <p class="footer-copy">Documento técnico construido para fines educativos. 2025.</p>
+  </footer>
+
+  <script src="script.js"></script>
+</body>
+</html>

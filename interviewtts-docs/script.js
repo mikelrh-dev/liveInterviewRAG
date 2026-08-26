@@ -1,5 +1,8 @@
 /* InterviewTTS Docs — Shared JS */
 (function(){
+  /* Progressive enhancement flag: CSS gates reveal animations on html.js */
+  document.documentElement.classList.add('js');
+
   /* Active nav link */
   var path = location.pathname.split('/').pop() || 'index.html';
   document.querySelectorAll('.nav-links a').forEach(function(a){

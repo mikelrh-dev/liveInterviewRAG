@@ -3,14 +3,19 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>03 RAG - InterviewTTS</title>
+  <title>03 — RAG — InterviewTTS</title>
+  <meta name="description" content="El pipeline RAG de InterviewTTS: embeddings all-MiniLM-L6-v2, similitud coseno con umbral 0,30, chunking por encabezados H1-H3 y caché de embeddings en disco con SHA256.">
+  <meta property="og:title" content="03 — RAG — InterviewTTS">
+  <meta property="og:description" content="Cómo el gemelo responde preguntas usando 34 documentos Markdown del candidato (sin contar READMEs ni plantillas): chunking, embeddings, filtrado por tipo y expansión honesta de consultas.">
+  <meta property="og:type" content="website">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230f1214'/%3E%3Crect x='12' y='5' width='8' height='14' rx='4' fill='%2300d4ff'/%3E%3Cpath d='M8 14a8 8 0 0 0 16 0' fill='none' stroke='%2300d4ff' stroke-width='2' stroke-linecap='round'/%3E%3Cpath d='M16 22v4' stroke='%2300d4ff' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;0,6..72,700;1,6..72,400&family=Source+Sans+3:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <nav class="nav" role="navigation" aria-label="Navegacion principal">
+  <nav class="nav" role="navigation" aria-label="Navegación principal">
     <div class="nav-inner">
       <a href="index.html" class="nav-logo">InterviewTTS</a>
       <ul class="nav-links">
@@ -19,120 +24,135 @@
         <li><a href="whisper-stt.html">02 Whisper</a></li>
         <li><a href="rag.html" class="active">03 RAG</a></li>
         <li><a href="llm-prompting.html">04 LLM</a></li>
-        <li><a href="cache-latencia.html">05 Latencia</a></li>
-        <li><a href="despliegue.html">06 Despliegue</a></li>
-        <li><a href="aprendizajes.html">07 Aprendizajes</a></li>
+        <li><a href="cache-latencia.html">05 Caché</a></li>
+        <li><a href="persistencia.html">06 Persistencia</a></li>
+        <li><a href="despliegue.html">07 Despliegue</a></li>
+        <li><a href="aprendizajes.html">08 Aprendizajes</a></li>
       </ul>
     </div>
   </nav>
 
   <main class="main">
     <header class="chapter-header">
-      <span class="chapter-num">Capitulo 03</span>
-      <h1 class="chapter-title">RAG: Recuperacion Aumentada por Generacion</h1>
-      <p class="chapter-subtitle">La estrella del sistema. Como el candidato puede responder preguntas que nunca se planteo, usando contexto recuperado inteligentemente de su wiki personal.</p>
+      <span class="chapter-num">Capítulo 03</span>
+      <h1 class="chapter-title">RAG: Recuperación Aumentada por Generación</h1>
+      <p class="chapter-subtitle">La estrella del sistema. Cómo el candidato puede responder preguntas que nunca se planteó, usando contexto recuperado de su wiki personal.</p>
     </header>
 
     <section class="reveal">
-      <h2>Que es RAG</h2>
-      <p>RAG (Retrieval-Augmented Generation) es una tecnica que combina <strong>recuperacion de informacion</strong> con <strong>generacion de texto</strong>. En lugar de que un LLM responda solo con su conocimiento entrenado, RAG le proporciona documentos relevantes como contexto antes de generar la respuesta.</p>
-      <img src="assets/stitch-vector-search.png" alt="Espacio vectorial semantico con clusters de documentos agrupados por similitud" class="img-full" width="860" height="486">
-      <p class="img-label">Espacio vectorial semantico: documentos agrupados por similitud de significado, no por palabras exactas</p>
-      <p>La clave de RAG es que los documentos no se buscan por palabras clave, sino por <strong>similitud semantica</strong>. Si un reclutador pregunta sobre experiencia con bases de datos distribuidas, el sistema recupera fragmentos sobre MongoDB, sharding, y replicas, aunque esas palabras exactas no esten en la pregunta.</p>
+      <h2>Qué es RAG</h2>
+      <p>RAG (Retrieval-Augmented Generation) es una técnica que combina <strong>recuperación de información</strong> con <strong>generación de texto</strong>. En lugar de que un LLM responda solo con su conocimiento entrenado, RAG le proporciona documentos relevantes como contexto antes de generar la respuesta.</p>
+      <img src="assets/stitch-vector-search.png" alt="Espacio vectorial semántico con grupos de documentos agrupados por similitud" class="img-full" width="860" height="486" loading="lazy" decoding="async">
+      <p class="img-label">Espacio vectorial semántico: documentos agrupados por similitud de significado, no por palabras exactas</p>
+      <p>La clave es que los documentos no se buscan por palabras clave, sino por <strong>similitud semántica</strong>. Si el reclutador pregunta por algo dicho con otras palabras en la wiki, el sistema recupera el fragmento correcto igualmente.</p>
     </section>
 
     <section class="reveal">
-      <h2>Embeddings: Texto a Vectores</h2>
-      <p>Para calcular similitud semantica, representamos cada fragmento de texto como un <strong>vector numerico</strong>. Usamos <strong>sentence-transformers</strong> con el modelo <span class="code-inline">all-MiniLM-L6-v2</span>, que genera vectores de <strong>384 dimensiones</strong>.</p>
-      <div class="callout"><div class="callout-title">Por que all-MiniLM-L6-v2?</div><p>Modelo pequeno (~80MB) con excelente balance calidad/velocidad. No necesitamos los embeddings mas precisos del mundo, sino algo suficientemente bueno que funcione rapido en CPU.</p></div>
-      <p>Cada fragmento de la wiki se convierte en un vector de 384 dimensiones. La consulta del reclutador tambien se vectoriza. Luego calculamos la <strong>similitud coseno</strong> entre la consulta y todos los fragmentos.</p>
+      <h2>Embeddings: texto a vectores</h2>
+      <p>Para calcular similitud semántica, cada fragmento de texto se representa como un <strong>vector numérico</strong>. Se usa <strong>sentence-transformers</strong> con el modelo <span class="code-inline">all-MiniLM-L6-v2</span>, que genera vectores de <strong>384 dimensiones</strong>.</p>
+      <div class="callout"><div class="callout-title">¿Por qué all-MiniLM-L6-v2?</div><p>Modelo pequeño (~80 MB, valor aproximado) con excelente balance calidad/velocidad. No hacen falta los embeddings más precisos del mundo, sino algo suficientemente bueno que funcione rápido en CPU. El mismo embedder alimenta el caché semántico del capítulo 05 — nunca se carga un segundo modelo.</p></div>
+      <p>Cada fragmento de la wiki se convierte en un vector de 384 dimensiones, normalizado para coseno. La consulta del reclutador también se vectoriza, y se calcula la <strong>similitud coseno</strong> entre la consulta y todos los fragmentos.</p>
     </section>
 
     <section class="reveal">
-      <h2>Similitud Coseno</h2>
-      <p>Mide que tan similares son dos vectores en terminos de su <strong>direccion</strong>, ignorando magnitud. Va de -1 (opuestos) a 1 (identicos).</p>
-      <div class="formula">cos(theta) = (A . B) / (||A|| * ||B||)</div>
+      <h2>Similitud coseno y el umbral 0,30</h2>
+      <p>Mide qué tan similares son dos vectores en términos de su <strong>dirección</strong>, ignorando la magnitud. Va de -1 (opuestos) a 1 (idénticos).</p>
+      <div class="formula">cos(theta) = (A · B) / (||A|| × ||B||)</div>
+      <p>Como referencia orientativa (no es una escala oficial):</p>
       <ul>
-        <li><strong>0.8 - 1.0:</strong> Muy relevante, coincidencia semantica fuerte</li>
-        <li><strong>0.5 - 0.8:</strong> Relevante, relacion tematica clara</li>
-        <li><strong>0.3 - 0.5:</strong> Parcialmente relevante</li>
-        <li><strong>0.0 - 0.3:</strong> Poco o nada relevante</li>
+        <li><strong>0,8 – 1,0:</strong> Coincidencia semántica fuerte</li>
+        <li><strong>0,5 – 0,8:</strong> Relación temática clara</li>
+        <li><strong>0,3 – 0,5:</strong> Parcialmente relevante</li>
+        <li><strong>&lt; 0,3:</strong> Poco o nada relevante</li>
       </ul>
-      <p>Usamos un umbral de <span class="code-inline">0.35</span> para filtrar fragmentos irrelevantes.</p>
+      <p>El umbral configurado es <span class="code-inline">0.30</span>: los fragmentos con score menor se descartan. Es deliberadamente conservador — mejor devolver menos contexto que contaminar la respuesta con material irrelevante.</p>
+      <p class="see-also"><strong>Ver también:</strong> el caché semántico del capítulo <a href="cache-latencia.html">05</a> usa el mismo coseno pero con un umbral mucho más exigente (0,93), porque allí un falso positivo significa servir una respuesta equivocada.</p>
     </section>
 
     <section class="reveal">
-      <h2>Chunking por Headers Markdown</h2>
-      <p>La wiki del candidato son ~30 documentos Markdown con frontmatter YAML. Los dividimos en chunks:</p>
+      <h2>Chunking por encabezados Markdown</h2>
+      <p>La wiki son <strong>34 documentos Markdown</strong> (cifra verificada contando los archivos que el cargador procesa tras excluir READMEs y plantillas). Casi todos llevan frontmatter YAML (el único que no lo necesita es el índice). Se dividen así:</p>
       <ul>
-        <li><strong>Division por headers:</strong> Cada header Markdown (##, ###) inicia un nuevo chunk</li>
-        <li><strong>Maximo 400 palabras:</strong> Si un chunk excede 400 palabras, se divide mas</li>
-        <li><strong>Overlap de 50 palabras:</strong> Las 50 ultimas palabras del chunk anterior se repiten al inicio del siguiente</li>
+        <li><strong>División por encabezados H1-H3:</strong> cualquier encabezado Markdown de nivel 1 a 3 (<code class="code-inline">#</code>, <code class="code-inline">##</code>, <code class="code-inline">###</code>) inicia un nuevo chunk, respetando la estructura natural del documento.</li>
+        <li><strong>Máximo 400 palabras:</strong> si una sección excede ese tamaño, se divide por conteo de palabras.</li>
+        <li><strong>Overlap de 50 palabras:</strong> las últimas 50 palabras del fragmento anterior se repiten al inicio del siguiente.</li>
       </ul>
-      <div class="callout"><div class="callout-title">Por que overlap?</div><p>Sin overlap, una pregunta que cruza la division entre dos chunks perderia contexto en ambos. El overlap garantiza que la informacion en la frontera este representada en al menos uno de ellos.</p></div>
+      <div class="callout"><div class="callout-title">¿Por qué overlap?</div><p>Sin overlap, una pregunta que cruza la frontera entre dos chunks perdería contexto en ambos. El solape garantiza que la información limítrofe esté representada en al menos uno.</p></div>
     </section>
 
     <section class="reveal">
-      <h2>Metadata del Frontmatter YAML</h2>
-      <p>Cada documento tiene frontmatter YAML con metadatos que se adjuntan a cada chunk:</p>
+      <h2>Metadatos del frontmatter YAML</h2>
+      <p>Cada documento declara metadatos que se adjuntan a cada uno de sus chunks:</p>
       <div class="code-block" data-lang="yaml"><span class="pr">---</span>
-<span class="pr">type:</span> <span class="st">experiencia</span>
+<span class="pr">type:</span> <span class="st">experience</span>
 <span class="pr">tags:</span> [<span class="st">python</span>, <span class="st">fastapi</span>, <span class="st">api</span>]
 <span class="pr">summary_1line:</span> <span class="st">Experiencia construyendo APIs con FastAPI</span>
 <span class="pr">---</span>
-<span class="cm"># Experiencia con APIs</span>
-<span class="cm">## FastAPI</span>
-He construido multiples APIs con FastAPI...</div>
-      <p>Estos metadatos habilitan dos funcionalidades criticas:</p>
-      <ul>
-        <li><strong>Filtrado previo por tipo:</strong> Si la query mapea a un tipo exacto (ej: "experiencia"), se filtran chunks de ese tipo antes de calcular similitud</li>
-        <li><strong>Entity boost:</strong> Chunks que mencionan la entidad preguntada reciben un boost de +0.15 en su score de similitud</li>
-      </ul>
+<span class="cm"># Experiencia con APIs</span></div>
+      <p>Habilitan una funcionalidad crítica: el <strong>filtrado previo por tipo</strong>. Si la pregunta mapea inequívocamente a un tipo de documento (por ejemplo, "experiencia"), solo esos chunks entran al cálculo de similitud. Si hay ambigüedad o ninguna señal, el coseno actúa como fallback sobre todo el corpus.</p>
+      <p>Los metadatos también viajan en el contexto entregado al LLM como cabecera legible: <code class="code-inline">[Source: archivo.md | Tipo: experience | Resumen: …]</code>. Importante: esa cabecera alimenta el <strong>panel de contexto del frontend</strong>; nunca debe llegar al TTS — la historia de ese bug está en el capítulo 05.</p>
     </section>
 
     <section class="reveal">
-      <h2>Query Expansion</h2>
-      <p>Antes de embeddear la consulta del reclutador, expandimos la query con sinonimos y terminos relacionados. Esto mejora la cobertura de recuperacion.</p>
-      <p>Por ejemplo, si el reclutador pregunta sobre "bases de datos", la query expandida podria incluir: "database", "SQL", "NoSQL", "MongoDB", "PostgreSQL". Esto permite recuperar fragmentos que usan esos terminos especificos aunque la pregunta sea mas general.</p>
+      <h2>Query expansion, con honestidad</h2>
+      <p>Antes de vectorizar la consulta, un mapa artesanal añade sinónimos a los temas conocidos. La versión honesta de esta feature: es un <strong>mapa diminuto hecho a mano</strong> que cubre exactamente dos familias temáticas — tests/proyectos:</p>
+      <div class="table-wrapper">
+        <table>
+          <caption>Mapa real de expansión (backend/services/rag.py)</caption>
+          <thead><tr><th scope="col">Palabra detectada</th><th scope="col">Sinónimos añadidos</th></tr></thead>
+          <tbody>
+            <tr><td>tests / testing / test</td><td>testing, pytest, tdd, skills</td></tr>
+            <tr><td>projects / proyectos / proyecto</td><td>project, entrevista, prácticas</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>Ejemplo real: si el reclutador dice "¿hace pruebas unitarias?", la query se expande con "pytest tdd" antes de <strong>convertirla en embedding</strong>, mejorando la recuperación de fragmentos que hablan de pytest sin usar la palabra "pruebas". No es expansión con LLM ni sinónimos automáticos: es un diccionario pequeño, consciente de sus límites, que resuelve las dos familias de fallo más frecuentes del corpus.</p>
     </section>
 
     <section class="reveal">
-      <h2>Persistencia de Embeddings</h2>
-      <p>Calcular embeddings es costoso (~50ms por chunk). Para evitar recalcular en cada arranque, <strong>persistimos los embeddings en disco</strong> usando archivos <span class="code-inline">.npz</span> (formato comprimido de NumPy).</p>
-      <p>La clave de invalidacion es un <strong>hash SHA256</strong> de todos los documentos Markdown. Si algun documento cambia, el hash cambia, y los embeddings se recomputan silenciosamente. Si nada cambia, se cargan directamente del disco.</p>
-      <div class="callout"><div class="callout-title">Invalidacion por Hash</div><p>Al iniciar el servidor, calculamos el SHA256 de la suma de todos los archivos .md de la wiki. Comparamos con el hash guardado. Si difiere, re-embeddeamos todo (~2-3 segundos). Si coincide, cargamos de disco (~0.3 segundos).</p></div>
-    </section>
-
-    <section class="reveal">
-      <h2>El Pipeline RAG Completo</h2>
-      <p>Resumiendo el flujo completo de una consulta RAG:</p>
+      <h2>Persistencia de embeddings en disco</h2>
+      <p>Calcular embeddings para todo el corpus en cada arranque sería desperdicio. Los vectores se persisten en disco en formato <span class="code-inline">.npz</span> (comprimido de NumPy) junto a metadatos de validación en JSON.</p>
+      <p>La clave de invalidación es un <strong>hash SHA256</strong> del conjunto completo de documentos. En el arranque:</p>
       <ol>
-        <li><strong>Query expansion:</strong> Se expanden sinonimos y terminos relacionados</li>
-        <li><strong>Filtrado por tipo:</strong> Si aplica, se filtran chunks por tipo de documento</li>
-        <li><strong>Embedding de la query:</strong> La consulta se convierte en vector de 384d</li>
-        <li><strong>Similitud coseno:</strong> Se comparan con todos los chunks de la wiki</li>
-        <li><strong>Entity boost:</strong> Se ajustan scores para entidades mencionadas</li>
-        <li><strong>Filtrado por umbral:</strong> Se descartan chunks con score &lt; 0.35</li>
-        <li><strong>Top-K selection:</strong> Se seleccionan los K chunks mas relevantes</li>
-        <li><strong>Context assembly:</strong> Se concatenan como contexto para el LLM</li>
+        <li>Se valida que el modelo del caché coincida con el activo.</li>
+        <li>Se recalcula el SHA256 de los documentos y se compara con el guardado.</li>
+        <li>Se verifica que el número de chunks coincida.</li>
       </ol>
+      <p>Cualquier divergencia → re-cómputo completo (del orden de segundos, según el README). Si todo coincide → carga desde disco (fracción de eso). Cualquier error de lectura degrada a re-cómputo silencioso: el caché acelera, jamás bloquea.</p>
+      <p class="see-also"><strong>Ver también:</strong> el capítulo <a href="persistencia.html">06 — Persistencia</a> cubre la otra mitad del almacenamiento del sistema: la base SQLite donde viven conversaciones e informes.</p>
     </section>
 
+    <section class="reveal">
+      <h2>El pipeline RAG completo</h2>
+      <p>Resumen del flujo de una consulta, en el orden real del código:</p>
+      <ol>
+        <li><strong>Filtrado por tipo:</strong> Si la pregunta mapea a un tipo único, se pre-seleccionan solo esos chunks</li>
+        <li><strong>Query expansion:</strong> Se añaden sinónimos del mapa (solo temas tests/proyectos)</li>
+        <li><strong>Embedding de la query:</strong> La consulta expandida se convierte en vector de 384d normalizado</li>
+        <li><strong>Similitud coseno:</strong> Se compara contra todos los chunks candidatos</li>
+        <li><strong>Filtrado por umbral:</strong> Se descartan los fragmentos con score &lt; 0,30</li>
+        <li><strong>Top-K selection:</strong> Se ordenan por score descendente y se toman los K mejores</li>
+        <li><strong>Context assembly:</strong> Se formatean con sus cabeceras de metadatos para el LLM</li>
+      </ol>
+      <p>Si no hay resultados sobre el umbral, se devuelve cadena vacía: el LLM responde sin contexto extra en lugar de improvisar sobre material pobre.</p>
+      <p class="see-also"><strong>Ver también:</strong> cómo este contexto se inyecta en el prompt real, en el capítulo <a href="llm-prompting.html">04 — LLM</a>.</p>
+    </section>
   </main>
 
   <footer class="footer">
     <div class="footer-inner">
       <div class="footer-col">
-        <p><strong>InterviewTTS</strong> &mdash; Proyecto de aprendizaje</p>
+        <p><strong>InterviewTTS</strong> — Proyecto de aprendizaje</p>
         <p>Construido por <strong>Mikel</strong> como proyecto de portafolio en IA/ML.</p>
       </div>
       <div class="footer-col">
         <p><a href="https://github.com/mikelrh-dev/liveInterviewRAG" target="_blank" rel="noopener">Ver repositorio en GitHub &rarr;</a></p>
-        <p>Stack: Python, FastAPI, Whisper, RAG, Pocket TTS</p>
+        <p>Stack: Python, FastAPI, Whisper, RAG, Edge TTS</p>
       </div>
     </div>
-    <p class="footer-copy">Documento tecnico construido para fines educativos. 2025.</p>
+    <p class="footer-copy">Documento técnico construido para fines educativos. 2025.</p>
   </footer>
+
   <script src="script.js"></script>
 </body>
 </html>

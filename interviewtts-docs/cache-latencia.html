@@ -3,14 +3,19 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>05 Cache y Optimizacion de Latencia - InterviewTTS</title>
+  <title>05 — Caché y Latencia — InterviewTTS</title>
+  <meta name="description" content="Dos cachés con contratos distintos en InterviewTTS: FAQ literal de 20 entradas y caché semántico por coseno ≥ 0,93. Tabla única de latencias con su método de medición.">
+  <meta property="og:title" content="05 — Caché y Latencia — InterviewTTS">
+  <meta property="og:description" content="FAQ literal vs caché semántico: guardrails completos, la lección del bug [Source:] y una tabla de latencias honesta con etiqueta de método.">
+  <meta property="og:type" content="website">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230f1214'/%3E%3Crect x='12' y='5' width='8' height='14' rx='4' fill='%2300d4ff'/%3E%3Cpath d='M8 14a8 8 0 0 0 16 0' fill='none' stroke='%2300d4ff' stroke-width='2' stroke-linecap='round'/%3E%3Cpath d='M16 22v4' stroke='%2300d4ff' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;0,6..72,700;1,6..72,400&family=Source+Sans+3:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <nav class="nav" role="navigation" aria-label="Navegacion principal">
+  <nav class="nav" role="navigation" aria-label="Navegación principal">
     <div class="nav-inner">
       <a href="index.html" class="nav-logo">InterviewTTS</a>
       <ul class="nav-links">
@@ -19,107 +24,154 @@
         <li><a href="whisper-stt.html">02 Whisper</a></li>
         <li><a href="rag.html">03 RAG</a></li>
         <li><a href="llm-prompting.html">04 LLM</a></li>
-        <li><a href="cache-latencia.html" class="active">05 Latencia</a></li>
-        <li><a href="despliegue.html">06 Despliegue</a></li>
-        <li><a href="aprendizajes.html">07 Aprendizajes</a></li>
+        <li><a href="cache-latencia.html" class="active">05 Caché</a></li>
+        <li><a href="persistencia.html">06 Persistencia</a></li>
+        <li><a href="despliegue.html">07 Despliegue</a></li>
+        <li><a href="aprendizajes.html">08 Aprendizajes</a></li>
       </ul>
     </div>
   </nav>
 
   <main class="main">
     <header class="chapter-header">
-      <span class="chapter-num">Capitulo 05</span>
-      <h1 class="chapter-title">Cache y Optimizacion de Latencia</h1>
-      <p class="chapter-subtitle">El proceso de medicion como disciplina: de ~20s a ~5s promedio. Cache FAQ, embeddings en disco, Whisper medium, y SSE.</p>
+      <span class="chapter-num">Capítulo 05</span>
+      <h1 class="chapter-title">Caché y Optimización de Latencia</h1>
+      <p class="chapter-subtitle">Medir primero, optimizar el cuello de botella y verificar. Dos cachés con contratos distintos y una única tabla de latencias — cada cifra con su método a la vista.</p>
     </header>
 
     <section class="reveal">
-      <h2>El Patron: Medir, Optimizar, Verificar</h2>
-      <p>Cada optimizacion que hicimos siguió el mismo patron:</p>
+      <h2>El método: medir, optimizar, verificar</h2>
+      <p>Cada optimización del pipeline siguió el mismo patrón:</p>
       <ol>
-        <li><strong>Medir:</strong> Instrumentar el pipeline para saber exactamente donde se va el tiempo</li>
-        <li><strong>Identificar cuello de botella:</strong> Que componente consume mas tiempo?</li>
-        <li><strong>Optimizar:</strong> Atacar el cuello de botella con la tecnica adecuada</li>
-        <li><strong>Verificar:</strong> Confirmar que la optimizacion realmente mejoro los tiempos</li>
-        <li><strong>Documentar:</strong> Registrar el tradeoff para que futuros desarrolladores entiendan la decision</li>
+        <li><strong>Medir:</strong> instrumentar cada fase. El backend registra por turno <code class="code-inline">Pipeline: STT=…s RAG=…s LLM=…s TTS=…s TOTAL=…s</code> — esas líneas de log son la fuente primaria de toda cifra seria de este capítulo.</li>
+        <li><strong>Identificar el cuello de botella:</strong> ¿qué fase domina el tiempo?</li>
+        <li><strong>Optimizar:</strong> atacar esa fase con la técnica adecuada.</li>
+        <li><strong>Verificar:</strong> confirmar con logs y tests que mejoró.</li>
+        <li><strong>Documentar el tradeoff:</strong> para que la decisión sea auditable.</li>
       </ol>
     </section>
 
     <section class="reveal">
-      <h2>Tabla Completa de Optimizaciones</h2>
+      <h2>La tabla de latencia (única, con método)</h2>
+      <p>Versiones anteriores de este dossier mostraban dos narrativas contradictorias ("de ~20 s a ~5 s" frente a "de ~15-25 s a ~8-12 s"). Ambas eran estimaciones sin trazabilidad. Esta es la reconciliación, con el origen de cada número explícito:</p>
       <div class="table-wrapper">
         <table>
-          <thead><tr><th>Optimizacion</th><th>Mejora</th><th>Detalle</th></tr></thead>
+          <caption>Tiempos por escenario y método con que se obtuvieron</caption>
+          <thead><tr><th scope="col">Escenario</th><th scope="col">Tiempo</th><th scope="col">Método / fuente</th></tr></thead>
           <tbody>
-            <tr><td>Recorte del system prompt</td><td>-0.5 a -1.5s</td><td>De ~1200 a ~600 caracteres reduce tiempo de processamiento del LLM</td></tr>
-            <tr><td>Cache FAQ (20 preguntas)</td><td>-4 a -8s</td><td>Preguntas frecuentes cacheadas saltan todo el pipeline STT+RAG+LLM</td></tr>
-            <tr><td>Cache + RAG enrichment</td><td>Instantanea + contexto wiki</td><td>Las respuestas cacheadas se enriquecen con contexto actualizado</td></tr>
-            <tr><td>Wiki metadata para RAG</td><td>Mejor precision</td><td>Filtrado por tipo y entity boost mejoran la relevancia</td></tr>
-            <tr><td>Persistencia de embeddings</td><td>-2 a -3s en arranque</td><td>Embeddings en disco .npz evitan recalcular al iniciar</td></tr>
-            <tr><td>Whisper medium float16</td><td>+20-30% precision</td><td>Precision vs small es critica para contexto tecnico</td></tr>
-            <tr><td>SSE streaming</td><td>Latencia percibida ~0s</td><td>El usuario escucha antes de que termine la generacion</td></tr>
+            <tr><td>Turno sin caché (antes de optimizar)</td><td>~15-25 s</td><td>Estimación histórica documentada en el README del repositorio</td></tr>
+            <tr><td>Turno sin caché (estado actual)</td><td>~8-12 s</td><td>Estimación (README); las fases STT/RAG/LLM/TTS se miden individualmente en los logs del pipeline</td></tr>
+            <tr><td>Acierto de caché FAQ</td><td>Respuesta instantánea (RAG y LLM se saltan por completo)</td><td>Flujo del código: lookup previo a RAG; el turno sigue incluyendo STT y una síntesis TTS</td></tr>
+            <tr><td>Repetición parafraseada (caché semántico)</td><td>Objetivo &lt; 300 ms para servir la respuesta almacenada</td><td>Objetivo de especificación; verificación manual pendiente (no medido aún)</td></tr>
+            <tr><td>Keep-alive HTTP</td><td>Ahorra ~200-500 ms por llamada al proveedor</td><td>Coste estimado del handshake TCP+TLS evitado (propuesta del cambio)</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>En barras (escala hasta 12 s; solo aplica a la generación de respuesta, no al turno completo):</p>
+      <div class="bar-chart" role="img" aria-label="Comparación de tiempos de generación: turno sin caché entre 8 y 12 segundos estimados; repetición parafraseada con objetivo menor a 0,3 segundos; pregunta frecuente, generación nula porque la respuesta es literal">
+        <div class="bar-row">
+          <span class="bar-name">Turno sin caché (est.)</span>
+          <span class="bar-track"><span class="bar-fill slow" style="width:100%"></span></span>
+          <span class="bar-value">~8–12 s</span>
+        </div>
+        <div class="bar-row">
+          <span class="bar-name">Caché semántico (objetivo)</span>
+          <span class="bar-track"><span class="bar-fill" style="width:3%"></span></span>
+          <span class="bar-value">&lt; 0,3 s</span>
+        </div>
+        <div class="bar-row">
+          <span class="bar-name">Caché FAQ (generación)</span>
+          <span class="bar-track"><span class="bar-fill" style="width:1%"></span></span>
+          <span class="bar-value">≈ 0 s</span>
+        </div>
+      </div>
+      <p>Recuerda: cualquier turno paga además el STT del audio entrante y su síntesis final. Los cachés eliminan RAG + LLM, no todo el pipeline.</p>
+    </section>
+
+    <section class="reveal">
+      <h2>Caché 1: FAQ literal (20 preguntas)</h2>
+      <p>El primer nivel es un diccionario en memoria (<code class="code-inline">response_cache.py</code>) con <strong>exactamente 20 entradas</strong>: las preguntas más probables de una entrevista técnica, con sus respuestas pre-generadas en la voz del candidato.</p>
+      <ul>
+        <li><strong>Matching textual normalizado, NO embeddings:</strong> la pregunta se normaliza (minúsculas, sin tildes ni puntuación) y se compara por subcadenas y palabras clave con límites de palabra. "¿Cuál es tu experiencia con Python?" coincide con la entrada aunque llegue con signos de interrogación o mayúsculas distintas.</li>
+        <li><strong>Orden significativo:</strong> las entradas específicas van primero ("fortalezas y debilidades" antes que "fortalezas") para que una keyword genérica nunca tape una frase precisa.</li>
+        <li><strong>Contrato de acierto:</strong> la respuesta sale <strong>literal</strong>, tal cual está escrita en el código. El LLM nunca se invoca.</li>
+      </ul>
+    </section>
+
+    <section class="reveal">
+      <h2>Caché 2: semántico (paráfrasis del primer turno)</h2>
+      <p>El FAQ literal falla ante paráfrasis: "Hablame de ti" está cacheado, pero "Cuéntame tu historia" no coincide textualmente y pagaría el pipeline completo. El caché semántico (<code class="code-inline">semantic_cache.py</code>) cierra ese hueco: guarda pares (pregunta, embedding, respuesta) en SQLite y sirve la respuesta cuando una nueva pregunta es <em>casi la misma pregunta</em>.</p>
+      <div class="table-wrapper">
+        <table>
+          <caption>Guardrails completos del caché semántico</caption>
+          <thead><tr><th scope="col">Guardrail</th><th scope="col">Valor</th><th scope="col">Qué previene</th></tr></thead>
+          <tbody>
+            <tr><td>Umbral coseno</td><td>≥ 0,93</td><td>Servir respuestas de preguntas parecidas pero distintas</td></tr>
+            <tr><td>Solo primer turno sustantivo</td><td><code class="code-inline">len(turns) == 0</code></td><td>Contaminar el caché con follow-ups contextuales sin sentido propio</td></tr>
+            <tr><td>TTL</td><td>14 días</td><td>Responder durante meses con datos obsoletos</td></tr>
+            <tr><td>Tope FIFO</td><td>500 filas</td><td>Crecimiento ilimitado de la tabla</td></tr>
+            <tr><td>Kill-switch</td><td><code class="code-inline">SEMANTIC_CACHE_ENABLED=false</code></td><td>Neutralizarlo sin redeploy si algo sale mal</td></tr>
+            <tr><td>Embedder compartido</td><td>all-MiniLM-L6-v2 vía provider del RAG</td><td>Cargar un segundo modelo en memoria; también desactiva el caché si el RAG cae a TF-IDF</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>Dos detalles finos que valen oro: la consulta se convierte en embedding <strong>sin expandir</strong> (la expansión de query es para recuperar documentos; aquí sesgaría la similitud pregunta↔pregunta), y las filas con dimensión distinta a la del embedder activo se ignoran como protección ante cambios de modelo.</p>
+      <p><strong>Contrato de acierto idéntico al FAQ:</strong> respuesta verbatim, chunks seguidos (<code class="code-inline">top_k=2</code>) solo para el panel de contexto, LLM jamás llamado. El objetivo de servir la respuesta en menos de 300 ms viene de la especificación del cambio y queda pendiente de verificación manual con timings reales.</p>
+      <p class="see-also"><strong>Ver también:</strong> cómo comparte base de datos e infraestructura con el resto del sistema, en el capítulo <a href="persistencia.html">06 — Persistencia</a>; y de dónde salen sus embeddings, en <a href="rag.html">03 — RAG</a>.</p>
+    </section>
+
+    <section class="reveal">
+      <h2>Mini-lección: el bug del [Source:] leído en voz alta</h2>
+      <p>Versión temprana del sistema "enriquecía" las respuestas cacheadas concatenándoles el contexto recuperado. Resultado: el TTS leía literalmente <em>"abre corchetes, Source, dos puntos..."</em>. La salida cruda de retrieval es <strong>dato para un panel visual</strong>, no texto para locución.</p>
+      <div class="callout roadmap">
+        <div class="callout-title">Lección de arquitectura</div>
+        <p>Nunca concatenes salida cruda de recuperación en salida hablada. Hoy los chunks alimentan exclusivamente el panel de contexto del frontend (eventos y API aparte); el canal de voz recibe solo la respuesta limpia y saneada.</p>
+      </div>
+    </section>
+
+    <section class="reveal">
+      <h2>Resto de optimizaciones</h2>
+      <div class="table-wrapper">
+        <table>
+          <caption>Optimizaciones vigentes, con fuente de cada mejora</caption>
+          <thead><tr><th scope="col">Optimización</th><th scope="col">Mejora</th><th scope="col">Detalle</th></tr></thead>
+          <tbody>
+            <tr><td>Prompt ajustado</td><td>-0,5 a -1,5 s (estimado, README)</td><td>Menos tokens en cada turno; plantilla real de 632 caracteres</td></tr>
+            <tr><td>Embeddings en disco</td><td>-2 a -3 s en arranque (estimado, README)</td><td>Cache .npz invalidado por SHA256 de documentos</td></tr>
+            <tr><td>Keep-alive HTTP</td><td>-200 a -500 ms por llamada (estimado)</td><td>Cliente httpx compartido; sin handshake TCP+TLS repetido</td></tr>
+            <tr><td>Streaming SSE por frases</td><td>Latencia percibida ≈ 0 s</td><td>El usuario escucha la primera frase antes de que termine la generación</td></tr>
+            <tr><td>Whisper small + int8</td><td>Configuración enviada</td><td>Punto dulce documentado precisión/esfuerzo en CPU (capítulo 02)</td></tr>
           </tbody>
         </table>
       </div>
     </section>
 
     <section class="reveal">
-      <h2>Antes vs Despues</h2>
-      <img src="assets/stitch-performance-chart.png" alt="Grafico comparativo mostrando latencia antes (~15-25 segundos) y despues (~8-12 segundos con cache hits de 4-6 segundos) de las optimizaciones" class="img-full" width="860" height="486">
-      <p class="img-label">Comparativa de latencia: antes ~15-25s por turno | despues ~8-12s (cache hits: 4-6s)</p>
-
-      <div class="opt-before-after">
-        <div class="opt-box before">
-          <div class="opt-time">~20s</div>
-          <div class="opt-label">Antes</div>
-          <p style="color:var(--text-muted);font-size:0.85rem;margin-top:var(--space-sm);">Promedio por turno sin optimizar</p>
-        </div>
-        <div class="opt-box after">
-          <div class="opt-time">~5s</div>
-          <div class="opt-label">Despues (promedio)</div>
-          <p style="color:var(--text-muted);font-size:0.85rem;margin-top:var(--space-sm);">Con cache hits: 4-6s. Sin cache: 8-12s</p>
-        </div>
-      </div>
-    </section>
-
-    <section class="reveal">
-      <h2>Cache FAQ: La Mayor Ganancia</h2>
-      <p>La optimizacion con mayor impacto fue el <strong>cache de preguntas frecuentes</strong>. Identificamos las 20 preguntas mas comunes en una entrevista tecnica y pre-generamos sus respuestas.</p>
-      <p>Cuando el reclutador pregunta algo cacheado, el sistema:</p>
-      <ol>
-        <li>Compara la pregunta contra el cache con <strong>similitud semantica</strong> (no matching exacto)</li>
-        <li>Si supera el umbral, retorna la respuesta cacheada <strong>instantaneamente</strong></li>
-        <li>El audio se genera en ~200ms en lugar de ~5-8 segundos</li>
-      </ol>
-      <div class="callout"><div class="callout-title">Cache semantico, no por texto exacto</div><p>Un cache por texto exacto solo funcionaria si el reclutador escribiera la pregunta identica. Usamos embeddings para comparar el significado de la pregunta, no las palabras exactas. "Cual es tu experiencia con Python?" y "Hablame de Python" matchearian el mismo cache.</p></div>
-    </section>
-
-    <section class="reveal">
-      <h2>El Tradeoff Fundamental</h2>
-      <p>Optimizar latencia siempre implica tradeoffs:</p>
+      <h2>Los tradeoffs fundamentales</h2>
       <ul>
-        <li><strong>Cache vs Frescura:</strong> Las respuestas cacheadas pueden estar desactualizadas si la wiki cambia. Mitigamos invalidando el cache cuando cambian los documentos.</li>
-        <li><strong>Modelo pequeno vs Precision:</strong> small es mas rapido que medium, pero pierde precision en contexto tecnico. Preferimos la precision.</li>
-        <li><strong>beam_size=1 vs Calidad:</strong> beam_size=1 es mas rapido pero explora menos. Para conversacion, es aceptable.</li>
-        <li><strong>SSE vs WebSockets:</strong> SSE es mas simple pero unidireccional. Para nuestro caso, es suficiente.</li>
+        <li><strong>Respuestas literales vs frescura:</strong> Las entradas del FAQ viven en código — actualizarlas exige un commit consciente. Es un precio aceptable por respuestas perfectamente controladas.</li>
+        <li><strong>Acierto semántico vs riesgo:</strong> Umbral 0,93 + regla de primer turno + kill-switch: tres capas contra servir la respuesta equivocada.</li>
+        <li><strong>beam_size=1 vs calidad STT:</strong> Menos exploración de hipótesis a cambio de latencia; aceptable en conversación clara.</li>
+        <li><strong>SSE vs WebSockets:</strong> SSE es unidireccional y simple; exactamente lo que este flujo necesita.</li>
       </ul>
     </section>
-
   </main>
 
   <footer class="footer">
     <div class="footer-inner">
       <div class="footer-col">
-        <p><strong>InterviewTTS</strong> &mdash; Proyecto de aprendizaje</p>
+        <p><strong>InterviewTTS</strong> — Proyecto de aprendizaje</p>
         <p>Construido por <strong>Mikel</strong> como proyecto de portafolio en IA/ML.</p>
       </div>
       <div class="footer-col">
         <p><a href="https://github.com/mikelrh-dev/liveInterviewRAG" target="_blank" rel="noopener">Ver repositorio en GitHub &rarr;</a></p>
-        <p>Stack: Python, FastAPI, Whisper, RAG, Pocket TTS</p>
+        <p>Stack: Python, FastAPI, Whisper, RAG, Edge TTS</p>
       </div>
     </div>
-    <p class="footer-copy">Documento tecnico construido para fines educativos. 2025.</p>
+    <p class="footer-copy">Documento técnico construido para fines educativos. 2025.</p>
   </footer>
+
   <script src="script.js"></script>
 </body>
 </html>

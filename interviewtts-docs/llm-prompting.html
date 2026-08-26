@@ -3,14 +3,19 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>04 LLM y Prompt Engineering - InterviewTTS</title>
+  <title>04 — LLM y Prompt Engineering — InterviewTTS</title>
+  <meta name="description" content="El system prompt real de InterviewTTS (plantilla de 632 caracteres), parámetros de generación verificados, cascada Google AI → OpenRouter condicionada a clave y streaming por frases.">
+  <meta property="og:title" content="04 — LLM y Prompt Engineering — InterviewTTS">
+  <meta property="og:description" content="El prompt real del gemelo, la cascada multi-proveedor con gating por GOOGLE_API_KEY y el buffer de frases que alimenta al TTS.">
+  <meta property="og:type" content="website">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230f1214'/%3E%3Crect x='12' y='5' width='8' height='14' rx='4' fill='%2300d4ff'/%3E%3Cpath d='M8 14a8 8 0 0 0 16 0' fill='none' stroke='%2300d4ff' stroke-width='2' stroke-linecap='round'/%3E%3Cpath d='M16 22v4' stroke='%2300d4ff' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;0,6..72,700;1,6..72,400&family=Source+Sans+3:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <nav class="nav" role="navigation" aria-label="Navegacion principal">
+  <nav class="nav" role="navigation" aria-label="Navegación principal">
     <div class="nav-inner">
       <a href="index.html" class="nav-logo">InterviewTTS</a>
       <ul class="nav-links">
@@ -19,103 +24,125 @@
         <li><a href="whisper-stt.html">02 Whisper</a></li>
         <li><a href="rag.html">03 RAG</a></li>
         <li><a href="llm-prompting.html" class="active">04 LLM</a></li>
-        <li><a href="cache-latencia.html">05 Latencia</a></li>
-        <li><a href="despliegue.html">06 Despliegue</a></li>
-        <li><a href="aprendizajes.html">07 Aprendizajes</a></li>
+        <li><a href="cache-latencia.html">05 Caché</a></li>
+        <li><a href="persistencia.html">06 Persistencia</a></li>
+        <li><a href="despliegue.html">07 Despliegue</a></li>
+        <li><a href="aprendizajes.html">08 Aprendizajes</a></li>
       </ul>
     </div>
   </nav>
 
   <main class="main">
     <header class="chapter-header">
-      <span class="chapter-num">Capitulo 04</span>
+      <span class="chapter-num">Capítulo 04</span>
       <h1 class="chapter-title">LLM y Prompt Engineering</h1>
-      <p class="chapter-subtitle">Como reduje el system prompt de 1200 a 600 caracteres, reglas anti-razonamiento, y orquestacion multi-proveedor con degradacion elegante.</p>
+      <p class="chapter-subtitle">El system prompt real del gemelo (con su tamaño medido, no estimado), reglas negativas, cascada multi-proveedor condicionada a la clave de API y streaming por frases.</p>
     </header>
 
     <section class="reveal">
-      <h2>El System Prompt</h2>
-      <p>El system prompt es la instruccion fundamental que define como el LLM responde. Es el equivalente a un briefing para un empleado: le dice quien es, que debe hacer, y que no debe hacer.</p>
-      <p>Empezamos con un prompt de ~1200 caracteres. Tras iterar, lo redujimos a <strong>~600 caracteres</strong>. Cada caracter cuenta porque se envia en cada turno, y afecta directamente la latencia y el costo.</p>
+      <h2>El system prompt</h2>
+      <p>El system prompt es la instrucción fundamental que define cómo responde el LLM: le dice quién es, qué debe hacer y qué no debe hacer. En un gemelo digital tiene una exigencia extra: <strong>la respuesta se va a leer en voz alta</strong>, así que cada regla del prompt también es una regla de locución.</p>
+      <p>La plantilla base (<code class="code-inline">CANDIDATE_SYSTEM_PROMPT</code> en <code class="code-inline">backend/prompts/candidate.py</code>) mide <strong>632 caracteres</strong> — número contado sobre el código real, no estimado.</p>
     </section>
 
     <section class="reveal">
-      <h2>Version Final del System Prompt</h2>
-      <div class="code-block" data-lang="python">system_prompt = <span class="st">"""Eres un clone digital de un candidato tecnico.
-Responde como el candidato, no como un asistente.
-Responde directamente, no expongas razonamiento.
-Se conciso pero completo. Maximo 2-3 parrafos.
-Usa terminologia tecnica cuando sea apropiado.
-Si no sabes algo, di que no tienes esa informacion
-en tu perfil. No inventes experiencia."""</span></div>
-      <p>Note las reglas criticas:</p>
+      <h2>La plantilla real, textual</h2>
+      <p>Este es el contenido íntegro de la plantilla, copiado literalmente del repositorio (el marcador <code class="code-inline">{context}</code> se rellena en cada turno con los chunks de RAG y la memoria de conversación):</p>
+      <div class="code-block" data-lang="text">Eres Mikel, desarrollador junior DAM en una entrevista técnica.
+
+Responde DIRECTAMENTE la pregunta. No expongas razonamiento,
+no digas "Okay" ni "Primero voy a..." — solo responde como
+un candidato real. Usa primera persona.
+
+Reglas:
+- Conciso por defecto: 1-2 frases. Solo desarrolla (3-4) si te
+  preguntan "cuéntame sobre...", "explícame cómo..." o "¿qué
+  experiencia tienes con...".
+- Preguntas tipo "¿sabes X?", "¿has usado X?" → 1 frase.
+- Sé honesto: si no tienes experiencia con algo, dilo con naturalidad.
+- NO inventes credenciales.
+- NO uses Markdown ni emojis. Solo texto plano.
+- Tono profesional pero cercano.
+
+{context}</div>
+      <p>Las reglas críticas, anotadas:</p>
       <ul>
-        <li><strong>"Responde directamente, no expongas razonamiento":</strong> Impide que el LLM diga "Voy a analizar tu pregunta..." o "Basandome en mi experiencia..."</li>
-        <li><strong>"Maximo 2-3 parrafos":</strong> Limita la longitud para mantener respuestas conversacionales</li>
-        <li><strong>"No inventes experiencia":</strong> La linea mas importante para la integridad del sistema</li>
+        <li><strong>"No expongas razonamiento":</strong> Impide que el gemelo diga "Voy a analizar tu pregunta..." en voz alta. Un candidato humano no piensa en voz alta estructuradamente.</li>
+        <li><strong>"Conciso por defecto: 1-2 frases":</strong> Una respuesta hablada larga mata la conversación. El desarrollo solo llega cuando la pregunta lo pide explícitamente.</li>
+        <li><strong>"NO uses Markdown ni emojis":</strong> Doble motivo: rompería la ilusión de voz y, aunque se colara algo, un sanitizador (<code class="code-inline">sanitize_for_tts</code>) limpia Markdown y emojis antes de sintetizar.</li>
+        <li><strong>"NO inventes credenciales":</strong> La línea más importante para la integridad del sistema — un gemelo que inventa experiencia es peor que no tener gemelo.</li>
       </ul>
     </section>
 
     <section class="reveal">
-      <h2>Orquestacion Multi-Proveedor</h2>
-      <p>Usamos dos proveedores de LLM en cascada:</p>
+      <h2>Cascada multi-proveedor, activada por clave</h2>
+      <p>El cliente LLM soporta dos proveedores en cascada:</p>
       <ol>
-        <li><strong>Google AI (Gemini)</strong> como proveedor primario</li>
-        <li><strong>OpenRouter</strong> como fallback automatico</li>
+        <li><strong>Google AI (Gemini Flash Lite)</strong> como proveedor primario — pero <strong>solo si existe <code class="code-inline">GOOGLE_API_KEY</code></strong>.</li>
+        <li><strong>OpenRouter</strong> como destino directo cuando no hay clave de Google, y como respaldo automático ante cualquier excepción del primario.</li>
       </ol>
-      <p>Si Google AI falla (rate limit, timeout, error), el sistema automaticamente intenta con OpenRouter. El usuario nunca nota la conmutacion.</p>
-      <div class="callout"><div class="callout-title">Degradacion Elegante</div><p>El patron es simple: intenta el proveedor primario, y si falla, intenta el secundario. No hay retry infinito, no hay circuit breaker complejo. Un solo fallback con timeout de 10 segundos es suficiente para nuestro caso de uso.</p></div>
+      <p>Este matiz importa: en el <code class="code-inline">.env</code> actual la clave de Google está comentada, así que <strong>OpenRouter es el proveedor activo</strong>. Definir la clave cambia el routing sin tocar código: Gemini pasa a primario y OpenRouter queda de red de seguridad.</p>
+      <div class="callout"><div class="callout-title">Degradación elegante</div><p>El patrón es simple: intenta el primario si está configurado; ante cualquier fallo (rate limit, timeout, error HTTP), intenta el secundario. No hay retry infinito ni circuit breaker complejo. Todas las llamadas comparten un timeout de <strong>60 segundos</strong> (<code class="code-inline">httpx.Client(timeout=60.0)</code>).</p></div>
     </section>
 
     <section class="reveal">
-      <h2>Streaming Token a Token</h2>
-      <p>En lugar de esperar a que el LLM genere la respuesta completa, hacemos <strong>streaming token a token</strong>. Cada token generado se envia inmediatamente al TTS para sintetizar.</p>
-      <p>Esto reduce la latencia percibida dramaticamente: el usuario empieza a escuchar la respuesta antes de que se haya completado la generacion.</p>
-      <div class="code-block" data-lang="python"><span class="cm"># Streaming del LLM</span>
-<span class="kw">async for</span> chunk <span class="kw">in</span> llm.stream(prompt, system=system_prompt):
-    audio = tts.synthesize(chunk.text)
-    <span class="kw">yield</span> audio  <span class="cm"># Envia inmediatamente via SSE</span></div>
+      <h2>Streaming: tokens al navegador, frases al TTS</h2>
+      <p>En lugar de esperar la respuesta completa, el backend hace streaming. Pero hay una distinción fina que marca la calidad percibida: los <strong>tokens</strong> viajan al navegador en cuanto llegan (para pintar el texto en pantalla), mientras que al TTS solo se le envían <strong>frases completas</strong>:</p>
+      <div class="code-block" data-lang="python"><span class="cm"># Espejo del flujo real: SentenceBuffer (backend/services/llm.py)</span>
+<span class="cm"># + tareas paralelas de TTS por frase (backend/main.py)</span>
+sentences = sentence_buf.add_token(token)   <span class="cm"># detecta . ! ? \\n</span>
+<span class="kw">for</span> frase <span class="kw">in</span> sentences:
+    clean = sanitize_for_tts(frase)
+    task = asyncio.create_task(
+        tts_service.synthesize_sentence(clean, sentence_id)
+    )</div>
+      <p>¿Por qué frases y no tokens? Porque Edge TTS necesita la oración entera para entonarla bien: sintetizar fragmentos diminutos produce micro-pausas audibles y multiplica las llamadas de síntesis. Cada frase se sintetiza como tarea paralela mientras el LLM sigue escribiendo; cada MP3 listo sale como evento <code class="code-inline">audio_chunk</code>.</p>
+      <p class="see-also"><strong>Ver también:</strong> el capítulo <a href="arquitectura.html">01 — Arquitectura</a> muestra el protocolo SSE completo de extremo a extremo.</p>
     </section>
 
     <section class="reveal">
-      <h2>Parametros de Generacion</h2>
+      <h2>Parámetros de generación</h2>
       <div class="table-wrapper">
         <table>
-          <thead><tr><th>Parametro</th><th>Valor</th><th>Por que</th></tr></thead>
+          <caption>Valores verificados contra backend/config.py, .env y backend/services/llm.py</caption>
+          <thead><tr><th scope="col">Parámetro</th><th scope="col">Valor</th><th scope="col">Por qué</th></tr></thead>
           <tbody>
-            <tr><td><span class="code-inline">temperature</span></td><td>0.7</td><td>Balance entre creatividad y coherencia. 0.0 es demasiado robotico, 1.0 es demasiado creativo</td></tr>
-            <tr><td><span class="code-inline">max_tokens</span></td><td>500</td><td>Limita respuestas largas. En una conversacion de voz, las respuestas de 2-3 parrafos son ideales</td></tr>
-            <tr><td><span class="code-inline">top_p</span></td><td>0.9</td><td>Nucleus sampling: considera el 90% mas probable de tokens, descartando los extremos</td></tr>
+            <tr><td><span class="code-inline">temperature</span></td><td>0,7</td><td>Balance entre naturalidad y coherencia para voz conversacional</td></tr>
+            <tr><td><span class="code-inline">max_tokens</span></td><td>Vía env (<span class="code-inline">LLM_MAX_TOKENS</span>; 500 en el .env local)</td><td>Acota respuestas largas; en voz, 2-3 frases son ideales</td></tr>
+            <tr><td><span class="code-inline">timeout</span></td><td>60 s</td><td>Techo duro compartido por ambos proveedores vía httpx.Client</td></tr>
+            <tr><td><span class="code-inline">model</span></td><td>Vía env (<span class="code-inline">LLM_MODEL</span>)</td><td>Configurable sin tocar código; hoy apunta a un modelo gratuito de OpenRouter</td></tr>
           </tbody>
         </table>
       </div>
+      <p>Nota de transparencia: una versión anterior de esta tabla incluía <code class="code-inline">top_p = 0.9</code>. Era falso — <strong>el código nunca envía top_p</strong>; solo temperature, max_tokens y stream.</p>
     </section>
 
     <section class="reveal">
-      <h2>Lecciones de Prompt Engineering</h2>
+      <h2>Lecciones de prompt engineering</h2>
       <ul>
-        <li><strong>Menos es mas:</strong> Un prompt corto y preciso genera mejores resultados que uno largo y ambiguo</li>
-        <li><strong>Reglas negativas funcionan:</strong> Decir "no hagas X" es mas efectivo que describir implicitamente que hacer</li>
-        <li><strong>El contexto del RAG importa mas que el prompt:</strong> Un buen contexto recuperado hace que el prompt sea casi irrelevante</li>
-        <li><strong>Testea con preguntas reales:</strong> Los prompts que parecen perfectos en papel fallan con preguntas del mundo real</li>
+        <li><strong>Las reglas negativas funcionan:</strong> Decir "no expongas razonamiento" acota el comportamiento mejor que describir vagamente el tono deseado.</li>
+        <li><strong>Medir antes de presumir:</strong> "el prompt es corto" es una opinión; "la plantilla mide 632 caracteres" es un dato.</li>
+        <li><strong>El contexto recuperado hace gran parte del trabajo:</strong> Con buen RAG, el prompt define el formato y la personalidad; el contenido lo pone la wiki.</li>
+        <li><strong>Testea con preguntas reales:</strong> Los prompts que parecen perfectos en papel fallan con preguntas reales dichas en voz alta.</li>
       </ul>
+      <p class="see-also"><strong>Ver también:</strong> la conexión keep-alive que reduce la latencia de cada llamada al proveedor está explicada en el capítulo <a href="persistencia.html">06 — Persistencia y memoria</a>.</p>
     </section>
-
   </main>
 
   <footer class="footer">
     <div class="footer-inner">
       <div class="footer-col">
-        <p><strong>InterviewTTS</strong> &mdash; Proyecto de aprendizaje</p>
+        <p><strong>InterviewTTS</strong> — Proyecto de aprendizaje</p>
         <p>Construido por <strong>Mikel</strong> como proyecto de portafolio en IA/ML.</p>
       </div>
       <div class="footer-col">
         <p><a href="https://github.com/mikelrh-dev/liveInterviewRAG" target="_blank" rel="noopener">Ver repositorio en GitHub &rarr;</a></p>
-        <p>Stack: Python, FastAPI, Whisper, RAG, Pocket TTS</p>
+        <p>Stack: Python, FastAPI, Whisper, RAG, Edge TTS</p>
       </div>
     </div>
-    <p class="footer-copy">Documento tecnico construido para fines educativos. 2025.</p>
+    <p class="footer-copy">Documento técnico construido para fines educativos. 2025.</p>
   </footer>
+
   <script src="script.js"></script>
 </body>
 </html>
