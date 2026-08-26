@@ -23,9 +23,11 @@ from backend.config import config
 from backend.prompts.candidate import build_system_prompt, sanitize_for_tts
 from backend.services.candidate import CandidateProfile
 from backend.services.llm import LLMService, SentenceBuffer
+from backend.services.persistence import PersistenceService
 from backend.services.rag import RAGPipeline
 from backend.services.report import ReportService
 from backend.services.response_cache import get_cached_response
+from backend.services.semantic_cache import SemanticAnswerCache
 from backend.services.stt import STTService
 from backend.services.tts import TTSService
 
@@ -120,6 +122,21 @@ report_service = ReportService(
     retention_days=config.REPORT_RETENTION_DAYS,
 )
 
+# Durable store (Cap-2): write-through SQLite persistence. Failures are
+# logged and swallowed inside the service — never surfaced to the pipeline.
+persistence = PersistenceService(config.DB_PATH, enabled=config.PERSISTENCE_ENABLED)
+
+# Semantic answer cache (Cap-3): reuses the RAG embedder via a provider — no
+# second model load. Shares the same SQLite DB; schema is ensured lazily.
+semantic_cache = SemanticAnswerCache(
+    config.DB_PATH,
+    lambda: rag_pipeline.embedder,
+    enabled=config.SEMANTIC_CACHE_ENABLED,
+    ttl_days=config.SEMANTIC_CACHE_TTL_DAYS,
+    max_rows=config.SEMANTIC_CACHE_MAX_ROWS,
+    threshold=config.SEMANTIC_CACHE_THRESHOLD,
+)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -152,6 +169,18 @@ async def lifespan(app: FastAPI):
     # Ensure audio directory exists
     config.AUDIO_DIR.mkdir(parents=True, exist_ok=True)
 
+    # Initialize the persistent store (Cap-2): mkdir + DDL + corrupt recovery
+    try:
+        await asyncio.to_thread(persistence.initialize)
+    except Exception as e:
+        logger.warning("Persistence initialization failed at startup: %s", e)
+
+    # Warm the semantic cache (Cap-3) and drop rows expired since last run
+    try:
+        await asyncio.to_thread(semantic_cache.sweep_expired)
+    except Exception as e:
+        logger.warning("Semantic cache startup sweep failed: %s", e)
+
     # Clean up stale audio files from previous runs
     cleanup_stale_audio()
 
@@ -175,6 +204,8 @@ async def lifespan(app: FastAPI):
     cleanup_task.cancel()
     with suppress(asyncio.CancelledError):
         await cleanup_task
+    # Close the shared LLM HTTP client (Cap-1 keep-alive) exactly once
+    llm.close_http_clients()
     logger.info("InterviewTTS backend stopped")
 
 
@@ -208,10 +239,21 @@ async def periodic_cleanup(interval_seconds: int) -> None:
             for cid in stale_ids:
                 logger.debug("Evicting stale conversation: %s", cid)
                 try:
-                    report_service.generate(cid, conversations.get(cid))
+                    report_path = report_service.generate(cid, conversations.get(cid))
+                    if report_path is not None:
+                        # Link the report row BEFORE eviction — evict_conversation
+                        # preserves it while deleting conversation/turn/message rows
+                        await asyncio.to_thread(
+                            persistence.record_report, cid, str(report_path)
+                        )
                 except Exception as e:  # defense-in-depth; service already swallows
                     logger.warning("Report on eviction failed for %s: %s", cid, e)
                 del conversations[cid]
+                # Remove the DB rows too; reports row survives by design (D6)
+                try:
+                    await asyncio.to_thread(persistence.evict_conversation, cid)
+                except Exception as e:
+                    logger.warning("DB eviction failed for %s: %s", cid, e)
         except Exception as e:
             logger.error("Conversation eviction failed: %s", e)
         try:
@@ -232,6 +274,18 @@ async def periodic_cleanup(interval_seconds: int) -> None:
             report_service.cleanup_expired()
         except Exception as e:
             logger.error("Report cleanup failed: %s", e)
+        try:
+            pruned_rows = persistence.prune_reports(config.REPORT_RETENTION_DAYS)
+            if pruned_rows:
+                logger.info("Pruned %d expired report rows from the store", pruned_rows)
+        except Exception as e:
+            logger.error("Report-row pruning failed: %s", e)
+        try:
+            swept = semantic_cache.sweep_expired()
+            if swept:
+                logger.info("Swept %d expired semantic-cache rows", swept)
+        except Exception as e:
+            logger.error("Semantic cache sweep failed: %s", e)
         await asyncio.sleep(interval_seconds)
 
 
@@ -324,6 +378,31 @@ MAX_SUMMARY_CHARS = 1500  # ~300 tokens for the rolling summary
 MAX_TURN_TEXT_CHARS = 200  # Truncate each turn's text in the prompt
 
 
+async def _get_conversation_or_hydrate(conversation_id: str) -> dict:
+    """Return the conversation from memory, hydrating it from the DB on miss.
+
+    Load-on-demand hydration (design D5): a persisted-but-unknown cid is
+    rebuilt into ``conversations`` so the interview continues seamlessly
+    after a restart. Unknown-and-unpersisted ids still raise 404, exactly
+    as the pre-change bare guards did.
+    """
+    conv = conversations.get(conversation_id)
+    if conv is not None:
+        return conv
+
+    persisted = await asyncio.to_thread(persistence.load_conversation, conversation_id)
+    if persisted is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    conversations[conversation_id] = persisted
+    logger.info(
+        "Hydrated conversation %s from persistent store (%d turns)",
+        conversation_id,
+        len(persisted.get("turns", [])),
+    )
+    return persisted
+
+
 def update_conversation_summary(conversation_id: str, new_turn: dict) -> None:
     """Append a compressed entry for the new turn to the rolling summary.
 
@@ -402,6 +481,12 @@ async def create_conversation():
     }
     logger.info("Created conversation: %s", conversation_id)
 
+    # Write-through: persist the creation immediately (spec: Conversation
+    # creation persists). Failures are swallowed inside the service.
+    await asyncio.to_thread(
+        persistence.record_conversation, conversation_id, "", now_iso, now_iso
+    )
+
     return {
         "conversation_id": conversation_id,
         "welcome_message": welcome,
@@ -411,9 +496,14 @@ async def create_conversation():
 @app.post("/api/conversation/{conversation_id}/message")
 async def send_message(conversation_id: str, audio: UploadFile = File(...)):
     """Process a voice message through the full pipeline: STT → RAG → LLM → TTS."""
-    # Validate conversation exists
-    if conversation_id not in conversations:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+    # Validate conversation exists (hydrates from DB on memory miss)
+    await _get_conversation_or_hydrate(conversation_id)
+    # First-substantive-turn rule (design D10): evaluated post-hydration,
+    # pre-generation. Turns are appended post-generation, so only the
+    # recruiter's opening question is ever looked up or stored.
+    is_first_substantive = len(
+        conversations[conversation_id].get("turns", [])
+    ) == 0
 
     # Validate audio file
     if not audio.content_type or not audio.content_type.startswith("audio/"):
@@ -452,37 +542,55 @@ async def send_message(conversation_id: str, audio: UploadFile = File(...)):
         # RAG chunks are still collected for the context panel but NEVER spoken:
         # appending raw context here made TTS read "[Source: ...]" metadata aloud.
         cached_response = get_cached_response(user_text)
+        semantic_hit = None
         if cached_response is not None:
             logger.info("Cache hit for: %s", user_text)
             response_text = cached_response
             _t.append(time.time())
             _t.append(time.time())  # LLM marker (skipped)
         else:
-            # Step 2: RAG — retrieve relevant context
-            context = rag_pipeline.get_context_string(user_text, top_k=config.RAG_TOP_K)
-            _t.append(time.time())
+            # Step 2b: Semantic cache — paraphrased repeat of an answered first
+            # question. Slotted AFTER the FAQ literal cache and BEFORE RAG.
+            if is_first_substantive:
+                semantic_hit = semantic_cache.lookup(user_text)
+            if semantic_hit is not None:
+                logger.info("Semantic cache hit for: %s", user_text)
+                response_text = semantic_hit
+                _t.append(time.time())
+                _t.append(time.time())  # LLM marker (skipped)
+            else:
+                # Step 2: RAG — retrieve relevant context
+                context = rag_pipeline.get_context_string(user_text, top_k=config.RAG_TOP_K)
+                _t.append(time.time())
 
-            # Step 3: LLM — generate response as candidate
-            # Build conversation context (rolling summary + recent turns) for memory
-            conversation_context = build_conversation_context(
-                conversation_id, recent_count=3
-            )
-            system_prompt = build_system_prompt(
-                context, conversation_context=conversation_context
-            )
-            try:
-                response_text = await asyncio.to_thread(
-                    llm_service.generate,
-                    prompt=user_text,
-                    context=context,
-                    system_prompt=system_prompt,
+                # Step 3: LLM — generate response as candidate
+                # Build conversation context (rolling summary + recent turns) for memory
+                conversation_context = build_conversation_context(
+                    conversation_id, recent_count=3
                 )
-            except RuntimeError as e:
-                raise HTTPException(
-                    status_code=503,
-                    detail=f"Response generation temporarily unavailable: {e}",
-                ) from e
-            _t.append(time.time())
+                system_prompt = build_system_prompt(
+                    context, conversation_context=conversation_context
+                )
+                try:
+                    response_text = await asyncio.to_thread(
+                        llm_service.generate,
+                        prompt=user_text,
+                        context=context,
+                        system_prompt=system_prompt,
+                    )
+                except RuntimeError as e:
+                    raise HTTPException(
+                        status_code=503,
+                        detail=f"Response generation temporarily unavailable: {e}",
+                    ) from e
+                _t.append(time.time())
+
+        # Store-after-success: only fresh LLM answers on first substantive turns
+        store_in_semantic_cache = (
+            is_first_substantive
+            and cached_response is None
+            and semantic_hit is None
+        )
 
         # Step 4: TTS — synthesize audio response
         message_id = uuid.uuid4().hex
@@ -515,7 +623,7 @@ async def send_message(conversation_id: str, audio: UploadFile = File(...)):
         turn_number = len(conversations[conversation_id].get("turns", []))
         # Track RAG chunks for the context panel on cache hits (tracked, never spoken)
         chunks_for_turn = []
-        if cached_response is not None:
+        if cached_response is not None or semantic_hit is not None:
             chunks_for_turn = rag_pipeline.get_chunks_with_scores(user_text, top_k=2)
         new_turn = {
             "n": turn_number,
@@ -523,19 +631,26 @@ async def send_message(conversation_id: str, audio: UploadFile = File(...)):
             "assistant_text": response_text,
             "chunks_used": chunks_for_turn,
         }
+        new_message = {
+            "user_text": user_text,
+            "response_text": response_text,
+            "audio_url": f"/audio/{conversation_id}/{message_id}.mp3",
+        }
         conversations[conversation_id]["turns"].append(new_turn)
         # Update rolling summary for conversation memory
         update_conversation_summary(conversation_id, new_turn)
         conversations[conversation_id]["last_activity_at"] = (
             datetime.utcnow().isoformat()
         )
-        conversations[conversation_id]["messages"].append(
-            {
-                "user_text": user_text,
-                "response_text": response_text,
-                "audio_url": f"/audio/{conversation_id}/{message_id}.mp3",
-            }
+        conversations[conversation_id]["messages"].append(new_message)
+
+        # Write-through: persist turn + message + activity atomically
+        await asyncio.to_thread(
+            persistence.record_turn, conversation_id, new_turn, new_message
         )
+        # Cache the fresh answer for future paraphrased first questions
+        if store_in_semantic_cache:
+            await asyncio.to_thread(semantic_cache.store, user_text, response_text)
 
         return {
             "user_text": user_text,
@@ -560,8 +675,8 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
       - error: {"detail": "..."}
       - done: {}
     """
-    if conversation_id not in conversations:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+    # Validate conversation exists (hydrates from DB on memory miss)
+    await _get_conversation_or_hydrate(conversation_id)
     if not audio.content_type or not audio.content_type.startswith("audio/"):
         raise HTTPException(status_code=422, detail="Invalid audio format")
 
@@ -593,48 +708,21 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
                 yield sse_format("error", {"detail": "No se detectó voz en el audio"})
                 return
 
-            # ── Farewell check ──────────────────────────────────
-            if detect_farewell(user_text):
-                farewell = "¡Gracias a ti! Ha sido un placer. Si tenés más preguntas en el futuro, acá estoy. ¡Éxito en tu búsqueda!"
-                logger.info("Farewell detected, ending interview")
-                for token in farewell.split(" "):
-                    yield sse_format("token", {"text": token + " "})
-                yield sse_format("interview_end", {"message": farewell})
-                # Store the farewell in conversation (messages + turns stay in
-                # sync so build_conversation_context sees the full history)
-                conversations[conversation_id]["messages"].append(
-                    {
-                        "user_text": user_text,
-                        "response_text": farewell,
-                        "audio_url": "",
-                    }
-                )
-                farewell_turn = {
-                    "n": len(conversations[conversation_id].get("turns", [])),
-                    "user_text": user_text,
-                    "assistant_text": farewell,
-                    "chunks_used": [],
-                }
-                conversations[conversation_id]["turns"].append(farewell_turn)
-                update_conversation_summary(conversation_id, farewell_turn)
-                # Post-hoc report — must never break the SSE stream.
-                # to_thread keeps the event loop free during the file write.
-                await asyncio.to_thread(
-                    report_service.generate,
-                    conversation_id,
-                    conversations.get(conversation_id),
-                )
-                return
+            # First-substantive-turn rule (design D10): evaluated post-hydration,
+            # pre-generation. Only the recruiter's opening question is ever
+            # looked up or stored in the semantic cache.
+            is_first_substantive = len(
+                conversations[conversation_id].get("turns", [])
+            ) == 0
 
-            # ── Step 2: Response cache — instant answer in candidate's own voice ──
-            cached_response = get_cached_response(user_text)
-            if cached_response is not None:
-                logger.info("Cache hit (streaming) for: %s", user_text)
-                response_text = cached_response
-
+            async def emit_cached_answer(response_text: str):
+                """Shared FAQ/semantic hit contract (verbatim token, single-file
+                TTS, chunks tracked for the panel, memory + DB write-through,
+                audio_url + done). Returns early on TTS failure without storing.
+                """
                 yield sse_format("token", {"text": response_text})
 
-                # Synthesize the enriched answer as a single audio file
+                # Synthesize the answer as a single audio file
                 message_id = uuid.uuid4().hex
                 output_audio = config.AUDIO_DIR / f"{conversation_id}/{message_id}.mp3"
                 try:
@@ -656,23 +744,88 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
                     "assistant_text": response_text,
                     "chunks_used": context_chunks,
                 }
+                new_message = {
+                    "user_text": user_text,
+                    "response_text": response_text,
+                    "audio_url": f"/audio/{conversation_id}/{message_id}.mp3",
+                }
                 conversations[conversation_id]["turns"].append(new_turn)
                 update_conversation_summary(conversation_id, new_turn)
                 conversations[conversation_id]["last_activity_at"] = (
                     datetime.utcnow().isoformat()
                 )
-                conversations[conversation_id]["messages"].append(
-                    {
-                        "user_text": user_text,
-                        "response_text": response_text,
-                        "audio_url": f"/audio/{conversation_id}/{message_id}.mp3",
-                    }
+                conversations[conversation_id]["messages"].append(new_message)
+
+                # Write-through: persist the cache-hit exchange atomically
+                await asyncio.to_thread(
+                    persistence.record_turn, conversation_id, new_turn, new_message
                 )
 
                 yield sse_format(
                     "audio_url", {"url": f"/audio/{conversation_id}/{message_id}.mp3"}
                 )
                 yield sse_format("done", {})
+
+            # ── Farewell check ──────────────────────────────────
+            if detect_farewell(user_text):
+                farewell = "¡Gracias a ti! Ha sido un placer. Si tenés más preguntas en el futuro, acá estoy. ¡Éxito en tu búsqueda!"
+                logger.info("Farewell detected, ending interview")
+                for token in farewell.split(" "):
+                    yield sse_format("token", {"text": token + " "})
+                yield sse_format("interview_end", {"message": farewell})
+                # Store the farewell in conversation (messages + turns stay in
+                # sync so build_conversation_context sees the full history)
+                farewell_message = {
+                    "user_text": user_text,
+                    "response_text": farewell,
+                    "audio_url": "",
+                }
+                conversations[conversation_id]["messages"].append(farewell_message)
+                farewell_turn = {
+                    "n": len(conversations[conversation_id].get("turns", [])),
+                    "user_text": user_text,
+                    "assistant_text": farewell,
+                    "chunks_used": [],
+                }
+                conversations[conversation_id]["turns"].append(farewell_turn)
+                update_conversation_summary(conversation_id, farewell_turn)
+                # Write-through: persist the closing exchange atomically
+                await asyncio.to_thread(
+                    persistence.record_turn,
+                    conversation_id,
+                    farewell_turn,
+                    farewell_message,
+                )
+                # Post-hoc report — must never break the SSE stream.
+                # to_thread keeps the event loop free during the file write.
+                report_path = await asyncio.to_thread(
+                    report_service.generate,
+                    conversation_id,
+                    conversations.get(conversation_id),
+                )
+                if report_path is not None:
+                    await asyncio.to_thread(
+                        persistence.record_report, conversation_id, str(report_path)
+                    )
+                return
+
+            # ── Step 2: Response cache — instant answer in candidate's own voice ──
+            cached_response = get_cached_response(user_text)
+            if cached_response is not None:
+                logger.info("Cache hit (streaming) for: %s", user_text)
+                async for event in emit_cached_answer(cached_response):
+                    yield event
+                return
+
+            # ── Step 2b: Semantic cache — paraphrased repeat of an answered
+            # first question. Slotted AFTER the FAQ literal cache, BEFORE RAG.
+            semantic_hit = None
+            if is_first_substantive:
+                semantic_hit = semantic_cache.lookup(user_text)
+            if semantic_hit is not None:
+                logger.info("Semantic cache hit (streaming) for: %s", user_text)
+                async for event in emit_cached_answer(semantic_hit):
+                    yield event
                 return
 
             # ── Step 3: RAG ──────────────────────────────────────
@@ -817,19 +970,26 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
                 "assistant_text": full_response,
                 "chunks_used": context_chunks,
             }
+            new_message = {
+                "user_text": user_text,
+                "response_text": full_response,
+                "audio_url": f"/audio/{conversation_id}/",  # multiple chunks
+            }
             conversations[conversation_id]["turns"].append(new_turn)
             # Update rolling summary for conversation memory
             update_conversation_summary(conversation_id, new_turn)
             conversations[conversation_id]["last_activity_at"] = (
                 datetime.utcnow().isoformat()
             )
-            conversations[conversation_id]["messages"].append(
-                {
-                    "user_text": user_text,
-                    "response_text": full_response,
-                    "audio_url": f"/audio/{conversation_id}/",  # multiple chunks
-                }
+            conversations[conversation_id]["messages"].append(new_message)
+
+            # Write-through: persist turn + message + activity atomically
+            await asyncio.to_thread(
+                persistence.record_turn, conversation_id, new_turn, new_message
             )
+            # Cache the fresh answer for future paraphrased first questions
+            if is_first_substantive:
+                await asyncio.to_thread(semantic_cache.store, user_text, full_response)
 
             yield sse_format("done", {})
 
@@ -848,8 +1008,7 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
 @app.get("/api/conversation/{conversation_id}/context")
 async def get_conversation_context(conversation_id: str, turn: int = 0):
     """Return the RAG chunks used for a specific conversation turn."""
-    if conversation_id not in conversations:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+    await _get_conversation_or_hydrate(conversation_id)
 
     conv = conversations[conversation_id]
     turns = conv.get("turns", [])

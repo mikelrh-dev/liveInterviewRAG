@@ -23,6 +23,11 @@ def _env_float(name: str, default: str) -> float:
         raise ValueError(f"Invalid float for {name}: {os.getenv(name)!r}") from None
 
 
+def _env_bool(name: str, default: str) -> bool:
+    """Read a boolean env var ("1"/"true"/"yes"/"on" are truthy)."""
+    return os.getenv(name, default).strip().lower() in ("1", "true", "yes", "on")
+
+
 class Config:
     """Application configuration loaded from environment variables."""
 
@@ -69,6 +74,20 @@ class Config:
         # RAG cache
         self.RAG_CACHE_DIR: Path = Path(
             os.getenv("RAG_CACHE_DIR", str(self.BASE_DIR / "backend" / ".rag_cache"))
+        )
+
+        # Persistence (Cap-2): SQLite write-through store; *.db is gitignored
+        self.PERSISTENCE_ENABLED: bool = _env_bool("PERSISTENCE_ENABLED", "true")
+        self.DB_PATH: Path = Path(
+            os.getenv("DB_PATH", str(self.BASE_DIR / "data" / "interviewtts.db"))
+        )
+
+        # Semantic answer cache (Cap-3): instant paraphrase answers
+        self.SEMANTIC_CACHE_ENABLED: bool = _env_bool("SEMANTIC_CACHE_ENABLED", "true")
+        self.SEMANTIC_CACHE_TTL_DAYS: int = _env_int("SEMANTIC_CACHE_TTL_DAYS", "14")
+        self.SEMANTIC_CACHE_MAX_ROWS: int = _env_int("SEMANTIC_CACHE_MAX_ROWS", "500")
+        self.SEMANTIC_CACHE_THRESHOLD: float = _env_float(
+            "SEMANTIC_CACHE_THRESHOLD", "0.93"
         )
 
         # Server

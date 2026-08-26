@@ -653,3 +653,310 @@ class TestStreamingCacheRagEnrichment:
         assert "InterviewTTS es mi proyecto" in token_text
         assert "[Source:" not in token_text
         mock_services["llm"].generate_stream_with_context.assert_not_called()
+
+
+class TestPersistenceIntegration:
+    """Cap-2 write-through wiring in main.py (spec: Conversation Persistence).
+
+    Uses the shared ``mock_services`` fixture plus a tmp-path-backed
+    PersistenceService patched over ``backend.main.persistence``.
+    """
+
+    @pytest.fixture
+    def persisted_store(self, tmp_path, monkeypatch):
+        import backend.main as main_mod
+        from backend.services.persistence import PersistenceService
+
+        svc = PersistenceService(tmp_path / "api.db")
+        svc.initialize()
+        monkeypatch.setattr(main_mod, "persistence", svc)
+        main_mod.conversations.clear()
+        yield svc
+
+    def test_create_conversation_persists_row(self, client, mock_services, persisted_store):
+        """POST /api/conversation writes a matching conversation row immediately."""
+        response = client.post("/api/conversation")
+        assert response.status_code == 200
+        cid = response.json()["conversation_id"]
+
+        loaded = persisted_store.load_conversation(cid)
+        assert loaded is not None, "conversation row must exist right after creation"
+        assert loaded["id"] == cid
+
+    def test_message_appends_persist_turn_and_message_rows(self, client, mock_services, persisted_store):
+        """A completed voice-message turn writes turn AND message rows."""
+        conv_response = client.post("/api/conversation")
+        conversation_id = conv_response.json()["conversation_id"]
+
+        response = client.post(
+            f"/api/conversation/{conversation_id}/message",
+            files={"audio": ("test.webm", b"fake audio data", "audio/webm")},
+        )
+        assert response.status_code == 200
+
+        loaded = persisted_store.load_conversation(conversation_id)
+        assert loaded is not None
+        assert len(loaded["turns"]) == 1
+        assert loaded["turns"][0]["user_text"] == "What technologies did you use?"
+        assert (
+            loaded["turns"][0]["assistant_text"]
+            == "I built InterviewTTS using Python and FastAPI."
+        )
+        assert len(loaded["messages"]) == 1
+        assert loaded["messages"][0]["audio_url"].startswith("/audio/")
+
+    def test_restart_survival_same_id_continues_after_dict_eviction(self, client, mock_services, persisted_store):
+        """After memory loss, a persisted cid hydrates and the interview continues."""
+        conv_response = client.post("/api/conversation")
+        conversation_id = conv_response.json()["conversation_id"]
+
+        first = client.post(
+            f"/api/conversation/{conversation_id}/message",
+            files={"audio": ("test.webm", b"audio one", "audio/webm")},
+        )
+        assert first.status_code == 200
+
+        # Simulate a restart: process memory is gone, only the DB remains
+        import backend.main as main_mod
+
+        main_mod.conversations.pop(conversation_id)
+
+        second = client.post(
+            f"/api/conversation/{conversation_id}/message",
+            files={"audio": ("test.webm", b"audio two", "audio/webm")},
+        )
+
+        assert second.status_code == 200, "hydration must replace the old bare 404"
+        assert (
+            second.json()["response_text"]
+            == "I built InterviewTTS using Python and FastAPI."
+        )
+
+        hydrated = main_mod.conversations[conversation_id]
+        assert len(hydrated["turns"]) == 2, "prior turn restored + new turn appended"
+        assert hydrated["turns"][0]["user_text"] == "What technologies did you use?"
+        assert hydrated["messages"][0]["response_text"] == (
+            "I built InterviewTTS using Python and FastAPI."
+        )
+
+    def test_db_error_does_not_break_stream_answer(self, client, mock_services, persisted_store, monkeypatch, caplog):
+        """SQLite failure during write-through: SSE still delivers the full answer."""
+        import json
+        import logging
+        from pathlib import Path
+
+        conv = client.post("/api/conversation")
+        conv_id = conv.json()["conversation_id"]
+
+        mock_services["llm"].generate_stream_with_context.return_value = (
+            iter(["Answer survives database outage."]),
+            [],
+        )
+
+        async def fake_synth(text, sid, output_dir):
+            return (sid, Path(f"audio/{conv_id}/sentence_{sid}.mp3"))
+
+        mock_services["tts"].synthesize_sentence = fake_synth
+
+        def _dead_connect():
+            raise RuntimeError("disk dead mid-interview")
+
+        monkeypatch.setattr(persisted_store, "_connect", _dead_connect)
+        caplog.set_level(logging.WARNING, logger="backend.services.persistence")
+
+        with client.stream(
+            "POST",
+            f"/api/conversation/{conv_id}/message/stream",
+            files={"audio": ("test.webm", b"audio data", "audio/webm")},
+        ) as response:
+            assert response.status_code == 200
+            events = []
+            for line in response.iter_lines():
+                if line and line.startswith("data: "):
+                    events.append(json.loads(line[6:]))
+
+        token_texts = "".join(
+            e["data"]["text"] for e in events if e.get("event") == "token"
+        )
+        done_events = [e for e in events if e.get("event") == "done"]
+
+        # Full successful answer reached the client despite the DB being dead
+        assert token_texts == "Answer survives database outage."
+        assert len(done_events) == 1
+        persistence_errors = [
+            e for e in events
+            if e.get("event") == "error" and "disk" in str(e.get("data", {}))
+        ]
+        assert persistence_errors == [], "DB failures must never surface to the client"
+        # Write-through WAS attempted and swallowed (proves wiring, not absence)
+        swallowed = [
+            r for r in caplog.records
+            if "disk dead mid-interview" in r.getMessage()
+        ]
+        assert swallowed, "failed write-through must be logged as a warning"
+
+
+class TestSemanticCacheIntegration:
+    """Cap-3 semantic answer cache slotted between FAQ cache and RAG/LLM.
+
+    Uses ``mock_services`` plus ``patch("backend.main.semantic_cache")`` so
+    lookup/store are observable without loading any embedding model.
+    """
+
+    @pytest.fixture
+    def semantic_cache_mock(self):
+        with patch("backend.main.semantic_cache") as mock_cache:
+            mock_cache.lookup.return_value = None
+            yield mock_cache
+
+    def test_first_turn_cached_second_similar_turn_bypasses_to_llm(
+        self, client, mock_services, semantic_cache_mock
+    ):
+        """Lookup runs on turn 1 only; follow-up turns never consult the cache."""
+        semantic_cache_mock.lookup.side_effect = [
+            "Semantic cached answer.",
+            None,
+        ]
+
+        conv = client.post("/api/conversation")
+        cid = conv.json()["conversation_id"]
+
+        first = client.post(
+            f"/api/conversation/{cid}/message",
+            files={"audio": ("t.webm", b"audio one", "audio/webm")},
+        )
+        assert first.status_code == 200
+        assert first.json()["response_text"] == "Semantic cached answer."
+        mock_services["llm"].generate.assert_not_called()
+
+        second = client.post(
+            f"/api/conversation/{cid}/message",
+            files={"audio": ("t.webm", b"audio two", "audio/webm")},
+        )
+        assert second.status_code == 200
+        assert (
+            second.json()["response_text"]
+            == "I built InterviewTTS using Python and FastAPI."
+        )
+
+        # Exactly ONE lookup total: the second (non-first-substantive) turn
+        # bypasses the cache entirely — it never even asks
+        assert semantic_cache_mock.lookup.call_count == 1
+        mock_services["llm"].generate.assert_called_once()
+
+    def test_stream_hit_emits_single_verbatim_token_without_llm(
+        self, client, mock_services, semantic_cache_mock
+    ):
+        """Stream semantic hit mirrors the FAQ-hit contract: 1 token, no LLM."""
+        import json
+
+        semantic_cache_mock.lookup.return_value = "Respuesta semántica precisa."
+        mock_services["rag"].get_chunks_with_scores.return_value = []
+
+        conv = client.post("/api/conversation")
+        conv_id = conv.json()["conversation_id"]
+
+        with client.stream(
+            "POST",
+            f"/api/conversation/{conv_id}/message/stream",
+            files={"audio": ("t.webm", b"audio data", "audio/webm")},
+        ) as response:
+            assert response.status_code == 200
+            events = []
+            for line in response.iter_lines():
+                if line and line.startswith("data: "):
+                    events.append(json.loads(line[6:]))
+
+        token_events = [e for e in events if e.get("event") == "token"]
+        audio_url_events = [e for e in events if e.get("event") == "audio_url"]
+        done_events = [e for e in events if e.get("event") == "done"]
+
+        assert len(token_events) == 1, "hit streams as a single verbatim token"
+        assert token_events[0]["data"]["text"] == "Respuesta semántica precisa."
+        assert len(audio_url_events) == 1
+        assert len(done_events) == 1
+        mock_services["llm"].generate_stream_with_context.assert_not_called()
+        # Slotted BEFORE RAG: no context string was ever requested
+        mock_services["rag"].get_context_string.assert_not_called()
+
+    def test_nonstream_hit_tracks_chunks_for_context_panel(
+        self, client, mock_services, semantic_cache_mock
+    ):
+        """Non-stream hit returns verbatim answer + chunks_used tracked, no LLM."""
+        chunks = [
+            {"text": "Relevant cv context", "score": 0.88, "source": "cv.md"}
+        ]
+        semantic_cache_mock.lookup.return_value = "Verbatim semantic answer."
+        mock_services["rag"].get_chunks_with_scores.return_value = chunks
+
+        conv = client.post("/api/conversation")
+        cid = conv.json()["conversation_id"]
+
+        response = client.post(
+            f"/api/conversation/{cid}/message",
+            files={"audio": ("t.webm", b"audio data", "audio/webm")},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["response_text"] == "Verbatim semantic answer."
+        mock_services["llm"].generate.assert_not_called()
+        # Same tracking pattern as FAQ hits (top_k=2), never spoken
+        mock_services["rag"].get_chunks_with_scores.assert_called_once_with(
+            "What technologies did you use?", top_k=2
+        )
+
+        import backend.main as main_mod
+
+        turns = main_mod.conversations[cid]["turns"]
+        assert len(turns) == 1
+        assert turns[0]["chunks_used"] == chunks
+
+    def test_miss_stores_after_successful_generation(
+        self, client, mock_services, semantic_cache_mock
+    ):
+        """A cache miss on a first turn stores the freshly generated answer."""
+        semantic_cache_mock.lookup.return_value = None
+
+        conv = client.post("/api/conversation")
+        cid = conv.json()["conversation_id"]
+
+        response = client.post(
+            f"/api/conversation/{cid}/message",
+            files={"audio": ("t.webm", b"audio data", "audio/webm")},
+        )
+        assert response.status_code == 200
+        answer = "I built InterviewTTS using Python and FastAPI."
+        assert response.json()["response_text"] == answer
+
+        semantic_cache_mock.store.assert_called_once_with(
+            "What technologies did you use?", answer
+        )
+
+        # The streaming endpoint stores too: fresh conversation, LLM path
+        mock_services["llm"].generate_stream_with_context.return_value = (
+            iter(["Streamed answer."]),
+            [],
+        )
+
+        from pathlib import Path
+
+        async def fake_synth(text, sid, output_dir):
+            return (sid, Path(f"audio/x/sentence_{sid}.mp3"))
+
+        mock_services["tts"].synthesize_sentence = fake_synth
+
+        conv2 = client.post("/api/conversation")
+        cid2 = conv2.json()["conversation_id"]
+
+        with client.stream(
+            "POST",
+            f"/api/conversation/{cid2}/message/stream",
+            files={"audio": ("t.webm", b"audio data", "audio/webm")},
+        ) as response:
+            assert response.status_code == 200
+            for _ in response.iter_lines():
+                pass
+
+        semantic_cache_mock.store.assert_any_call(
+            "What technologies did you use?", "Streamed answer."
+        )
