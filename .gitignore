@@ -64,6 +64,9 @@ nul
 
 # Local env overrides
 *.local
+
+# Freebuff/Codebuff MCP config (local, not shared)
+.agents/mcp.json
 # Local Pi runtime state
 .atl/
 
@@ -72,3 +75,6 @@ nul
 
 # Private wiki source (backed up to a separate PRIVATE repo, never this one)
 /wiki/
+
+# Wiki audit reports (local working docs, not project content)
+AUDITORIA-*.md

@@ -146,6 +146,102 @@ body {
     50% { opacity: 1; }
 }
 
+/* ─── Experimental Disclaimer Overlay ──────────────────── */
+
+/* Above the audio-blocked overlay (--z-overlay: 1000) so the honesty
+   gate resolves before audio prompts. */
+.overlay--disclaimer {
+    z-index: 1100;
+    background: rgba(10, 14, 26, 0.92);
+}
+
+.disclaimer-card {
+    max-width: 480px;
+    width: calc(100vw - 48px);
+    padding: 36px 32px 28px;
+    border-radius: 16px;
+    background: var(--surface-container);
+    border: 1px solid var(--outline-variant);
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+    text-align: center;
+    color: var(--secondary);
+    font-family: var(--font-inter);
+}
+
+.disclaimer-orbit {
+    width: 52px;
+    height: 52px;
+    margin: 0 auto 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    border: 1px solid var(--outline-variant);
+    color: var(--cyan-accent);
+}
+
+.disclaimer-orbit svg {
+    width: 26px;
+    height: 26px;
+}
+
+.disclaimer-title {
+    font-family: var(--font-sora);
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--primary);
+    margin-bottom: 14px;
+    letter-spacing: 0.01em;
+}
+
+.disclaimer-body {
+    font-size: 0.95rem;
+    line-height: 1.6;
+    margin-bottom: 12px;
+}
+
+.disclaimer-body strong {
+    color: var(--primary);
+    font-weight: 600;
+}
+
+.disclaimer-accept {
+    margin-top: 16px;
+    padding: 12px 28px;
+    border: none;
+    border-radius: 999px;
+    background: var(--cyan-accent);
+    color: #06121a;
+    font-family: var(--font-sora);
+    font-size: 0.95rem;
+    font-weight: 700;
+    cursor: pointer;
+    transition: transform var(--dur-fast) var(--ease-out), opacity var(--dur-fast) var(--ease-out);
+}
+
+.disclaimer-accept:hover {
+    transform: translateY(-1px);
+    opacity: 0.92;
+}
+
+.disclaimer-footnote {
+    margin-top: 18px;
+    font-size: 0.75rem;
+    color: var(--outline);
+    font-family: var(--font-mono);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.disclaimer-reminder {
+    text-align: center;
+    font-size: 0.72rem;
+    color: var(--outline);
+    font-family: var(--font-inter);
+    padding: 6px 12px;
+    margin-top: 8px;
+}
+
 /* ─── App Grid (3-Zone Layout) ────────────────────────── */
 
 .app-grid {

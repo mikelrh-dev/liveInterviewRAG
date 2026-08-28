@@ -84,6 +84,9 @@ const contextPanel = document.getElementById("context-panel");
 const contextClose = document.getElementById("context-close");
 const contextContent = document.getElementById("context-content");
 const audioOverlay = document.getElementById("audio-blocked-overlay");
+const disclaimerOverlay = document.getElementById("disclaimer-overlay");
+const disclaimerAccept = document.getElementById("disclaimer-accept");
+
 const avatarNeutralVideo = document.getElementById("avatar-neutral-video");
 const avatarTalkingVideo = document.getElementById("avatar-talking-video");
 
@@ -198,7 +201,45 @@ function updateVuMeter(volume) {
 
 // ─── Initialization ────────────────────────────────────
 
+// Local storage key for the disclaimer acknowledgment.
+const DISCLAIMER_KEY = "interviewtts.disclaimerAccepted";
+
+/**
+ * Start the disclaimer honesty gate. If the visitor has not previously
+ * acknowledged it, show the overlay and keep the mic locked until they do.
+ */
+function initDisclaimer() {
+    const acknowledged = (() => {
+        try {
+            return localStorage.getItem(DISCLAIMER_KEY) === "1";
+        } catch (e) {
+            // Storage may be unavailable (private mode). Treat as not acknowledged.
+            return false;
+        }
+    })();
+
+    if (acknowledged) {
+        disclaimerOverlay.classList.add("hidden");
+        return;
+    }
+
+    // Not accepted yet: gate the mic and show the overlay.
+    btnMic.disabled = true;
+    disclaimerOverlay.classList.remove("hidden");
+    disclaimerAccept.addEventListener("click", () => {
+        try {
+            localStorage.setItem(DISCLAIMER_KEY, "1");
+        } catch (e) {
+            // Persist best-effort; still unlock in-session.
+        }
+        disclaimerOverlay.classList.add("hidden");
+        btnMic.disabled = false;
+    });
+}
+
 function init() {
+    initDisclaimer();
+
     initWaveformBars();
     initAvatarOrb();
     populateStaticSidebar();

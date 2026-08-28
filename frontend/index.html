@@ -59,6 +59,31 @@
         </div>
     </div>
 
+    <!-- Experimental disclaimer overlay (honesty gate before use). Shown by
+         default; app.js hides it once the visitor has acknowledged, so a
+         failure to load JS still fails safe and blocks the interview. -->
+    <div id="disclaimer-overlay" class="overlay overlay--disclaimer">
+        <div class="disclaimer-card" role="dialog" aria-modal="true" aria-labelledby="disclaimer-title">
+            <div class="disclaimer-orbit" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <circle cx="12" cy="12" r="9"/>
+                    <path d="M12 3v3m0 12v3M3 12h3m12 0h3M6.3 6.3l2.1 2.1m7.2 7.2l2.1 2.1m0-11.4l-2.1 2.1m-7.2 7.2l-2.1 2.1"/>
+                </svg>
+            </div>
+            <h2 id="disclaimer-title" class="disclaimer-title">Prototipo Experimental</h2>
+            <p class="disclaimer-body">
+                Este asistente es un prototipo experimental. Las respuestas las genera una IA
+                (recuperación de contexto + modelo de lenguaje) que puede cometer errores o
+                alucinaciones, por lo que pueden no ser exactas en todos los casos.
+            </p>
+            <p class="disclaimer-body">
+                <strong>No sustituye una entrevista real con Mikel.</strong>
+            </p>
+            <button id="disclaimer-accept" class="disclaimer-accept">Entiendo, continuar</button>
+            <p class="disclaimer-footnote">Mikel OS v2.0</p>
+        </div>
+    </div>
+
     <!-- 3-Zone App Grid -->
     <div class="app-grid">
 
@@ -211,6 +236,11 @@
                     <!-- Status Text -->
                     <div id="status">Preparado para escuchar</div>
                 </div>
+
+                <!-- Persistent experimental reminder (after acknowledgment) -->
+                <p id="disclaimer-reminder" class="disclaimer-reminder">
+                    Prototipo experimental — respuestas generadas por IA, pueden contener errores. No sustituye una entrevista real.
+                </p>
             </main>
 
             <!-- ═══ Right Context Panel (320px) ═══ -->
