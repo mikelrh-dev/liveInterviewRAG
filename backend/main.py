@@ -21,6 +21,11 @@ from starlette.middleware.base import BaseHTTPMiddleware
 # Load .env before anything else
 load_dotenv()
 
+from backend.client_ip import (  # noqa: F401  (re-exported)
+    _TRUSTED_HOP_PROPERTIES,
+    _is_trusted_hop,
+    resolve_client_ip,
+)
 from backend.config import config
 from backend.conversation import (  # noqa: F401  (re-exported)
     _rate_limit_store,
@@ -36,6 +41,10 @@ from backend.maintenance import (  # noqa: F401  (re-exported)
     cleanup_stale_audio,
     periodic_cleanup,
 )
+from backend.middleware import (  # noqa: F401  (re-exported)
+    MaxBodySizeMiddleware,
+    RateLimitMiddleware,
+)
 from backend.prompts.candidate import build_system_prompt, sanitize_for_tts
 from backend.services.candidate import CandidateProfile
 from backend.services.llm import LLMService, SentenceBuffer
@@ -46,43 +55,13 @@ from backend.services.response_cache import get_cached_response
 from backend.services.semantic_cache import SemanticAnswerCache
 from backend.services.stt import STTService
 from backend.services.tts import TTSService
+from backend.sse import sse_format  # noqa: F401  (re-exported)
+from backend.uploads import (  # noqa: F401  (re-exported)
+    MAX_AUDIO_SIZE,
+    _audio_extension,
+)
 
 logger = logging.getLogger(__name__)
-
-
-# ─── Upload limits ──────────────────────────────────────
-# Single source of truth for the maximum accepted request body. Used by
-# MaxBodySizeMiddleware to reject oversized uploads BEFORE the body is parsed,
-# and re-checked in the routes as defence in depth for chunked uploads that
-# carry no Content-Length.
-MAX_AUDIO_SIZE = 5 * 1024 * 1024  # 5MB
-
-
-# ─── Audio extension mapping ────────────────────────────
-_CONTENT_TYPE_EXT = {
-    "audio/mp4": ".m4a",
-    "audio/webm": ".webm",
-}
-
-
-def _audio_extension(content_type: str) -> str:
-    """Derive temp-file extension from MIME content_type."""
-    if not content_type:
-        return ".webm"
-    # Strip parameters (e.g. "audio/mp4; codecs=mp4a.40.2") and normalize case
-    base_type = content_type.split(";")[0].strip().lower()
-    return _CONTENT_TYPE_EXT.get(base_type, ".webm")
-
-
-# ─── SSE format helper ────────────────────────────────────
-def sse_format(event: str, data: dict) -> str:
-    """Format as Server-Sent Event data line.
-
-    Produces::
-        data: {"event": "<event>", "data": <json>}\n\n
-    """
-    payload = json.dumps({"event": event, "data": data}, ensure_ascii=False)
-    return f"data: {payload}\n\n"
 
 
 # ─── Session state ──────────────────────────────────────
@@ -93,61 +72,10 @@ def sse_format(event: str, data: dict) -> str:
 
 
 
-# ─── Trusted-proxy client IP resolution ────────────────────
-# Address classes that identify an infrastructure hop rather than a real
-# client, so a forwarded-for chain walks past them to reach the visitor.
-_TRUSTED_HOP_PROPERTIES = (
-    "is_loopback",
-    "is_private",
-    "is_link_local",
-    "is_unspecified",
-)
-
-
-def _is_trusted_hop(candidate: str) -> bool:
-    """True if the address is unparseable or is an infrastructure address.
-
-    Unparseable input is treated as trusted so that a malformed or hostile
-    entry can never be picked as the client identity.
-    """
-    try:
-        address = ipaddress.ip_address(candidate)
-    except ValueError:
-        return True
-    return any(getattr(address, prop) for prop in _TRUSTED_HOP_PROPERTIES)
-
-
-def resolve_client_ip(request: Request) -> str:
-    """Resolve the real client IP, trusting X-Forwarded-For only from loopback.
-
-    Behind a reverse proxy the direct peer is the proxy itself, so the peer
-    address cannot identify the client. But X-Forwarded-For is attacker-
-    controlled: honouring it unconditionally would let anyone bypass the
-    rate limit by sending a random header. We therefore only read the header
-    when the immediate peer is loopback, and we take the RIGHTMOST entry that
-    is not itself a trusted proxy hop.
-    """
-    peer = request.client.host if request.client else "unknown"
-    if not _is_trusted_hop(peer) or peer == "unknown":
-        # Not behind a local proxy — the peer is the client. Any
-        # X-Forwarded-For present is attacker-controlled and must be ignored.
-        return peer
-
-    forwarded = request.headers.get("X-Forwarded-For", "")
-    if not forwarded.strip():
-        return peer
-
-    hops = [hop.strip() for hop in forwarded.split(",") if hop.strip()]
-    if not hops:
-        return peer
-
-    # Right to left: the first hop that is not an infrastructure address is
-    # the closest thing to the real client that a hop we do not control did
-    # not overwrite. The visitor can forge entries to the *left* of this one.
-    for hop in reversed(hops):
-        if not _is_trusted_hop(hop):
-            return hop
-    return hops[0]
+# ─── Transport plumbing ──────────────────────────────────
+# Client-IP resolution, the size ceiling, the SSE envelope and both middlewares
+# now live in backend/client_ip.py, backend/uploads.py, backend/sse.py and
+# backend/middleware.py. Re-exported above for existing importers.
 
 # Services (initialized at startup)
 stt_service = STTService(
@@ -265,88 +193,6 @@ async def lifespan(app: FastAPI):
     # Close the shared LLM HTTP client (Cap-1 keep-alive) exactly once
     llm.close_http_clients()
     logger.info("InterviewTTS backend stopped")
-
-
-class MaxBodySizeMiddleware(BaseHTTPMiddleware):
-    """Reject oversized request bodies before they are parsed.
-
-    Reading the body first and checking its length afterwards is too late: by
-    that point the whole upload already sits in RAM, so a handful of large
-    requests can exhaust memory. This middleware looks only at the declared
-    ``Content-Length`` and short-circuits with 413 before any handler runs.
-
-    A request with no ``Content-Length`` (chunked transfer encoding) is passed
-    through untouched — buffering the stream here would defeat the purpose of
-    the guard, and the in-route check still catches those bodies afterwards.
-    """
-
-    def __init__(self, app, max_size: int = MAX_AUDIO_SIZE):
-        super().__init__(app)
-        self.max_size = max_size
-
-    async def dispatch(self, request: Request, call_next):
-        raw_length = request.headers.get("content-length")
-        if raw_length is not None:
-            try:
-                content_length = int(raw_length)
-            except (TypeError, ValueError):
-                # Malformed header: do not guess, let the request through.
-                content_length = None
-            if content_length is not None and content_length > self.max_size:
-                logger.warning(
-                    "Rejected oversized body: %d bytes declared (max %d) on %s",
-                    content_length,
-                    self.max_size,
-                    request.url.path,
-                )
-                return JSONResponse(
-                    status_code=413,
-                    content={
-                        "detail": (
-                            f"Request body too large (max {self.max_size} bytes)"
-                        )
-                    },
-                )
-        return await call_next(request)
-
-
-class RateLimitMiddleware(BaseHTTPMiddleware):
-    """Simple in-memory rate limiter: N requests per minute per client.
-
-    The bucket key is produced by :func:`resolve_client_ip`, so behind a
-    loopback reverse proxy each real visitor gets their own bucket instead of
-    the whole internet sharing the proxy's bucket.
-    """
-
-    def __init__(self, app, max_requests: int = 10, window: int = 60):
-        super().__init__(app)
-        self.max_requests = max_requests
-        self.window = window
-
-    async def dispatch(self, request: Request, call_next):
-        # Only rate-limit API endpoints
-        if request.url.path.startswith("/api/"):
-            client_ip = resolve_client_ip(request)
-            now = time.time()
-            timestamps = _rate_limit_store.get(client_ip, [])
-
-            # Remove old entries outside the window
-            timestamps = [t for t in timestamps if now - t < self.window]
-
-            if len(timestamps) >= self.max_requests:
-                logger.warning("Rate limit hit for IP: %s", client_ip)
-                return JSONResponse(
-                    status_code=429,
-                    content={
-                        "detail": "Too many requests. Please wait before trying again."
-                    },
-                )
-
-            timestamps.append(now)
-            _rate_limit_store[client_ip] = timestamps
-
-        response = await call_next(request)
-        return response
 
 
 app = FastAPI(
