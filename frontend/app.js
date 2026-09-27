@@ -1096,22 +1096,266 @@ function checkAllDone() {
 // ─── Fetch with backoff ────────────────────────────────
 
 /**
- * Fetch with exponential backoff.
- * Retries: 1s, 2s, 4s, 8s, max 30s.
+ * The retry policy: which failures are worth a second attempt, and how long
+ * we are willing to keep trying.
+ *
+ * The previous helper retried *everything*, because it turned any non-OK
+ * response into `throw new Error("HTTP " + status)` inside its own try block
+ * and fed that to the same catch as a dropped connection. A 413 was therefore
+ * indistinguishable from a flaky socket, and the loop happily re-ran upload +
+ * Whisper + RAG + LLM + TTS up to six times against a request the server had
+ * already refused on principle. That is how a retry mechanism turns into a
+ * load amplifier.
+ *
+ * Retrying is only correct for failures that can plausibly resolve without the
+ * request changing:
+ *
+ *   408 — the server gave up waiting for the body
+ *   429 — the rate limiter asked us to slow down
+ *   500 — unhandled server error
+ *   502 / 503 / 504 — gateway or upstream unavailable
+ *
+ * Every other 4xx is a statement about *this* request — malformed, too large,
+ * unauthorised, gone. It is surfaced with its real status and never retried.
+ *
+ * The bound is on total elapsed time, not on attempt count, because attempts
+ * and patience are different things: the old 1s/2s/4s/8s/16s/30s ladder could
+ * hold the interview for 63 seconds. Here the schedule is 1s, 2s, 4s, 8s and
+ * the budget is 15s, so the worst case is five attempts and fifteen seconds.
+ *
+ * `replayable` is the honest part. A network-level failure is ambiguous: the
+ * browser's `fetch` rejects with a bare TypeError and deliberately does not
+ * say whether the request ever left the client. For a request that only reads
+ * that is harmless, so it gets the full schedule. For one that WRITES it is
+ * not: the request may have been received, the turn committed, and only the
+ * response lost. See fetchWithBackoff for how that is handled.
  */
-async function fetchWithBackoff(url, options, maxRetries = 5) {
-    let delay = 1000;
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+function createRetryPolicy(config) {
+    const cfg = config || {};
+
+    const RETRYABLE_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
+    const SCHEDULE_MS = [1000, 2000, 4000, 8000];
+    const MAX_TOTAL_WAIT_MS = 15000;
+
+    function isRetryableStatus(status) {
+        return RETRYABLE_STATUSES.has(status);
+    }
+
+    /**
+     * Parse Retry-After, which may be delta-seconds or an HTTP-date.
+     * Returns milliseconds, or null when the header is absent or unusable.
+     */
+    function retryAfterMs(res) {
+        if (!res || !res.headers || typeof res.headers.get !== "function") {
+            return null;
+        }
+        const raw = res.headers.get("Retry-After");
+        if (raw === null || raw === undefined || raw === "") return null;
+
+        const seconds = Number(raw);
+        if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+
+        const when = Date.parse(raw);
+        if (Number.isFinite(when)) return Math.max(0, when - Date.now());
+
+        return null;
+    }
+
+    /**
+     * How long to wait before attempt number `attempt` (0-based), or null when
+     * doing so would break the total-time budget.
+     *
+     * A server-sent Retry-After wins over the local ladder: it is the only
+     * party that knows when it will be ready. It is still bounded — an hour
+     * of backpressure is not something to hold a live interview for, so
+     * exceeding the remaining budget refuses the retry and surfaces the 429
+     * instead.
+     */
+    function delayFor(attempt, res, waitedMs) {
+        const local = SCHEDULE_MS[Math.min(attempt, SCHEDULE_MS.length - 1)];
+        const asked = res ? retryAfterMs(res) : null;
+        const delay = asked === null ? local : Math.max(local, asked);
+
+        if (waitedMs + delay > MAX_TOTAL_WAIT_MS) return null;
+        return delay;
+    }
+
+    /** What the user is told while a retry is pending. */
+    function retryMessage(status, delayMs) {
+        const seconds = Math.ceil(delayMs / 1000);
+        if (status === 429) {
+            return "Servidor ocupado (429) — esperando " + seconds + " s…";
+        }
+        if (status === 503) {
+            return "Servidor no disponible (503) — reintentando en " + seconds + " s…";
+        }
+        if (status === 502 || status === 504) {
+            return "Puerta de entrada con problemas (" + status + ") — reintentando…";
+        }
+        if (status === 408) {
+            return "El servidor tardó demasiado (408) — reintentando…";
+        }
+        if (status === 500) {
+            return "Error del servidor (500) — reintentando…";
+        }
+        return "Reintentando…";
+    }
+
+    /**
+     * Turn a non-retryable or exhausted response into a real Error, carrying
+     * the status so the caller can tell a 413 from a 404.
+     */
+    async function toError(res) {
+        const status = res.status;
+        let detail = "";
         try {
-            const res = await fetch(url, options);
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            return res;
+            const body = await res.json();
+            if (body && body.detail) detail = String(body.detail);
+        } catch (_) {
+            // Not JSON: nginx serves an HTML page for its own 413, and a
+            // proxy serves HTML for 502. The status is still the honest
+            // signal, so carry on without the detail.
+        }
+
+        const err = new Error(messageFor(status, detail));
+        err.status = status;
+        err.detail = detail;
+        return err;
+    }
+
+    function messageFor(status, detail) {
+        const suffix = detail ? " — " + detail : "";
+        if (status === 413) {
+            return "Grabación demasiado grande para el servidor (413). Reduce la " +
+                "duración del audio." + suffix;
+        }
+        if (status === 422) {
+            return "El servidor no pudo procesar el audio (422)" + suffix;
+        }
+        if (status === 400) {
+            return "El servidor rechazó la petición (400)" + suffix;
+        }
+        if (status === 401 || status === 403) {
+            return "Sin permiso para enviar audio (" + status + ")" + suffix;
+        }
+        if (status === 404) {
+            return "Esta conversación ya no existe en el servidor (404). Empieza una entrevista nueva.";
+        }
+        if (status === 429) {
+            return "Demasiadas peticiones (429). Espera un momento y reintenta.";
+        }
+        if (status === 500) {
+            return "Error interno del servidor (500)" + suffix;
+        }
+        if (status === 502 || status === 503 || status === 504) {
+            return "El servidor no está disponible (" + status + ")" + suffix;
+        }
+        if (status === 408) {
+            return "El servidor tardó demasiado en responder (408). Reintenta.";
+        }
+        return "El servidor rechazó la petición (" + status + ")" + suffix;
+    }
+
+    return {
+        isRetryableStatus,
+        retryAfterMs,
+        delayFor,
+        retryMessage,
+        toError,
+        messageFor,
+        isReplayable: () => cfg.replayable === true,
+        maxAttempts: () => SCHEDULE_MS.length + 1,
+        totalBudgetMs: () => MAX_TOTAL_WAIT_MS,
+        schedule: () => [...SCHEDULE_MS],
+        retryableStatuses: () => [...RETRYABLE_STATUSES],
+    };
+}
+
+// The one request this app routes through the helper writes a turn, so it
+// gets the write-once policy. A read would use
+// createRetryPolicy({ replayable: true }) instead: nothing it can do is
+// duplicated by being sent twice, so it is safe to replay silently.
+const writeOncePolicy = createRetryPolicy({ replayable: false });
+
+/**
+ * Fetch with bounded, classified backoff.
+ *
+ * The retry decision is split by *how the failure is known*, not by how it
+ * feels, because those two cases have genuinely different risks:
+ *
+ *  - A response arrived. The request demonstrably reached the server. For
+ *    /message/stream that is safe to replay even for a write, because the
+ *    handler returns a StreamingResponse: the status line is committed before
+ *    the generator runs, and the turn is only written near the very end of
+ *    that generator. A non-200 therefore means the pipeline never started and
+ *    no turn exists. Retry iff the status is transient and the budget allows.
+ *
+ *  - No response arrived (fetch rejected). The browser gives us a bare
+ *    TypeError and, by specification, will not say whether the request ever
+ *    left the client. For the message POST this is AMBIGUOUS: the server may
+ *    have received it, run the whole pipeline and committed the turn, with
+ *    only the response lost on the way back. The server's turn write is
+ *    collision-safe, but on collision it deliberately re-derives a fresh turn
+ *    number — so a duplicate POST produces a duplicate turn, not an
+ *    overwrite. There is no browser-visible signal that separates "never
+ *    sent" from "sent and lost", and the server has no idempotency key to
+ *    deduplicate on yet, so this does not guess. It reports the ambiguity and
+ *    asks for one deliberate retry.
+ *
+ * The trade-off, stated plainly: a genuine network blip during a turn now
+ * costs the user one manual retry instead of up to five silent automatic ones.
+ * That is the correct price for not writing duplicate turns, and it is a real
+ * cost, not a free win. The proper fix is server-side — an idempotency key
+ * the turn write can deduplicate on — and is deliberately not attempted here.
+ *
+ * @param {boolean} [policy.replayable] may a request be silently re-sent after
+ *   an ambiguous network failure? True for reads, false for writes.
+ */
+async function fetchWithBackoff(url, options, policy) {
+    const maxAttempts = policy.maxAttempts();
+    let waitedMs = 0;
+    let attempt = 0;
+
+    for (;;) {
+        let res = null;
+        try {
+            res = await fetch(url, options);
         } catch (e) {
-            if (attempt === maxRetries) throw e;
+            if (!policy.isReplayable()) {
+                // Ambiguous, and not provably safe to replay. Say so.
+                const err = new Error(
+                    "Se perdió la conexión con el servidor y no se sabe si el turno " +
+                        "se guardó. Pulsa el micrófono para reintentar.",
+                );
+                err.ambiguous = true;
+                err.cause = e;
+                throw err;
+            }
+
+            if (attempt >= maxAttempts - 1) throw e;
+            const delay = policy.delayFor(attempt, null, waitedMs);
+            if (delay === null) throw e;
+
+            waitedMs += delay;
+            attempt += 1;
             setStatus("Sin conexión — reintentando…", "error");
             await new Promise((r) => setTimeout(r, delay));
-            delay = Math.min(delay * 2, 30000);
+            continue;
         }
+
+        if (res.ok) return res;
+
+        if (!policy.isRetryableStatus(res.status) || attempt >= maxAttempts - 1) {
+            throw await policy.toError(res);
+        }
+
+        const delay = policy.delayFor(attempt, res, waitedMs);
+        if (delay === null) throw await policy.toError(res);
+
+        waitedMs += delay;
+        attempt += 1;
+        setStatus(policy.retryMessage(res.status, delay), "error");
+        await new Promise((r) => setTimeout(r, delay));
     }
 }
 
@@ -1274,18 +1518,15 @@ async function processRecordingStream() {
     });
 
     try {
+        // writeOncePolicy: this POST persists a turn, so an ambiguous network
+        // failure is not replayed behind the user's back. A non-OK status that
+        // the policy calls transient still is retried — the server declined
+        // before the pipeline ran, so no turn was written.
         const res = await fetchWithBackoff(
             `${API_BASE}/api/conversation/${conversationId}/message/stream`,
             { method: "POST", body: fd },
+            writeOncePolicy,
         );
-
-        if (!res.ok) {
-            let detail = `HTTP ${res.status}`;
-            try {
-                detail = (await res.json()).detail || detail;
-            } catch (_) {}
-            throw new Error(detail);
-        }
 
         const reader = res.body.getReader();
         const decoder = new TextDecoder();

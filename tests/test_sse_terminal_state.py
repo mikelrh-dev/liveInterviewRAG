@@ -34,6 +34,7 @@ NODE_TESTS = (
     Path(__file__).resolve().parent / "frontend" / "terminal_state.test.mjs",
     Path(__file__).resolve().parent / "frontend" / "turn_state.test.mjs",
     Path(__file__).resolve().parent / "frontend" / "telemetry.test.mjs",
+    Path(__file__).resolve().parent / "frontend" / "retry_policy.test.mjs",
 )
 
 #: Events that terminate a turn. ``error`` is deliberately NOT one of them:

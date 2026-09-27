@@ -28,6 +28,11 @@ export const readIndexHtml = () => readFileSync(INDEX_HTML, "utf8");
 /**
  * Pull a top-level function declaration out of app.js by name.
  *
+ * The `async` keyword is carried over when present. This slice is evaluated
+ * inside `new Function(...)`, whose body is synchronous, so an async function
+ * that lost its `async` becomes a SyntaxError on its first `await` — which
+ * reads like a broken unit under test rather than a broken harness.
+ *
  * Brace counting is naive on purpose — it is only ever pointed at functions
  * whose string literals contain balanced braces (no `${}` interpolation inside
  * an extracted unit). Adding a template literal with an unbalanced brace to a
@@ -35,10 +40,13 @@ export const readIndexHtml = () => readFileSync(INDEX_HTML, "utf8");
  */
 export function extractFunction(name, source = readAppJs()) {
     const signature = `function ${name}(`;
-    const start = source.indexOf(signature);
-    assert.notEqual(start, -1, `${name}() not found in frontend/app.js`);
+    const at = source.indexOf(signature);
+    assert.notEqual(at, -1, `${name}() not found in frontend/app.js`);
 
-    const brace = source.indexOf("{", start);
+    const isAsync = /\basync\s+$/.test(source.slice(Math.max(0, at - 10), at));
+    const start = isAsync ? source.lastIndexOf("async", at) : at;
+
+    const brace = source.indexOf("{", at);
     let depth = 0;
     for (let i = brace; i < source.length; i++) {
         if (source[i] === "{") depth++;
