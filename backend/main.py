@@ -572,6 +572,29 @@ def _store_is_configured() -> bool:
     return bool(getattr(persistence, "_enabled", config.PERSISTENCE_ENABLED))
 
 
+def _turn_done_payload(committed_turn: dict | None) -> dict:
+    """``done`` payload for a turn that reached disk.
+
+    The turn number is the server's to report. The pipeline derives ``n`` from
+    memory, so the number the client must ask the Context panel about is
+    whatever was committed, not whatever was requested — reporting the
+    provisional one would put the original bug on the wire.
+
+    ``has_context`` exists so the client can tell "this turn has no context"
+    from "I do not know yet": the first means show nothing, the second would
+    mean firing a request that 404s.
+
+    An empty payload means no turn was stored, so the client must not ask
+    about one.
+    """
+    if committed_turn is None:
+        return {}
+    return {
+        "n": int(committed_turn["n"]),
+        "has_context": bool(committed_turn.get("chunks_used") or []),
+    }
+
+
 async def _persist_turn(
     conversation_id: str, new_turn: dict, new_message: dict
 ) -> dict | None:
@@ -863,12 +886,21 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
                         {"id": int, "url": "..."}        per-sentence stream
       - error:          {"detail": "..."}               fatal, non-recoverable
                         {"detail": "...", "id": int}    recoverable, per-chunk
-      - done:           {}                               terminal (normal turn)
+      - done:           {"n": int, "has_context": bool} terminal (normal turn)
+                        {}                              terminal (nothing stored)
       - interview_end:  {"message": "..."}              terminal (farewell)
 
     Exactly one terminal event is emitted per stream. ``audio_url`` is the
     single canonical audio event name; the optional ``id`` is the frontend
     playback cursor and is absent when the answer is one whole file.
+
+    ``done`` is the only event that names a turn, and the name is the one the
+    DB committed — the frontend must not count transcript elements to find it.
+    An empty ``done`` payload means no turn was stored (a failed write, an
+    empty transcription, an LLM that died mid-stream), so the client asks the
+    Context panel about nothing. ``interview_end`` names no turn: the farewell
+    is written after the terminal event on purpose, so the goodbye never queues
+    behind a slow disk.
     """
     # Validate conversation exists (hydrates from DB on memory miss)
     await _get_conversation_or_hydrate(conversation_id)
@@ -967,12 +999,14 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
 
                 # Write-through: persist the cache-hit exchange atomically,
                 # then let the committed n decide what memory keeps.
-                await _persist_turn(conversation_id, new_turn, new_message)
+                committed = await _persist_turn(
+                    conversation_id, new_turn, new_message
+                )
 
                 yield sse_format(
                     "audio_url", {"url": f"/audio/{conversation_id}/{message_id}.mp3"}
                 )
-                yield sse_format("done", {})
+                yield sse_format("done", _turn_done_payload(committed))
                 terminal_emitted = True
 
             # ── Farewell check ──────────────────────────────────
@@ -1220,12 +1254,12 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
 
             # Write-through: persist turn + message + activity atomically, then
             # let the committed n decide what memory keeps.
-            await _persist_turn(conversation_id, new_turn, new_message)
+            committed = await _persist_turn(conversation_id, new_turn, new_message)
             # Cache the fresh answer for future paraphrased first questions
             if is_first_substantive:
                 await asyncio.to_thread(semantic_cache.store, user_text, full_response)
 
-            yield sse_format("done", {})
+            yield sse_format("done", _turn_done_payload(committed))
             terminal_emitted = True
 
         except HTTPException:

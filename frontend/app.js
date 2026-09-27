@@ -596,6 +596,19 @@ function toggleInterview() {
     else startInterview();
 }
 
+/**
+ * Clear everything a new conversation must not inherit.
+ *
+ * The transcript, the turn state and the sidebar counter are all per
+ * interview. Left in place they describe the previous one — which is how the
+ * Context sidebar ended up asking for a turn from two interviews ago.
+ */
+function resetInterviewView() {
+    conversation.replaceChildren();
+    turnState.reset();
+    updateTurnCount(0);
+}
+
 async function startInterview() {
     if (isInterviewActive) return;
 
@@ -610,6 +623,8 @@ async function startInterview() {
         const data = await res.json();
         conversationId = data.conversation_id;
         updateSessionInfo(conversationId);
+        // A fresh conversation starts with a fresh transcript.
+        resetInterviewView();
         addMessage("system", data.welcome_message);
     } catch (e) {
         console.error("Failed to create conversation:", e);
@@ -941,6 +956,71 @@ function createTurnSettler(hooks) {
     };
 }
 
+/**
+ * Turn bookkeeping, driven by the server rather than by the DOM.
+ *
+ * The turn number used to be derived by counting `.message` elements. That is
+ * wrong the moment the transcript is not empty: from the second interview
+ * onward the counter ran ahead of the DB and the Context sidebar asked for a
+ * turn that does not exist, 404ing in silence. The `done` payload now names
+ * the turn the DB committed, so this only holds what the server said — it
+ * never infers a number.
+ *
+ * `null` means "the server named no turn": a turn whose write failed, an empty
+ * transcription, a truncated stream, the farewell (written after its terminal
+ * event). Nothing is counted and nothing is requested in that case, which is
+ * the whole point — a wrong turn number is a 404.
+ *
+ * See tests/frontend/turn_state.test.mjs.
+ *
+ * @returns {{
+ *   reset: () => void,
+ *   commit: (data?: {n?: number, has_context?: boolean}) => number|null,
+ *   last: () => number|null,
+ *   contextTurn: () => number|null,
+ * }}
+ */
+function createTurnState() {
+    let lastTurnNumber = null;
+    let contextTurnNumber = null;
+    return {
+        reset() {
+            lastTurnNumber = null;
+            contextTurnNumber = null;
+        },
+        /**
+         * Record the turn the server reported as committed.
+         *
+         * @param {{n?: number, has_context?: boolean}} [data] `done` payload.
+         * @returns {number|null} the committed turn, or null if it named none.
+         */
+        commit(data) {
+            if (!data || !Number.isInteger(data.n) || data.n < 0) return null;
+            lastTurnNumber = data.n;
+            // Only a turn the server says has context is worth requesting.
+            // Replacing rather than keeping the previous value stops a stale
+            // turn from being requested after a context-free one.
+            contextTurnNumber = data.has_context ? data.n : null;
+            return data.n;
+        },
+        /** @returns {number|null} the last committed turn, or null. */
+        last() {
+            return lastTurnNumber;
+        },
+        /**
+         * The turn whose context is worth requesting, or null when the server
+         * said there is none. Never a guess.
+         *
+         * @returns {number|null}
+         */
+        contextTurn() {
+            return contextTurnNumber;
+        },
+    };
+}
+
+const turnState = createTurnState();
+
 async function processRecordingStream() {
     if (audioChunks.length === 0) {
         // Nothing captured (e.g. instant stop): release the processing
@@ -953,6 +1033,7 @@ async function processRecordingStream() {
     setStatus("Enviando audio…");
     setState("processing");
     resetAudioQueue();
+    turnState.reset();
     currentCandidateDiv = null;
     showTyping();
 
@@ -977,10 +1058,11 @@ async function processRecordingStream() {
             allChunksReceived = true;
             hideTyping();
             removeAudioIndicator();
-            const settledTurn = getCurrentTurnNumber();
-            if (settledTurn >= 0) {
+            const settledTurn = turnState.last();
+            if (settledTurn !== null) {
                 updateTurnCount(settledTurn + 1);
-                fetchContext(settledTurn);
+                const contextTurn = turnState.contextTurn();
+                if (contextTurn !== null) fetchContext(contextTurn);
             }
             if (reason === "done" || reason === "eof") {
                 setStatus("Escuchando…");
@@ -1050,8 +1132,10 @@ async function processRecordingStream() {
                     audioQueue.push({ id, url: event.data.url });
                     tryPlayNextChunk();
                 } else if (type === "done") {
+                    // Before settling: `done` is the only event that names the
+                    // committed turn, and the settler reads it on the way out.
+                    turnState.commit(event.data);
                     turn.settle("done");
-                    lastTurnNumber = getCurrentTurnNumber();
                     if (audioQueue.length === 0 && !isAudioPlaying) {
                         if (isInterviewActive) startListening();
                     }

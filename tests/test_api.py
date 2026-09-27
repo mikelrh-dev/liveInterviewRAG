@@ -995,6 +995,134 @@ class TestTurnNumberReconciliation:
         assert turns[0]["assistant_text"] == "I built InterviewTTS using Python and FastAPI."
 
 
+class TestTurnNumberOverTheWire:
+    """The server is the authority on turn numbers, and must say so.
+
+    The frontend used to derive the turn by counting transcript elements, so
+    from the second interview onward it asked the Context panel for a turn
+    that does not exist and got a silent 404. The ``done`` payload now carries
+    the number the DB committed, plus whether that turn has context at all, so
+    the client never has to infer either.
+    """
+
+    @pytest.fixture
+    def persisted_store(self, tmp_path, monkeypatch):
+        import backend.main as main_mod
+        from backend.services.persistence import PersistenceService
+
+        svc = PersistenceService(tmp_path / "wire.db")
+        svc.initialize()
+        monkeypatch.setattr(main_mod, "persistence", svc)
+        main_mod.conversations.clear()
+        yield svc
+
+    def _stream(self, client, cid):
+        import json
+
+        with client.stream(
+            "POST",
+            f"/api/conversation/{cid}/message/stream",
+            files={"audio": ("test.webm", b"audio data", "audio/webm")},
+        ) as response:
+            assert response.status_code == 200
+            body = "".join(
+                f"{line}\n"
+                for line in response.iter_lines()
+                if line and line.startswith("data: ")
+            )
+        return [json.loads(line[6:]) for line in body.splitlines() if line.strip()]
+
+    def _done(self, events):
+        done = [e for e in events if e["event"] == "done"]
+        assert len(done) == 1, f"expected one done, got {[e['event'] for e in events]}"
+        return done[0]["data"]
+
+    def test_done_reports_the_committed_turn_number(
+        self, client, mock_services, persisted_store
+    ):
+        client.post("/api/conversation")
+        cid = client.post("/api/conversation").json()["conversation_id"]
+        mock_services["rag"].get_chunks_with_scores.return_value = []
+
+        assert self._done(self._stream(client, cid))["n"] == 0
+
+    def test_done_reports_the_number_the_db_corrected(
+        self, client, mock_services, persisted_store
+    ):
+        """The number the client must use is the committed one, not the asked one.
+
+        Reporting the provisional number here would reproduce the original bug
+        on the wire: a correct-looking turn that the Context panel cannot
+        resolve.
+        """
+        cid = client.post("/api/conversation").json()["conversation_id"]
+        persisted_store.record_turn(
+            cid,
+            {
+                "n": 0,
+                "user_text": "Raced question",
+                "assistant_text": "Raced answer",
+                "chunks_used": [],
+            },
+            {
+                "user_text": "Raced question",
+                "response_text": "Raced answer",
+                "audio_url": "/audio/raced.mp3",
+            },
+        )
+        mock_services["rag"].get_chunks_with_scores.return_value = []
+
+        assert self._done(self._stream(client, cid))["n"] == 1
+
+    def test_done_reports_context_only_when_the_turn_has_some(
+        self, client, mock_services, persisted_store
+    ):
+        """No context means no request, not a request that 404s."""
+        cid = client.post("/api/conversation").json()["conversation_id"]
+        mock_services["rag"].get_chunks_with_scores.return_value = []
+
+        assert self._done(self._stream(client, cid))["has_context"] is False
+
+        mock_services["rag"].get_chunks_with_scores.return_value = [
+            {"text": "chunk", "source": "cv.md", "score": 0.9}
+        ]
+        other = client.post("/api/conversation").json()["conversation_id"]
+
+        assert self._done(self._stream(client, other))["has_context"] is True
+
+    def test_done_carries_no_turn_when_none_was_stored(
+        self, client, mock_services, persisted_store, monkeypatch
+    ):
+        """A turn that failed to write is a turn the client must not ask about."""
+        monkeypatch.setattr(persisted_store, "record_turn", lambda *a, **k: None)
+        cid = client.post("/api/conversation").json()["conversation_id"]
+        mock_services["rag"].get_chunks_with_scores.return_value = []
+
+        payload = self._done(self._stream(client, cid))
+        assert "n" not in payload, (
+            "a turn that never reached disk must not be announced to the client"
+        )
+
+    def test_done_without_a_turn_carries_no_turn_number(
+        self, client, mock_services, persisted_store
+    ):
+        """The empty-transcription path commits nothing, so it announces nothing."""
+        mock_services["stt"].transcribe.return_value = "   "
+        cid = client.post("/api/conversation").json()["conversation_id"]
+
+        assert "n" not in self._done(self._stream(client, cid))
+
+    def test_cached_answer_done_also_reports_the_turn(
+        self, client, mock_services, persisted_store
+    ):
+        """The cached-answer path is a committed turn like any other."""
+        mock_services["stt"].transcribe.return_value = "¿Qué es InterviewTTS?"
+        mock_services["rag"].get_chunks_with_scores.return_value = []
+        cid = client.post("/api/conversation").json()["conversation_id"]
+
+        assert self._done(self._stream(client, cid))["n"] == 0
+
+
 class TestSemanticCacheIntegration:
     """Cap-3 semantic answer cache slotted between FAQ cache and RAG/LLM.
 

@@ -27,7 +27,13 @@ from fastapi.testclient import TestClient
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FRONTEND_APP = REPO_ROOT / "frontend" / "app.js"
-NODE_TEST = Path(__file__).resolve().parent / "frontend" / "terminal_state.test.mjs"
+#: Node suites, run by the Python suite so the JS contract is gated in CI.
+#: Both extract their unit under test from frontend/app.js and drive it with
+#: injected hooks -- no DOM, no bundler, no dependencies.
+NODE_TESTS = (
+    Path(__file__).resolve().parent / "frontend" / "terminal_state.test.mjs",
+    Path(__file__).resolve().parent / "frontend" / "turn_state.test.mjs",
+)
 
 #: Events that terminate a turn. ``error`` is deliberately NOT one of them:
 #: the codebase uses it as an advisory event that can be followed by ``done``
@@ -267,8 +273,9 @@ class TestTerminalEventGuarantee:
 class TestTerminalSettlerBehaviour:
     """Run the Node test for createTurnSettler against the real app.js."""
 
-    def test_node_terminal_state_suite_passes(self):
-        """The JS terminal-state suite is wired into the Python run.
+    @pytest.mark.parametrize("node_test", NODE_TESTS, ids=lambda p: p.stem)
+    def test_node_frontend_suite_passes(self, node_test):
+        """The JS suites are wired into the Python run.
 
         Skipped, not failed, when Node is unavailable: the frontend is
         static assets with no build step, and its absence must not break the
@@ -278,14 +285,14 @@ class TestTerminalSettlerBehaviour:
             pytest.skip("node not available")
 
         result = subprocess.run(
-            ["node", "--test", str(NODE_TEST)],
+            ["node", "--test", str(node_test)],
             cwd=str(REPO_ROOT),
             capture_output=True,
             text=True,
             timeout=120,
         )
         assert result.returncode == 0, (
-            "node --test failed for tests/frontend/terminal_state.test.mjs\n"
+            f"node --test failed for {node_test}\n"
             f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
         )
 
@@ -497,3 +504,82 @@ class TestTerminalWiring:
         from tests.test_sse_contract import emitted_event_types, handled_event_types
 
         assert emitted_event_types() == handled_event_types()
+
+
+class TestServerAuthoritativeTurnNumber:
+    """The turn number is whatever the server says, not a DOM count.
+
+    Behaviour lives in ``createTurnState`` and ``resetInterviewView``, which
+    tests/frontend/turn_state.test.mjs exercises against the real source. What
+    Node cannot reach is the DOM wiring around them, so that is asserted here
+    structurally: which function the dispatcher commits into, and whether the
+    settlement path still derives a turn number from the transcript.
+    """
+
+    def _source(self) -> str:
+        return FRONTEND_APP.read_text(encoding="utf-8")
+
+    def test_done_commits_the_server_turn_before_settling(self):
+        """Order matters: the settler reads the number on its way out.
+
+        Committing after ``settle()`` would let the sidebar be driven by a
+        stale turn, which is the bug this replaced.
+        """
+        branch = _strip_js_comments(_js_branch(_sse_dispatch_body(), "done"))
+
+        assert "turnState.commit(event.data)" in branch, (
+            "the done branch must hand the server-reported turn to turnState"
+        )
+        assert branch.index("turnState.commit(") < branch.index("turn.settle("), (
+            "the turn must be committed before the turn is settled"
+        )
+
+    def test_turn_state_is_cleared_per_turn(self):
+        """One turn's number must not answer for the next one."""
+        body = _strip_js_comments(_sse_dispatch_body())
+        assert "turnState.reset()" in body, (
+            "processRecordingStream must reset the turn state per turn, or a "
+            "turn that committed nothing inherits the previous turn's number"
+        )
+
+    def test_settlement_never_derives_a_turn_from_the_transcript(self):
+        """Counting transcript elements is what made the counter lie."""
+        hook = self._settler_hook()
+        assert "turnState.last()" in hook, (
+            "the settler must read the turn from the server-reported state"
+        )
+        assert "getCurrentTurnNumber" not in hook, (
+            "the settlement path still derives a turn number from the DOM"
+        )
+
+    def test_context_is_requested_only_for_a_known_turn(self):
+        """A turn with no context must not produce a request that 404s."""
+        hook = self._settler_hook()
+        assert "turnState.contextTurn()" in hook, (
+            "the context request must be gated on the server-reported turn"
+        )
+        assert "if (contextTurn !== null) fetchContext(contextTurn)" in hook, (
+            "fetchContext must be guarded: an unknown turn is a 404"
+        )
+
+    def test_new_interview_clears_the_transcript_and_the_counter(self):
+        """The second interview must not start on top of the first one's DOM."""
+        source = self._source()
+        start = source.index("async function startInterview()")
+        body = _strip_js_comments(
+            source[start : source.index("isInterviewActive = true;", start)]
+        )
+        assert "resetInterviewView()" in body, (
+            "startInterview must clear the previous interview's transcript and "
+            "turn state before the welcome message"
+        )
+        assert body.index("resetInterviewView()") < body.index(
+            'addMessage("system"'
+        ), "the old transcript must be gone before the welcome message is added"
+
+    def _settler_hook(self) -> str:
+        """The createTurnSettler({...}) call site, comments stripped."""
+        body = _sse_dispatch_body()
+        return _strip_js_comments(
+            body[body.index("createTurnSettler({") : body.index("try {")]
+        )
