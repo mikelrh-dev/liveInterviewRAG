@@ -36,6 +36,11 @@
     --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     --font-mono: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
 
+    /* Crossfade between the neutral and talking avatar videos. Declared here
+       so the default is stated once: avatar.js overwrites it per frame via
+       `portal.style.setProperty('--avatar-blend', …)`. */
+    --avatar-blend: 0.15;
+
     /* Spacing */
     --space-xs: 4px;
     --space-sm: 8px;
@@ -160,12 +165,12 @@ body {
     width: calc(100vw - 48px);
     padding: 36px 32px 28px;
     border-radius: 16px;
-    background: var(--surface-container);
+    background: var(--bg-container);
     border: 1px solid var(--outline-variant);
     box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
     text-align: center;
     color: var(--secondary);
-    font-family: var(--font-inter);
+    font-family: var(--font-sans);
 }
 
 .disclaimer-orbit {
@@ -186,7 +191,7 @@ body {
 }
 
 .disclaimer-title {
-    font-family: var(--font-sora);
+    font-family: var(--font-headline);
     font-size: 1.5rem;
     font-weight: 700;
     color: var(--primary);
@@ -212,7 +217,7 @@ body {
     border-radius: 999px;
     background: var(--cyan-accent);
     color: #06121a;
-    font-family: var(--font-sora);
+    font-family: var(--font-headline);
     font-size: 0.95rem;
     font-weight: 700;
     cursor: pointer;
@@ -237,7 +242,7 @@ body {
     text-align: center;
     font-size: 0.72rem;
     color: var(--outline);
-    font-family: var(--font-inter);
+    font-family: var(--font-sans);
     padding: 6px 12px;
     margin-top: 8px;
 }
