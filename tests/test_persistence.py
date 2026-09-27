@@ -154,6 +154,135 @@ class TestRecordAndLoad:
         assert svc.load_conversation("never-seen-cid") is None
 
 
+class TestTurnWriteIdempotency:
+    """record_turn must never lose a turn to the UNIQUE(conversation_id, n).
+
+    Concurrency regression: the live pipeline derives ``n`` from
+    ``len(conversations[cid]["turns"])``, so two in-flight requests on the same
+    conversation pick the SAME ``n``.  With a plain INSERT the loser's turn (and
+    its paired message) was rolled back and swallowed as a ``logger.warning``,
+    leaving memory ahead of disk — the user heard an answer that a restart
+    forgets.
+    """
+
+    def test_same_conversation_and_n_twice_does_not_raise(self, tmp_path):
+        """Re-writing the same (cid, n) must not raise and must stay consistent."""
+        svc = _make_service(tmp_path)
+        turn = {"n": 0, "user_text": "q", "assistant_text": "a", "chunks_used": []}
+        message = {"user_text": "q", "response_text": "a", "audio_url": "/a.mp3"}
+
+        svc.record_turn("c1", turn, message)  # must not raise
+        svc.record_turn("c1", turn, message)  # identical retry — must not raise
+
+        loaded = svc.load_conversation("c1")
+        assert loaded is not None
+        assert len(loaded["turns"]) == 1, "an identical retry must not duplicate the turn"
+        assert loaded["turns"][0]["n"] == 0
+        assert loaded["turns"][0]["assistant_text"] == "a"
+        # The paired message is append-only and must survive the retry
+        assert len(loaded["messages"]) == 2, "messages are append-only, never de-duplicated"
+
+    def test_collision_with_different_content_reports_committed_n(self, tmp_path):
+        """A genuine (cid, n) collision must commit, and REPORT the n it used.
+
+        The caller needs the committed ``n`` to reconcile memory with disk.
+        """
+        svc = _make_service(tmp_path)
+        first = {"n": 0, "user_text": "q1", "assistant_text": "a1", "chunks_used": []}
+        second = {"n": 0, "user_text": "q2", "assistant_text": "a2", "chunks_used": []}
+
+        committed_first = svc.record_turn("c1", first, {
+            "user_text": "q1", "response_text": "a1", "audio_url": "/1.mp3"})
+        committed_second = svc.record_turn("c1", second, {
+            "user_text": "q2", "response_text": "a2", "audio_url": "/2.mp3"})
+
+        assert committed_first == {"n": 0, "user_text": "q1", "assistant_text": "a1",
+                                   "chunks_used": []}
+        # The second turn collided on n=0 and must have been re-derived, not lost
+        assert committed_second["n"] == 1, "a genuine collision re-derives the next free n"
+        assert committed_second["user_text"] == "q2"
+        assert committed_second["assistant_text"] == "a2", (
+            "the colliding turn's own content must be preserved, not overwritten"
+        )
+
+    def test_forced_collision_keeps_memory_and_disk_in_agreement(self, tmp_path):
+        """Whatever the caller put in memory must be exactly what disk holds.
+
+        Models the live pipeline: ``n = len(memory_turns)``, memory is appended
+        with the turn ``record_turn`` reports as committed, then both are
+        compared. Under a forced collision disk must not fall behind memory.
+        """
+        svc = _make_service(tmp_path)
+        memory_turns = []
+
+        # Two turns that both resolve to n=0 because memory was empty for both
+        for n, (q, a) in enumerate([("q0", "a0"), ("q0", "a0-different")]):
+            reported = svc.record_turn(
+                "c1",
+                {"n": len(memory_turns), "user_text": q, "assistant_text": a,
+                 "chunks_used": []},
+                {"user_text": q, "response_text": a, "audio_url": f"/{n}.mp3"},
+            )
+            assert reported is not None, "a successful write must report its committed turn"
+            memory_turns.append(reported)
+
+        disk = svc.load_conversation("c1")
+        assert [t["n"] for t in disk["turns"]] == [t["n"] for t in memory_turns]
+        assert [t["user_text"] for t in disk["turns"]] == [
+            t["user_text"] for t in memory_turns
+        ]
+        assert [t["assistant_text"] for t in disk["turns"]] == [
+            t["assistant_text"] for t in memory_turns
+        ], "memory must never be ahead of disk"
+        assert [t["n"] for t in memory_turns] == [0, 1]
+
+    def test_sequential_multiturn_unchanged_distinct_n(self, tmp_path):
+        """Normal sequential conversation: N turns, N distinct ascending n."""
+        svc = _make_service(tmp_path)
+        for n in range(5):
+            reported = svc.record_turn(
+                "c1",
+                {"n": n, "user_text": f"q{n}", "assistant_text": f"a{n}",
+                 "chunks_used": []},
+                {"user_text": f"q{n}", "response_text": f"a{n}",
+                 "audio_url": f"/{n}.mp3"},
+            )
+            assert reported["n"] == n, "an uncontended write must keep the requested n"
+
+        loaded = svc.load_conversation("c1")
+        assert [t["n"] for t in loaded["turns"]] == [0, 1, 2, 3, 4]
+        assert len({t["n"] for t in loaded["turns"]}) == 5, "n values must be distinct"
+        assert [t["assistant_text"] for t in loaded["turns"]] == [
+            "a0", "a1", "a2", "a3", "a4"
+        ]
+        assert len(loaded["messages"]) == 5
+
+    def test_record_turn_reports_none_when_disabled(self, tmp_path):
+        """The failure path must not fabricate a committed turn."""
+        svc = PersistenceService(tmp_path / "off.db", enabled=False)
+        assert svc.record_turn(
+            "c1", {"n": 0, "user_text": "q", "assistant_text": "a", "chunks_used": []},
+            {"user_text": "q", "response_text": "a", "audio_url": ""},
+        ) is None
+
+    def test_record_turn_reports_none_and_warns_on_failure(self, tmp_path, monkeypatch,
+                                                          caplog):
+        """A failed write reports None so the caller can stop trusting memory."""
+        svc = _make_service(tmp_path)
+
+        def _dead_connect():
+            raise RuntimeError("disk dead")
+
+        monkeypatch.setattr(svc, "_connect", _dead_connect)
+        caplog.set_level(logging.WARNING, logger="backend.services.persistence")
+
+        assert svc.record_turn(
+            "c1", {"n": 0, "user_text": "q", "assistant_text": "a", "chunks_used": []},
+            {"user_text": "q", "response_text": "a", "audio_url": ""},
+        ) is None
+        assert any(r.levelno == logging.WARNING for r in caplog.records)
+
+
 class TestEvictAndReports:
     """Eviction deletes conversation data but preserves reports (spec)."""
 

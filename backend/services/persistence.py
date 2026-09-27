@@ -207,10 +207,33 @@ class PersistenceService:
         except Exception as e:
             logger.warning("Persistence record_conversation failed for %s: %s", cid, e)
 
-    def record_turn(self, cid: str, turn: dict, message: dict) -> None:
-        """Composite write-through: turn + message + activity upsert atomically."""
+    def record_turn(self, cid: str, turn: dict, message: dict) -> dict | None:
+        """Composite write-through: turn + message + activity upsert atomically.
+
+        Returns the turn dict as actually committed, or ``None`` when the write
+        failed.  The returned ``n`` is authoritative: callers must reconcile
+        memory from it rather than assuming the ``n`` they asked for was used.
+
+        Duplicate-``n`` semantics (turns carry UNIQUE(conversation_id, n), and
+        the live pipeline derives ``n`` from ``len(conversations[cid]["turns"])``,
+        so two in-flight requests can pick the same ``n``):
+
+        * **Same ``n``, same content** — a retry of the same turn.  The
+          conditional upsert rewrites the identical row: idempotent and
+          self-healing, never raises, never duplicates.
+        * **Same ``n``, different content** — a genuine collision.  The
+          conditional upsert refuses (rowcount 0, existing row untouched) and
+          the turn is inserted at the next free ``n`` instead, so neither
+          answer is lost.
+
+        Either way the turn the user actually heard reaches disk, so memory can
+        never be ahead of disk.  Previously the plain INSERT raised
+        ``IntegrityError``, the whole transaction rolled back (losing the paired
+        message too), and the failure was swallowed as a warning — the client
+        already had its audio and ``done``, so a restart forgot the answer.
+        """
         if not self._enabled:
-            return
+            return None
         try:
             con = self._connect()
             try:
@@ -227,25 +250,49 @@ class PersistenceService:
                         """,
                         (cid, now_iso, now_iso),
                     )
-                    con.execute(
+
+                    user_text = turn.get("user_text", "")
+                    assistant_text = turn.get("assistant_text", "")
+                    chunks_json = json.dumps(
+                        turn.get("chunks_used", []),
+                        ensure_ascii=False,
+                        default=str,
+                    )
+                    requested_n = int(turn.get("n", 0))
+
+                    # The WHERE clause makes the upsert a no-op when the stored
+                    # row differs, so rowcount 0 == "genuine collision".
+                    cur = con.execute(
                         """
                         INSERT INTO turns
                             (conversation_id, n, user_text, assistant_text,
                              chunks_used)
                         VALUES (?, ?, ?, ?, ?)
+                        ON CONFLICT(conversation_id, n) DO UPDATE SET
+                            user_text = excluded.user_text,
+                            assistant_text = excluded.assistant_text,
+                            chunks_used = excluded.chunks_used
+                        WHERE turns.user_text = excluded.user_text
+                            AND turns.assistant_text = excluded.assistant_text
+                            AND turns.chunks_used = excluded.chunks_used
                         """,
-                        (
-                            cid,
-                            int(turn.get("n", 0)),
-                            turn.get("user_text", ""),
-                            turn.get("assistant_text", ""),
-                            json.dumps(
-                                turn.get("chunks_used", []),
-                                ensure_ascii=False,
-                                default=str,
-                            ),
-                        ),
+                        (cid, requested_n, user_text, assistant_text, chunks_json),
                     )
+                    if cur.rowcount:
+                        committed_n = requested_n
+                    else:
+                        committed_n = self._next_free_n(con, cid, requested_n)
+                        con.execute(
+                            """
+                            INSERT INTO turns
+                                (conversation_id, n, user_text, assistant_text,
+                                 chunks_used)
+                            VALUES (?, ?, ?, ?, ?)
+                            """,
+                            (cid, committed_n, user_text, assistant_text,
+                             chunks_json),
+                        )
+
                     con.execute(
                         """
                         INSERT INTO messages
@@ -263,6 +310,37 @@ class PersistenceService:
                 con.close()
         except Exception as e:
             logger.warning("Persistence record_turn failed for %s: %s", cid, e)
+            return None
+
+        return {
+            "n": committed_n,
+            "user_text": user_text,
+            "assistant_text": assistant_text,
+            "chunks_used": turn.get("chunks_used", []),
+        }
+
+    @staticmethod
+    def _next_free_n(con: sqlite3.Connection, cid: str, after: int) -> int:
+        """Next ``n`` to use for ``cid`` when ``after`` is already taken.
+
+        Appends after the conversation's current maximum rather than filling
+        gaps: turns are written in ascending ``n`` order and ``load_conversation``
+        reads back ``ORDER BY n``, so a gap is not needed and skipping one keeps
+        the derivation trivially correct under any pre-existing state.
+
+        Called inside ``record_turn``'s open transaction, so the
+        UNIQUE(conversation_id, n) index remains the final arbiter: if a racing
+        writer claims the same ``n`` first, the loser's insert raises and is
+        reported as a failed write (``None``) instead of vanishing.
+        """
+        row = con.execute(
+            "SELECT MAX(n) FROM turns WHERE conversation_id = ?", (cid,)
+        ).fetchone()
+        if row is not None and row[0] is not None:
+            return max(int(row[0]) + 1, after + 1)
+        return after + 1
+
+
 
     def load_conversation(self, cid: str) -> dict | None:
         """Return a hydrated conversation dict, or None when unknown/failure."""
