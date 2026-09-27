@@ -9,7 +9,18 @@ logger = logging.getLogger(__name__)
 
 # Directories to skip when loading wiki files
 _SKIP_DIRS = {"templates", "__pycache__", ".git"}
-_SKIP_FILES = {"README.md", "CONVENCIONES.md"}
+# Files that are not candidate content.
+#
+# ``index.md`` is a BUILD ARTIFACT: ``scripts/wiki/generate_index.py`` rewrites
+# it on demand and its own header says "AUTO-GENERATED ... do not edit". It is a
+# table of links whose text is every other document's ``summary_1line``, so it
+# reads as keyword-dense across skills, tests, Mercadona, DAM, backend,
+# frontend, data, DevOps, Python, Java, SQL, AI and RAG while containing no
+# answer at all — it contributed 10 chunks to the default retrieval pool, and
+# its chunks have no frontmatter, so ``type`` is empty and no doc_type filter
+# can ever exclude them. The wiki tooling already agrees:
+# ``scripts/wiki/_common.py`` skips exactly this set.
+_SKIP_FILES = {"README.md", "CONVENCIONES.md", "index.md"}
 
 
 class CandidateProfile:
