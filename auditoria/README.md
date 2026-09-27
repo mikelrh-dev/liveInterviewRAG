@@ -7,7 +7,7 @@ remediados en 4 fases y después revisados por dos jueces ciegos.
 original **no se podía desplegar** (sin TLS) y tenía cuatro rutas rotas en el flujo
 principal. Todo eso está corregido y verificado.
 
-**Estado actual: 390 tests pytest + 38 node en verde** (partían de 258).
+**Estado actual: 391 tests pytest + 38 node (con un flake conocido, ver abajo)** (partían de 258).
 
 ## Por dónde empezar
 

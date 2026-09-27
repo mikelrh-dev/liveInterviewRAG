@@ -4,9 +4,8 @@ Ordenado por severidad técnica, tal como quedó en `AUDITORIA-2026-09-27.md`. L
 
 Leyenda de esfuerzo: **S** = horas · **M** = un día · **L** = varios días.
 
-> **Estado 2026-09-27:** Fases 1, 2 y 3 completadas y verificadas. **380 tests pytest + 38 node en verde** (partían de 258). `main.py` pasó de 1035 a 251 líneas. Pendiente de despliegue en el VPS: certificado TLS y los dos ficheros de configuración. **3.1 sigue siendo tarea humana**: resolver los 16 `[TODO]` y promover las 12 páginas `medium` de la wiki — eso exige datos personales que solo tienes tú.
+> **Estado 2026-09-27:** Fases 1, 2 y 3 completadas y verificadas. **391 tests pytest + 38 node** (con un flake conocido, ver `VERIFICACION.md`)
 
-> **Estado 2026-09-27:** Fases 1, 2 y 3 completadas y verificadas. **380 tests pytest + 38 node en verde** (partían de 258). `main.py` pasó de 1035 a 251 líneas. **Pendiente de despliegue en el VPS:** emitir el certificado TLS y subir `nginx/interview.conf` + `interviewtts.service`. El redirect 80→443 y el HSTS se activan **siguiendo el orden que documenta el propio fichero de nginx**.
 >
 > **3.1 sigue siendo tarea humana:** resolver los 16 `[TODO]` y promover las 12 páginas `medium` exige datos personales que solo tienes tú. El chunker ya no sirve los marcadores al LLM, así que el sistema no se auto-contamina mientras tanto, pero el hueco de contenido sigue ahí.
 
@@ -42,7 +41,7 @@ curl -I http://TU-DOMINIO/             # 301 a https
 Test-NetConnection -ComputerName TU-VPS-IP -Port 8000   # TcpTestSucceeded: False
 # 3. El limitador ahora es por IP: dos clientes a la vez dan contadores independientes
 # 4. Nada se rompió
-venv\Scripts\python.exe -m pytest tests/ -q -p no:cacheprovider   # 380 passed
+venv\Scripts\python.exe -m pytest tests/ -q -p no:cacheprovider   # 391 passed
 ```
 
 ---
@@ -82,7 +81,7 @@ venv\Scripts\python.exe -m pytest tests/ -q -p no:cacheprovider   # 380 passed
 **Cómo verificar la Fase 2**
 
 ```powershell
-venv\Scripts\python.exe -m pytest tests/ -q -p no:cacheprovider   # 380 passed, más los nuevos
+venv\Scripts\python.exe -m pytest tests/ -q -p no:cacheprovider   # 391 passed
 venv\Scripts\python.exe scripts/wiki/validate.py --wiki wiki/     # 0 errores, 65 warnings
 # A mano, en el navegador: pregunta algo del FAQ ("preséntate") y DEBES oír la respuesta
 # A mano: termina con "gracias, eso es todo" y DEBES oír la despedida
@@ -112,7 +111,7 @@ Mantenimiento y contenido. Nada aquí rompe el producto hoy, pero 2.6 y 2.7 rely
 **Cómo verificar la Fase 3**
 
 ```powershell
-venv\Scripts\python.exe -m pytest tests/ -q -p no:cacheprovider   # 380 passed + los nuevos de contrato
+venv\Scripts\python.exe -m pytest tests/ -q -p no:cacheprovider   # 391 passed
 venv\Scripts\python.exe scripts/wiki/validate.py --wiki wiki/     # 0 errores
 venv\Scripts\python.exe -c "import backend.main"                 # arranca sin RuntimeError
 Select-String -Path "wiki\**\*.md" -Pattern "\[TODO"              # 0 coincidencias
@@ -139,7 +138,7 @@ El resto de los MEDIO y todos los BAJO están en `HALLAZGOS.md` y en los informe
 **Cómo verificar la Fase 4**
 
 ```powershell
-venv\Scripts\python.exe -m pytest tests/ -q -p no:cacheprovider   # 380 passed
+venv\Scripts\python.exe -m pytest tests/ -q -p no:cacheprovider   # 391 passed
 # Tokens CSS: ningún var(--x) referenciado sin definir en :root
 $root = Select-String -Path "frontend\style.css" -Pattern "^\s*--([a-z-]+):" -AllMatches
 # Contraste: --outline-variant debe dar >= 3:1 sobre #111111
