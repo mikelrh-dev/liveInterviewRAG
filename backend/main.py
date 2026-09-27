@@ -1,36 +1,53 @@
-"""InterviewTTS — FastAPI application with voice interview pipeline."""
+"""InterviewTTS — application composition root.
+
+This module builds the object graph and nothing else. It constructs every
+service once, assembles the FastAPI application, and starts the background
+sweep. The behaviour lives in focused modules beside it:
+
+    backend.routers.*      the HTTP surface, one module per resource
+    backend.turns.*        one request in, one answer out
+    backend.conversation   in-process session state and write-through
+    backend.maintenance    the periodic sweep
+    backend.uploads        audio intake and the single size ceiling
+    backend.middleware     guards that must run before a route
+    backend.client_ip      client identity behind a reverse proxy
+    backend.sse            the SSE wire format
+    backend.farewell       end-of-interview detection
+
+The service objects defined below are the process-wide singletons, and those
+module-level names are the canonical handle on them. Everything else reaches
+them through ``backend.container``, which reads them off this module on each
+call: binding an instance at import time would freeze it, and the singletons are
+swappable at runtime (the test suite replaces them with doubles).
+
+This module also re-exports the names the rest of the backend, and the test
+suite, import from here — ``conversations``, ``periodic_cleanup``,
+``send_message`` and friends now live in the modules above but keep working
+from here so no caller has to know the move happened.
+"""
 
 import asyncio
 import logging
 import os
 import time
-import uuid
 from contextlib import asynccontextmanager, suppress
-from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
-from fastapi.staticfiles import StaticFiles
 
 # Load .env before anything else
 load_dotenv()
 
-from backend.client_ip import (  # noqa: F401  (re-exported)
-    _TRUSTED_HOP_PROPERTIES,
-    _is_trusted_hop,
-    resolve_client_ip,
-)
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+
+from backend.client_ip import resolve_client_ip  # noqa: F401  (re-exported)
 from backend.config import config
 from backend.conversation import (  # noqa: F401  (re-exported)
     _rate_limit_store,
     build_conversation_context,
     conversations,
-    get_conversation_or_hydrate,
-    persist_turn,
-    turn_done_payload,
     update_conversation_summary,
 )
 from backend.farewell import detect_farewell  # noqa: F401  (re-exported)
@@ -42,7 +59,10 @@ from backend.middleware import (  # noqa: F401  (re-exported)
     MaxBodySizeMiddleware,
     RateLimitMiddleware,
 )
-from backend.prompts.candidate import build_system_prompt, sanitize_for_tts
+from backend.routers import conversations as conversation_routes
+from backend.routers import system as system_routes
+from backend.routers import turns as turn_routes
+from backend.routers.turns import send_message, send_message_stream  # noqa: F401
 from backend.services.candidate import CandidateProfile
 from backend.services.llm import LLMService
 from backend.services.persistence import PersistenceService
@@ -51,30 +71,9 @@ from backend.services.report import ReportService
 from backend.services.semantic_cache import SemanticAnswerCache
 from backend.services.stt import STTService
 from backend.services.tts import TTSService
-from backend.sse import sse_format  # noqa: F401  (re-exported)
-from backend.turns.blocking import run_turn
-from backend.turns.streaming import build_stream
-from backend.uploads import (  # noqa: F401  (re-exported)
-    MAX_AUDIO_SIZE,
-    _audio_extension,
-    stage_upload,
-)
+from backend.uploads import MAX_AUDIO_SIZE  # noqa: F401  (re-exported)
 
 logger = logging.getLogger(__name__)
-
-
-# ─── Session state ──────────────────────────────────────
-# conversations, _rate_limit_store, the rolling summary and the write-through
-# now live in backend/conversation.py; farewell detection in
-# backend/farewell.py; the periodic sweep in backend/maintenance.py. All are
-# re-exported above so existing importers keep working.
-
-
-
-# ─── Transport plumbing ──────────────────────────────────
-# Client-IP resolution, the size ceiling, the SSE envelope and both middlewares
-# now live in backend/client_ip.py, backend/uploads.py, backend/sse.py and
-# backend/middleware.py. Re-exported above for existing importers.
 
 # Services (initialized at startup)
 stt_service = STTService(
@@ -90,10 +89,24 @@ llm_service = LLMService(
     google_api_key=config.GOOGLE_API_KEY,
     google_model=config.GOOGLE_MODEL,
 )
+
+# NOTE: TTSService.__init__ also creates its output directory. That is a side
+# effect of a service, not a statement of intent, so the mount below does not
+# rely on it -- see ensure_audio_dir().
 tts_service = TTSService(
     voice=config.TTS_VOICE,
     output_dir=config.AUDIO_DIR,
 )
+
+# CHUNK_SIZE=400 / CHUNK_OVERLAP=50 are unreachable with the current corpus, so
+# RAGPipeline._chunk_document never takes its splitting branch. Measured over
+# the 38 candidate/wiki documents the pipeline actually ingests: 214 chunks,
+# median 31 words, p95 107, longest 210, and ZERO chunks reach 400 words. The
+# distribution is also bottom-heavy -- 37.4% are under 15 words -- so the
+# settings that would matter are the opposite end: a ceiling that actually bites
+# would need to be far lower, and the overlap only matters once it does.
+# Left as-is because rag.py is out of scope for this change; the constants are
+# consumed here, so this is the place the measurement belongs until then.
 rag_pipeline = RAGPipeline(
     chunk_size=config.CHUNK_SIZE,
     chunk_overlap=config.CHUNK_OVERLAP,
@@ -113,6 +126,23 @@ persistence = PersistenceService(config.DB_PATH, enabled=config.PERSISTENCE_ENAB
 
 # Semantic answer cache (Cap-3): reuses the RAG embedder via a provider — no
 # second model load. Shares the same SQLite DB; schema is ensured lazily.
+#
+# MEASURED: at SEMANTIC_CACHE_THRESHOLD=0.93 this cache cannot return a hit.
+# Embedding 20 Spanish recruiter questions (60 phrasings, the population the
+# FAQ literal cache does not intercept) with the real all-MiniLM-L6-v2 gives
+# paraphrase pairs a median cosine of 0.537 and a maximum of 0.855, so 0 of 60
+# clear 0.93. Cross-question pairs — the false positives a hit would cause —
+# peak at 0.779. So the lowest threshold with zero false positives is 0.779, and
+# it still catches only 6.7% of paraphrases. There is no value that both serves
+# paraphrases and rejects a different question: the distributions overlap.
+# Meanwhile every first-substantive turn pays an encode() plus a SELECT for that
+# guaranteed miss, so the cost is real and the benefit is currently nil.
+# The threshold was never measured: tests/test_semantic_cache.py drives it with
+# a FakeEmbedder whose fallback vectors are MD5-seeded random, which makes
+# unrelated texts near-orthogonal and never exercises the band at all.
+# Not changed here — the fix is a multilingual embedder or retiring the cache,
+# not a number, and config.py is out of scope. Startup logs the warning so the
+# cost is visible rather than inferred.
 semantic_cache = SemanticAnswerCache(
     config.DB_PATH,
     lambda: rag_pipeline.embedder,
@@ -176,6 +206,15 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("Report dir/cleanup failed at startup: %s", e)
 
+    if semantic_cache.enabled:
+        logger.warning(
+            "Semantic answer cache is ON with threshold %.2f, which measurement "
+            "shows can never hit: each first-substantive turn pays an embedding "
+            "plus a SELECT for a guaranteed miss. Set SEMANTIC_CACHE_ENABLED=false "
+            "until the embedder or the threshold is revisited.",
+            semantic_cache.threshold,
+        )
+
     # Spawn periodic cleanup task
     cleanup_interval = config.AUDIO_CLEANUP_INTERVAL_MIN * 60
     cleanup_task = asyncio.create_task(
@@ -219,6 +258,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 # ─── Audio directory bootstrap ───────────────────────────
 def ensure_audio_dir() -> Path:
     """Create the audio directory and return it.
@@ -242,120 +282,10 @@ def ensure_audio_dir() -> Path:
 AUDIO_DIR = ensure_audio_dir()
 app.mount("/audio", StaticFiles(directory=str(AUDIO_DIR)), name="audio")
 
-
-@app.get("/api/health")
-async def health_check():
-    """Return service health status."""
-    return {
-        "status": "ok",
-        "whisper_loaded": stt_service.is_loaded,
-        "rag_chunks": len(rag_pipeline.chunks),
-        "candidate_loaded": candidate_profile.profile_data is not None,
-    }
-
-
-@app.get("/api/config")
-async def get_config():
-    """Return active model configuration for the sidebar UI."""
-    return {
-        "tts_voice": config.TTS_VOICE,
-        "stt_model": config.WHISPER_MODEL,
-        "stt_device": config.WHISPER_DEVICE,
-        "llm_model": config.LLM_MODEL,
-        "google_model": config.GOOGLE_MODEL,
-        "rag_top_k": config.RAG_TOP_K,
-        "max_tokens": config.LLM_MAX_TOKENS,
-    }
-
-
-# ─── Conversation memory ────────────────────────────────────
-# Moved to backend/conversation.py: the conversations and _rate_limit_store
-# dicts, the rolling summary, DB hydration, build_conversation_context and
-# the write-through persist_turn. Re-exported above for existing importers.
-
-
-@app.post("/api/conversation")
-async def create_conversation():
-    """Create a new conversation session."""
-    conversation_id = uuid.uuid4().hex
-    welcome = "¡Hola! Soy Mikel, desarrollador junior DAM. Pregúntame sobre mi experiencia, proyectos o habilidades."
-
-    now_iso = datetime.utcnow().isoformat()
-    conversations[conversation_id] = {
-        "id": conversation_id,
-        "messages": [],
-        "turns": [],
-        "summary": "",  # Rolling summary of older turns (for memory beyond recent_count)
-        "created_at": now_iso,
-        "last_activity_at": now_iso,
-    }
-    logger.info("Created conversation: %s", conversation_id)
-
-    # Write-through: persist the creation immediately (spec: Conversation
-    # creation persists). Failures are swallowed inside the service.
-    await asyncio.to_thread(
-        persistence.record_conversation, conversation_id, "", now_iso, now_iso
-    )
-
-    return {
-        "conversation_id": conversation_id,
-        "welcome_message": welcome,
-    }
-
-
-@app.post("/api/conversation/{conversation_id}/message")
-async def send_message(conversation_id: str, audio: UploadFile = File(...)):
-    """Process a voice message through the full pipeline: STT → RAG → LLM → TTS."""
-    # Validate conversation exists (hydrates from DB on memory miss)
-    conversation = await get_conversation_or_hydrate(conversation_id)
-    # First-substantive-turn rule (design D10): evaluated post-hydration,
-    # pre-generation. Turns are appended post-generation, so only the
-    # recruiter's opening question is ever looked up or stored.
-    is_first_substantive = len(conversation.get("turns", [])) == 0
-
-    temp_audio = await stage_upload(conversation_id, audio)
-
-    try:
-        return await run_turn(conversation_id, temp_audio, is_first_substantive)
-    finally:
-        # Clean up temp audio
-        if temp_audio.exists():
-            temp_audio.unlink(missing_ok=True)
-
-
-@app.post("/api/conversation/{conversation_id}/message/stream")
-async def send_message_stream(conversation_id: str, audio: UploadFile = File(...)):
-    """Streaming version: STT + RAG + LLM (SSE tokens) + TTS + audio URL.
-
-    See ``backend.turns.streaming`` for the event contract, which is documented
-    there next to the code that emits it.
-    """
-    # Validate conversation exists (hydrates from DB on memory miss)
-    await get_conversation_or_hydrate(conversation_id)
-
-    temp_audio = await stage_upload(conversation_id, audio)
-
-    # The generator, not this function, owns the temp file: it is only finished
-    # once the response body has been read, which is after this returns.
-    return StreamingResponse(
-        build_stream(conversation_id, temp_audio), media_type="text/event-stream"
-    )
-
-
-@app.get("/api/conversation/{conversation_id}/context")
-async def get_conversation_context(conversation_id: str, turn: int = 0):
-    """Return the RAG chunks used for a specific conversation turn."""
-    await get_conversation_or_hydrate(conversation_id)
-
-    conv = conversations[conversation_id]
-    turns = conv.get("turns", [])
-    matching_turn = next((t for t in turns if t["n"] == turn), None)
-
-    if matching_turn is None:
-        raise HTTPException(status_code=404, detail=f"Turn {turn} not found")
-
-    return matching_turn.get("chunks_used", [])
-
+# Endpoints. The frontend mount below claims "/", so it has to come last.
+app.include_router(system_routes.router)
+app.include_router(conversation_routes.router)
+app.include_router(turn_routes.router)
 
 # Serve frontend static files
 if config.FRONTEND_DIR.exists():
