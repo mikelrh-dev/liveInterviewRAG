@@ -903,6 +903,44 @@ async function fetchWithBackoff(url, options, maxRetries = 5) {
 
 // ─── SSE pipeline ──────────────────────────────────────
 
+/**
+ * Terminal-state owner for one interview turn.
+ *
+ * Contract: a turn settles EXACTLY ONCE, whichever terminal signal arrives
+ * first — `done`, `error`, `interview_end`, or stream EOF. Later signals are
+ * no-ops, so a `done` followed by an `error` (or an `interview_end` followed
+ * by EOF) cannot tear the turn down twice.
+ *
+ * EOF counts as terminal on purpose: a truncated stream (client disconnect,
+ * provider death) gives the frontend nothing to distinguish it from a normal
+ * end, so without this the mic never restarts and the audio indicator spins
+ * on forever.
+ *
+ * Side effects are injected as hooks so this stays testable without a DOM.
+ * See tests/frontend/terminal_state.test.mjs.
+ *
+ * @param {{onSettle?: (reason: string) => void}} [hooks]
+ * @returns {{settle: (reason: string) => boolean, isSettled: () => boolean}}
+ */
+function createTurnSettler(hooks) {
+    let settled = false;
+    return {
+        isSettled: () => settled,
+        /**
+         * @param {string} reason Terminal signal that arrived.
+         * @returns {boolean} true if this call performed the settlement.
+         */
+        settle(reason) {
+            // Set before the callback so a re-entrant settle() from within
+            // onSettle is a no-op instead of recursing.
+            if (settled) return false;
+            settled = true;
+            if (hooks && hooks.onSettle) hooks.onSettle(reason);
+            return true;
+        },
+    };
+}
+
 async function processRecordingStream() {
     if (audioChunks.length === 0) {
         // Nothing captured (e.g. instant stop): release the processing
@@ -927,6 +965,28 @@ async function processRecordingStream() {
 
     let fullText = "";
     let lastTurnNumber = -1;
+
+    // One settler per turn: the single owner of terminal bookkeeping, so
+    // `done`, `error`, `interview_end` and EOF cannot each tear down the turn
+    // independently.
+    const turn = createTurnSettler({
+        onSettle(reason) {
+            // A terminal event means the answer is complete, whatever ended
+            // it. This is what unblocks the mic: checkAllDone() restarts
+            // listening once the audio queue has drained.
+            allChunksReceived = true;
+            hideTyping();
+            removeAudioIndicator();
+            const settledTurn = getCurrentTurnNumber();
+            if (settledTurn >= 0) {
+                updateTurnCount(settledTurn + 1);
+                fetchContext(settledTurn);
+            }
+            if (reason === "done" || reason === "eof") {
+                setStatus("Escuchando…");
+            }
+        },
+    });
 
     try {
         const res = await fetchWithBackoff(
@@ -990,35 +1050,17 @@ async function processRecordingStream() {
                     audioQueue.push({ id, url: event.data.url });
                     tryPlayNextChunk();
                 } else if (type === "done") {
-                    allChunksReceived = true;
-                    // Update sidebar turn count
-                    updateTurnCount(Math.max(0, getCurrentTurnNumber() + 1));
-                    // Fetch context for this turn
+                    turn.settle("done");
                     lastTurnNumber = getCurrentTurnNumber();
-                    if (lastTurnNumber >= 0) {
-                        fetchContext(lastTurnNumber);
-                    }
                     if (audioQueue.length === 0 && !isAudioPlaying) {
                         if (isInterviewActive) startListening();
                     }
                 } else if (type === "interview_end") {
-                    // Terminal event for the farewell path. It carries the same
-                    // bookkeeping as `done`: without the turn-counter update
-                    // the sidebar lags the persisted turn count by one,
-                    // because the farewell turn is persisted but never `done`.
-                    allChunksReceived = true;
-                    updateTurnCount(Math.max(0, getCurrentTurnNumber() + 1));
-                    const farewellTurn = getCurrentTurnNumber();
-                    if (farewellTurn >= 0) {
-                        fetchContext(farewellTurn);
-                    }
-                    if (currentCandidateDiv) {
-                        const indicator =
-                            currentCandidateDiv.querySelector(
-                                ".audio-indicator",
-                            );
-                        if (indicator) indicator.remove();
-                    }
+                    // Terminal event for the farewell path. The turn counter
+                    // update lives in the settler, so the sidebar cannot lag
+                    // the persisted turn count the way it did when only the
+                    // `done` branch carried that bookkeeping.
+                    turn.settle("interview_end");
                     stopInterview();
                 } else if (type === "error") {
                     const chunkId = event.data ? event.data.id : undefined;
@@ -1027,7 +1069,9 @@ async function processRecordingStream() {
                         Number.isFinite(chunkId)
                     ) {
                         // Recoverable per-chunk TTS failure: skip past that
-                        // chunk instead of aborting the whole stream.
+                        // chunk instead of aborting the whole stream. The turn
+                        // is NOT settled here — more audio and a later `done`
+                        // are still expected.
                         console.warn(
                             `TTS chunk ${chunkId} failed server-side — skipping:`,
                             event.data.detail || "TTS synthesis failed",
@@ -1036,20 +1080,38 @@ async function processRecordingStream() {
                         advancePastSkippedChunks();
                         tryPlayNextChunk();
                     } else {
-                        throw new Error(
-                            event.data.detail || "Error del servidor",
-                        );
+                        // Fatal server-side error. Surface it and settle the
+                        // turn so the mic comes back and the candidate can
+                        // retry or end the interview. This used to throw out
+                        // of the read loop into the catch below, which called
+                        // stopInterview() — one failed sentence ended the
+                        // whole session.
+                        const detail =
+                            (event.data && event.data.detail) || "Error del servidor";
+                        addMessage("error", detail);
+                        setStatus("Error", true);
+                        turn.settle("error");
                     }
                 }
             }
         }
+
+        // Stream EOF. A well-formed stream already settled on `done` or
+        // `interview_end`; a truncated one has not, and settling here is what
+        // keeps the mic from being stranded.
+        turn.settle("eof");
     } catch (e) {
         console.error("SSE pipeline error:", e);
-        hideTyping();
         addMessage("error", e.message || "Algo salió mal.");
         setStatus("Error", true);
+        // Transport-level failure (HTTP error, network drop). We do not know
+        // what the server did, so the interview cannot be trusted to be in a
+        // clean state; end it rather than let the candidate talk into a void.
         stopInterview();
     } finally {
+        // Backstop: settles if neither a terminal event nor a clean EOF was
+        // reached (e.g. the catch above took over).
+        turn.settle("eof");
         isProcessing = false;
         btnMic.disabled = false;
         checkAllDone();

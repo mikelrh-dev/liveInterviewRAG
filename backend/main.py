@@ -834,6 +834,10 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
         queue: asyncio.Queue = asyncio.Queue()
         full_response = ""
         _t_start = time.time()
+        # Terminal-event contract: exactly one `done` or `interview_end` per
+        # stream. Set at each terminal yield and asserted in the finally block,
+        # so a new early return cannot silently truncate the stream.
+        terminal_emitted = False
 
         try:
             # ── Step 1: STT ──────────────────────────────────────
@@ -843,7 +847,13 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
             yield sse_format("transcription", {"text": user_text})
 
             if not user_text.strip():
+                # A silent recording is a failed turn, not a failed interview:
+                # report it and terminate so the frontend can hand the mic
+                # back. Without a terminal event the stream just stops, which
+                # the browser cannot distinguish from a network drop.
                 yield sse_format("error", {"detail": "No se detectó voz en el audio"})
+                yield sse_format("done", {})
+                terminal_emitted = True
                 return
 
             # First-substantive-turn rule (design D10): evaluated post-hydration,
@@ -856,8 +866,10 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
             async def emit_cached_answer(response_text: str):
                 """Shared FAQ/semantic hit contract (verbatim token, single-file
                 TTS, chunks tracked for the panel, memory + DB write-through,
-                audio_url + done). Returns early on TTS failure without storing.
+                audio_url + done). On TTS failure it reports the error, stores
+                nothing, and still terminates the stream with `done`.
                 """
+                nonlocal terminal_emitted
                 yield sse_format("token", {"text": response_text})
 
                 # Synthesize the answer as a single audio file
@@ -866,9 +878,15 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
                 try:
                     clean_text = sanitize_for_tts(response_text)
                     await tts_service.synthesize(clean_text, output_path=output_audio)
-                except RuntimeError as e:
-                    logger.error("TTS synthesis failed for cached answer: %s", e)
+                except Exception as e:
+                    logger.error(
+                        "TTS synthesis failed for cached answer: %s",
+                        e,
+                        exc_info=True,
+                    )
                     yield sse_format("error", {"detail": f"TTS synthesis failed: {e}"})
+                    yield sse_format("done", {})
+                    terminal_emitted = True
                     return
 
                 # Retrieve chunks for context tracking (same as LLM path)
@@ -903,6 +921,7 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
                     "audio_url", {"url": f"/audio/{conversation_id}/{message_id}.mp3"}
                 )
                 yield sse_format("done", {})
+                terminal_emitted = True
 
             # ── Farewell check ──────────────────────────────────
             if detect_farewell(user_text):
@@ -937,6 +956,7 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
                     yield sse_format("audio_url", {"url": audio_url})
 
                 yield sse_format("interview_end", {"message": farewell})
+                terminal_emitted = True
                 # Store the farewell in conversation (messages + turns stay in
                 # sync so build_conversation_context sees the full history).
                 # audio_url is empty when TTS failed, so a later read of the
@@ -1066,6 +1086,11 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
                             yield sse_format(
                                 "error", {"detail": f"Error en respuesta: {data}"}
                             )
+                            # Terminate: a provider that dies mid-generation
+                            # leaves nothing to stream, and the frontend needs
+                            # a terminal event to hand the mic back.
+                            yield sse_format("done", {})
+                            terminal_emitted = True
                             return
 
                         elif kind == "token":
@@ -1158,13 +1183,33 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
                 await asyncio.to_thread(semantic_cache.store, user_text, full_response)
 
             yield sse_format("done", {})
+            terminal_emitted = True
 
         except HTTPException:
+            # Deliberate escape hatch: re-raise rather than report a
+            # half-started stream. No code path inside the generator raises
+            # this today (all validation happens before StreamingResponse is
+            # built), so it is a guard, not a live branch.
             raise
         except Exception as e:
             logger.error("Stream pipeline error: %s", e, exc_info=True)
-            yield sse_format("error", {"detail": str(e)})
+            # An exception mid-iteration is the one case the client cannot see
+            # coming, so it must arrive as a reported error AND a terminal
+            # event. Without the terminal event the browser sees a truncated
+            # body, which it reads as a network drop: the mic never restarts.
+            if not terminal_emitted:
+                yield sse_format("error", {"detail": str(e)})
+                yield sse_format("done", {})
+                terminal_emitted = True
         finally:
+            if not terminal_emitted:
+                # Reaching here means some path returned without a terminal
+                # event. Logged rather than patched over: a terminal event
+                # emitted from this finally would risk yielding into a closing
+                # generator, and an unterminated stream is a bug worth seeing.
+                logger.error(
+                    "Stream for %s ended without a terminal event", conversation_id
+                )
             if temp_audio.exists():
                 temp_audio.unlink(missing_ok=True)
 

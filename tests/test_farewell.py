@@ -225,24 +225,35 @@ class TestFarewellTurnConsistency:
     def test_interview_end_advances_the_turn_counter(self, client, mock_services):
         """interview_end must drive the same terminal bookkeeping as done.
 
-        The frontend's turn-counter update lives in the ``done`` branch. If the
-        farewell terminates on interview_end without that update, the sidebar
-        never advances regardless of what the backend persists.
+        The turn counter advances on settlement. If the farewell terminates on
+        interview_end without settling, the sidebar lags the persisted turn
+        count by exactly one -- which is what happened while that update lived
+        only inside the `done` branch.
         """
-        from tests.test_sse_contract import handled_event_types, FRONTEND_APP
+        from tests.test_sse_contract import FRONTEND_APP
 
         source = FRONTEND_APP.read_text(encoding="utf-8")
-        assert "interview_end" in handled_event_types()
-
-        # Locate the interview_end branch and check it performs the same
-        # counter update the done branch does.
         branch_start = source.index('type === "interview_end"')
-        branch_end = source.index('type === "error"', branch_start)
-        branch = source[branch_start:branch_end]
+        branch = source[branch_start : source.index('type === "error"', branch_start)]
 
-        assert "updateTurnCount" in branch, (
-            "the interview_end branch does not advance the turn counter, so the "
+        assert "turn.settle(" in branch, (
+            "the interview_end branch must settle the turn, otherwise the "
             "sidebar lags the persisted turn count by one"
+        )
+        assert "stopInterview()" in branch, (
+            "the farewell must still end the interview session"
+        )
+
+        # The counter advance is the settler hook's job, shared by all
+        # terminal events.
+        from tests.test_sse_terminal_state import _sse_dispatch_body
+
+        call_site = _sse_dispatch_body()
+        hook = call_site[
+            call_site.index("onSettle(reason)") : call_site.index("try {")
+        ]
+        assert "updateTurnCount(" in hook, (
+            "settling must advance the turn counter for every terminal event"
         )
 
     def test_farewell_turn_number_is_sequential(self, client, mock_services):
