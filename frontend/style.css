@@ -15,7 +15,12 @@
     --stellar-blue: #1E293B;
     --hazard-red: #FF3B30;
     --outline: #8e9192;
-    --outline-variant: #444748;
+    /* Lightened from #444748, which sat at 1.66:1 — 2.24:1 — against every
+       dark surface it borders. This carries the WCAG 1.4.11 3:1 minimum on
+       all eight of them (worst case 3.25:1, on .chunk-pill's fill) and stays a
+       clear step below --outline above, so the two outline roles remain
+       distinguishable. See tests/frontend/style_tokens.test.mjs. */
+    --outline-variant: #707374;
 
     /* Cyan accent (avatar zone only — used via plain CSS, not Tailwind) */
     --cyan-accent: #00d4ff;

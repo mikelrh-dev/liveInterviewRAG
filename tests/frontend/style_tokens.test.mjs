@@ -98,3 +98,127 @@ test("the disclaimer card renders the container surface, not nothing", () => {
         `disclaimer-card background uses undefined ${token}`,
     );
 });
+
+// ─── WCAG 1.4.11 Non-text Contrast (AA) ────────────────────────────────────
+
+/** WCAG 2.x relative luminance of an sRGB triple. */
+function luminance([r, g, b]) {
+    const channel = (c) => {
+        const s = c / 255;
+        return s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+    };
+    return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
+}
+
+function contrast(a, b) {
+    const [hi, lo] = [luminance(a) + 0.05, luminance(b) + 0.05];
+    return Math.max(hi, lo) / Math.min(hi, lo);
+}
+
+const toRgb = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+
+/** Source alpha compositing, so a translucent fill is judged on what it paints. */
+function over(foreground, alpha, background) {
+    return foreground.map((c, i) => Math.round(c * alpha + background[i] * (1 - alpha)));
+}
+
+/** Literal value of a `:root` custom property (the surfaces are tokens). */
+function rootValue(name) {
+    const block = css.slice(css.indexOf(":root"), css.indexOf("}", css.indexOf(":root")));
+    const value = block.match(new RegExp(`${name}\\s*:\\s*([^;]+);`))?.[1]?.trim();
+    assert.ok(value, `:root does not declare ${name}`);
+    assert.match(value, /^#[0-9a-f]{6}$/i, `${name} is not a plain hex colour: ${value}`);
+    return toRgb(value);
+}
+
+/** The declarations of one rule, looked up by its exact selector. */
+function rule(selector, property) {
+    const start = css.indexOf(selector + " {");
+    assert.notEqual(start, -1, `rule \`${selector}\` not found in style.css`);
+
+    const open = css.indexOf("{", start);
+    let depth = 0;
+    for (let i = open; i < css.length; i++) {
+        if (css[i] === "{") depth++;
+        else if (css[i] === "}") {
+            depth--;
+            if (depth === 0) {
+                const body = css.slice(open + 1, i);
+                const value = body.match(new RegExp(`(?:^|;)\\s*${property}\\s*:\\s*([^;]+)`))?.[1];
+                assert.ok(value, `\`${selector}\` declares no ${property}`);
+                return value.trim();
+            }
+        }
+    }
+    throw new Error(`unbalanced braces reading \`${selector}\``);
+}
+
+/** `rgba(r, g, b, a)` from a rule, resolved against a surface underneath it. */
+function fillOver(selector, surface) {
+    const value = rule(selector, "background");
+    const rgba = value.match(/^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*([\d.]+)\s*\)$/);
+    assert.ok(rgba, `${selector} background is not a plain rgba(): ${value}`);
+    return over([+rgba[1], +rgba[2], +rgba[3]], Number(rgba[4]), surface);
+}
+
+/**
+ * Every colour `--outline-variant` is drawn against.
+ *
+ * WCAG 1.4.11 is per-surface: a token that clears 3:1 on the sidebar and
+ * fails it on a black conversation column is still a failure, and the token
+ * carries the *only* border on `#context-toggle`, `.chunk-pill` and
+ * `.disclaimer-card`. The translucent fills are resolved from the stylesheet
+ * itself so a fill change is re-measured instead of silently going stale.
+ */
+const BORDER_TOKEN = "--outline-variant";
+const MIN_RATIO = 3.0;
+
+const SURFACES = () => {
+    const deep = rootValue("--bg-deep");
+    const stardust = rootValue("--bg-stardust");
+    const voidBlack = rootValue("--bg-void");
+    const container = rootValue("--bg-container");
+
+    return [
+        // `header` bottom border and `#context-toggle` rest on --bg-deep.
+        { where: "--bg-deep (header, #context-toggle)", rgb: deep },
+        // `#sidebar`, `#context-panel`, its header rule and `#context-close`.
+        { where: "--bg-stardust (sidebar, context panel, #context-close)", rgb: stardust },
+        // `.bubble`, `.typing-bubble` and the conversation scrollbar.
+        { where: "--bg-void (main: bubbles, scrollbar thumb)", rgb: voidBlack },
+        // The card's border has a colour on each side: overlay outside, fill in.
+        {
+            where: "disclaimer card, outside — .overlay--disclaimer over --bg-deep",
+            rgb: fillOver(".overlay--disclaimer", deep),
+        },
+        { where: "disclaimer card + orbit, inside — --bg-container", rgb: container },
+        { where: ".chunk-pill fill", rgb: fillOver(".chunk-pill", stardust) },
+        { where: ".chunk-pill.expanded fill", rgb: fillOver(".chunk-pill.expanded", stardust) },
+        { where: ".bubble / .typing-bubble fill", rgb: fillOver(".message.candidate .bubble", voidBlack) },
+    ];
+};
+
+test("the outline-variant token is actually painted as a border somewhere", () => {
+    // Guards the surface table below: if nobody drew this token, the contrast
+    // test would pass on a list that no longer describes the stylesheet.
+    const borders = [...css.matchAll(/border(?:-[a-z]+)?:\s*[^;]*var\(\s*--outline-variant/g)];
+    assert.ok(borders.length >= 8, `only ${borders.length} borders use ${BORDER_TOKEN}`);
+});
+
+test(`${BORDER_TOKEN} clears WCAG 1.4.11 (3:1) on every surface it borders`, () => {
+    const token = rootValue(BORDER_TOKEN);
+    const failures = [];
+
+    for (const surface of SURFACES()) {
+        const ratio = contrast(token, surface.rgb);
+        if (ratio < MIN_RATIO) {
+            const rgb = `rgb(${surface.rgb.join(", ")})`;
+            failures.push(
+                `${BORDER_TOKEN} on ${surface.where} (${rgb}): ` +
+                    `${ratio.toFixed(2)}:1 < ${MIN_RATIO}:1`,
+            );
+        }
+    }
+
+    assert.deepEqual(failures, [], `non-text contrast below 3:1:\n  ${failures.join("\n  ")}`);
+});
