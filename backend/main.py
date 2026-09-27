@@ -656,7 +656,7 @@ async def send_message(conversation_id: str, audio: UploadFile = File(...)):
     try:
         # Step 1: STT — transcribe audio
         try:
-            user_text = stt_service.transcribe(temp_audio)
+            user_text = await asyncio.to_thread(stt_service.transcribe, temp_audio)
         except Exception as e:
             raise HTTPException(
                 status_code=422, detail=f"Could not transcribe audio: {e}"
