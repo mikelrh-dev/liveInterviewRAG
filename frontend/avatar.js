@@ -3,10 +3,20 @@
  * Two layers: outer halo (soft glow) and energy rings (expanding toruses that
  * react to voice). The avatar videos are the primary visual.
  * Graceful degradation if Three.js fails — videos still play.
+ *
+ * Honours `prefers-reduced-motion`, which the stylesheet already did for CSS
+ * animation. Reduced motion here means the orb stops *animating*, not that it
+ * stops working: state changes and resizes still repaint, because that is how
+ * the avatar says whether it is listening, speaking or processing. What stops
+ * is the free-running part — the idle breathing and the perpetual rotation.
+ * Per-frame mic volume does not repaint under reduced motion, since a
+ * continuous decorative response is exactly what the user asked us not to do.
  */
 
 (function () {
     'use strict';
+
+    const REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)';
 
     let scene, camera, renderer;
     let outerHalo, ringGroup;
@@ -14,8 +24,16 @@
     let currentVolume = 0;
     let idlePhase = 0;
     let currentBoost = 1.0;
+    let frameHandle = null;
+    let reducedMotion = false;
 
     const canvas = document.getElementById('orb-canvas');
+
+    // Read live, not at load: the user can change this mid-session, and a
+    // snapshotted preference would ignore them.
+    const motionQuery = typeof window.matchMedia === 'function'
+        ? window.matchMedia(REDUCED_MOTION_QUERY)
+        : null;
 
     /**
      * Initialize the Three.js scene. Returns true on success, false on failure.
@@ -83,7 +101,16 @@
             isInitialized = true;
             canvas.classList.remove('hidden');
 
-            animate();
+            if (motionQuery) {
+                reducedMotion = motionQuery.matches;
+                if (typeof motionQuery.addEventListener === 'function') {
+                    motionQuery.addEventListener('change', onMotionPreferenceChange);
+                } else if (typeof motionQuery.addListener === 'function') {
+                    motionQuery.addListener(onMotionPreferenceChange); // Safari < 14
+                }
+            }
+
+            startLoop();
             return true;
         } catch (e) {
             console.warn('Three.js orb init failed, using image fallback:', e.message);
@@ -100,21 +127,78 @@
     }
 
     /**
-     * Animation loop (60fps target).
+     * Animation loop (60fps target). Under reduced motion this draws one
+     * static frame and arms nothing: a user who asked the OS to reduce motion
+     * gets a still orb, not a slower one.
      */
     function animate() {
         if (!isInitialized) return;
 
-        requestAnimationFrame(animate);
+        if (reducedMotion) {
+            renderFrame();
+            return;
+        }
+
+        frameHandle = requestAnimationFrame(animate);
+        renderFrame();
+    }
+
+    /**
+     * Begin the loop, unless it is already running. Idempotent so a
+     * preference change that arrives twice cannot double the loop.
+     */
+    function startLoop() {
+        if (!isInitialized || frameHandle !== null) return;
+        animate();
+    }
+
+    /**
+     * Cancel the pending frame and leave one correct frame behind, so the orb
+     * freezes in the state it was in rather than on a stale one.
+     */
+    function stopLoop() {
+        if (frameHandle !== null) {
+            cancelAnimationFrame(frameHandle);
+            frameHandle = null;
+        }
+        if (isInitialized) {
+            renderFrame();
+        }
+    }
+
+    /**
+     * Follow the OS preference whenever it changes mid-session.
+     */
+    function onMotionPreferenceChange(event) {
+        reducedMotion = event.matches;
+        if (reducedMotion) {
+            stopLoop();
+        } else {
+            startLoop();
+        }
+    }
+
+    /**
+     * Draw one frame. Split out of animate() so the discrete events that carry
+     * meaning — a state change, a resize, a preference flip — can repaint
+     * without a loop running behind them.
+     */
+    function renderFrame() {
+        if (!isInitialized) return;
 
         const t = performance.now() * 0.001;
         const vol = currentVolume;
+        // The still frame: no breathing, no creep.
+        const live = !reducedMotion;
 
         // Idle breathing
-        idlePhase += 0.025;
+        if (live) {
+            idlePhase += 0.025;
+        }
 
         // ── Outer halo: subtle pulse + breathing ──
-        const haloScale = 1.0 + vol * 0.25 + Math.sin(idlePhase * 0.7) * 0.03;
+        const breath = live ? Math.sin(idlePhase * 0.7) * 0.03 : 0;
+        const haloScale = 1.0 + vol * 0.25 + breath;
         const haloS = outerHalo.scale.x;
         outerHalo.scale.setScalar(haloS + (haloScale - haloS) * 0.2);
         outerHalo.material.opacity = (0.10 + vol * 0.15) * currentBoost;
@@ -134,7 +218,9 @@
         }
 
         // Gentle continuous rotation
-        ringGroup.rotation.z += 0.002;
+        if (live) {
+            ringGroup.rotation.z += 0.002;
+        }
 
         renderer.render(scene, camera);
     }
@@ -183,6 +269,12 @@
         if (outerHalo) {
             outerHalo.material.color.setHex(c);
         }
+
+        // With the loop stopped there is no next frame to pick this up, and
+        // the state colour IS the avatar's job — paint it now.
+        if (reducedMotion) {
+            renderFrame();
+        }
     }
 
     /**
@@ -203,6 +295,12 @@
         renderer.setSize(w, h);
         camera.aspect = w / h;
         camera.updateProjectionMatrix();
+
+        // setSize clears the drawing buffer, so a stopped loop has to repaint
+        // or the resized orb goes blank.
+        if (reducedMotion) {
+            renderFrame();
+        }
     }
 
     // Public API
