@@ -910,13 +910,41 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
                 logger.info("Farewell detected, ending interview")
                 for token in farewell.split(" "):
                     yield sse_format("token", {"text": token + " "})
+
+                # Speak the farewell. Ending the interview in silence is the
+                # one failure the candidate cannot forgive, so the goodbye
+                # goes through TTS on the same pattern as every other call
+                # site. A failure degrades to a reported but silent goodbye
+                # rather than a stream that never terminates.
+                message_id = uuid.uuid4().hex
+                output_audio = config.AUDIO_DIR / f"{conversation_id}/{message_id}.mp3"
+                audio_url = ""
+                try:
+                    clean_farewell = sanitize_for_tts(farewell)
+                    await tts_service.synthesize(clean_farewell, output_path=output_audio)
+                    audio_url = f"/audio/{conversation_id}/{message_id}.mp3"
+                except Exception as e:
+                    logger.error(
+                        "Farewell TTS synthesis failed: %s", e, exc_info=True
+                    )
+                    yield sse_format(
+                        "error", {"detail": f"Farewell TTS synthesis failed: {e}"}
+                    )
+
+                # Queue the audio before the terminal event: once
+                # interview_end tears the session down, queued audio is dropped.
+                if audio_url:
+                    yield sse_format("audio_url", {"url": audio_url})
+
                 yield sse_format("interview_end", {"message": farewell})
                 # Store the farewell in conversation (messages + turns stay in
-                # sync so build_conversation_context sees the full history)
+                # sync so build_conversation_context sees the full history).
+                # audio_url is empty when TTS failed, so a later read of the
+                # transcript never points at a file that was never written.
                 farewell_message = {
                     "user_text": user_text,
                     "response_text": farewell,
-                    "audio_url": "",
+                    "audio_url": audio_url,
                 }
                 conversations[conversation_id]["messages"].append(farewell_message)
                 farewell_turn = {

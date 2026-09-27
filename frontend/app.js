@@ -1002,6 +1002,16 @@ async function processRecordingStream() {
                         if (isInterviewActive) startListening();
                     }
                 } else if (type === "interview_end") {
+                    // Terminal event for the farewell path. It carries the same
+                    // bookkeeping as `done`: without the turn-counter update
+                    // the sidebar lags the persisted turn count by one,
+                    // because the farewell turn is persisted but never `done`.
+                    allChunksReceived = true;
+                    updateTurnCount(Math.max(0, getCurrentTurnNumber() + 1));
+                    const farewellTurn = getCurrentTurnNumber();
+                    if (farewellTurn >= 0) {
+                        fetchContext(farewellTurn);
+                    }
                     if (currentCandidateDiv) {
                         const indicator =
                             currentCandidateDiv.querySelector(
