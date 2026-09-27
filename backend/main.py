@@ -228,8 +228,13 @@ async def lifespan(app: FastAPI):
     cleanup_task.cancel()
     with suppress(asyncio.CancelledError):
         await cleanup_task
-    # Close the shared LLM HTTP client (Cap-1 keep-alive) exactly once
-    llm.close_http_clients()
+    # Close the shared LLM HTTP client (Cap-1 keep-alive) exactly once.
+    # This is a module-level function in services/llm.py, not a method on the
+    # service object: only LLMService (the class) is imported here, so
+    # referencing `llm` raised NameError and the clients never closed.
+    from backend.services.llm import close_http_clients
+
+    close_http_clients()
     logger.info("InterviewTTS backend stopped")
 
 
