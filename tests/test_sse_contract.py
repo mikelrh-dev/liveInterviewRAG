@@ -21,7 +21,7 @@ from fastapi.testclient import TestClient
 
 # ─── Source extraction ────────────────────────────────────────────────────
 
-BACKEND_MAIN = Path(__file__).resolve().parents[1] / "backend" / "main.py"
+BACKEND_DIR = Path(__file__).resolve().parents[1] / "backend"
 FRONTEND_APP = Path(__file__).resolve().parents[1] / "frontend" / "app.js"
 
 #: The one canonical audio event name. Both sides must use this spelling.
@@ -47,14 +47,34 @@ def _extract_function(source: str, signature: str) -> str:
     raise AssertionError(f"unbalanced braces in function {signature!r}")
 
 
-def emitted_event_types(main_path: Path = BACKEND_MAIN) -> set[str]:
+def backend_sources() -> list[Path]:
+    """Every backend module that could emit an SSE event.
+
+    The scan follows the code rather than one file. Pinning it to
+    ``backend/main.py`` made this test silently lose its subject the moment the
+    streaming pipeline moved into its own module: ``emitted`` would come back
+    empty, ``test_no_orphan_handlers`` would then report all six frontend
+    branches as orphans, and the failure would read as a frontend bug instead of
+    a moved file.
+    """
+    return sorted(
+        path
+        for path in BACKEND_DIR.rglob("*.py")
+        if "__pycache__" not in path.parts
+    )
+
+
+def emitted_event_types(sources: list[Path] | None = None) -> set[str]:
     """Distinct event names passed as the first argument of ``sse_format``.
 
-    ``\\s*`` spans newlines so multi-line calls (``sse_format(\\n    "done", {}``)
+    ``\\s*`` spans newlines so multi-line calls (``sse_format(\n    "done", {}``)
     are captured as well as single-line ones.
     """
-    source = main_path.read_text(encoding="utf-8")
-    return set(re.findall(r'sse_format\(\s*"([a-z_]+)"', source))
+    found: set[str] = set()
+    for path in backend_sources() if sources is None else sources:
+        source = path.read_text(encoding="utf-8")
+        found |= set(re.findall(r'sse_format\(\s*"([a-z_]+)"', source))
+    return found
 
 
 def handled_event_types(app_path: Path = FRONTEND_APP) -> set[str]:
