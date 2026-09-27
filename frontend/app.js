@@ -1044,9 +1044,6 @@ async function processRecordingStream() {
     const fd = new FormData();
     fd.append("audio", blob, `recording${ext}`);
 
-    let fullText = "";
-    let lastTurnNumber = -1;
-
     // One settler per turn: the single owner of terminal bookkeeping, so
     // `done`, `error`, `interview_end` and EOF cannot each tear down the turn
     // independently.
@@ -1112,7 +1109,6 @@ async function processRecordingStream() {
                 if (type === "transcription") {
                     addMessage("user", event.data.text);
                 } else if (type === "token") {
-                    fullText += event.data.text;
                     if (!currentCandidateDiv) {
                         currentCandidateDiv = addMessage("candidate", "");
                         hideTyping();
@@ -1200,18 +1196,6 @@ async function processRecordingStream() {
         btnMic.disabled = false;
         checkAllDone();
     }
-}
-
-/**
- * Get current turn number from conversation state.
- */
-function getCurrentTurnNumber() {
-    // Count messages to estimate turn number (user+candidate pairs)
-    const messages = conversation.querySelectorAll(
-        ".message.user, .message.candidate",
-    );
-    // Each pair = 1 turn, so divide by 2 and subtract 1 (0-indexed)
-    return Math.floor(messages.length / 2) - 1;
 }
 
 // ─── Typing animation ──────────────────────────────────

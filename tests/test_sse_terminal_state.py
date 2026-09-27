@@ -548,8 +548,10 @@ class TestServerAuthoritativeTurnNumber:
         assert "turnState.last()" in hook, (
             "the settler must read the turn from the server-reported state"
         )
-        assert "getCurrentTurnNumber" not in hook, (
-            "the settlement path still derives a turn number from the DOM"
+        assert "getCurrentTurnNumber" not in self._source(), (
+            "getCurrentTurnNumber() is gone: it counted transcript elements, "
+            "which is wrong the moment the transcript is not empty, and a dead "
+            "helper that still looks authoritative invites the bug back"
         )
 
     def test_context_is_requested_only_for_a_known_turn(self):
