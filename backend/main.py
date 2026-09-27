@@ -35,6 +35,14 @@ from backend.services.tts import TTSService
 logger = logging.getLogger(__name__)
 
 
+# ─── Upload limits ──────────────────────────────────────
+# Single source of truth for the maximum accepted request body. Used by
+# MaxBodySizeMiddleware to reject oversized uploads BEFORE the body is parsed,
+# and re-checked in the routes as defence in depth for chunked uploads that
+# carry no Content-Length.
+MAX_AUDIO_SIZE = 5 * 1024 * 1024  # 5MB
+
+
 # ─── Audio extension mapping ────────────────────────────
 _CONTENT_TYPE_EXT = {
     "audio/mp4": ".m4a",
@@ -355,6 +363,49 @@ async def periodic_cleanup(interval_seconds: int) -> None:
         await asyncio.sleep(interval_seconds)
 
 
+class MaxBodySizeMiddleware(BaseHTTPMiddleware):
+    """Reject oversized request bodies before they are parsed.
+
+    Reading the body first and checking its length afterwards is too late: by
+    that point the whole upload already sits in RAM, so a handful of large
+    requests can exhaust memory. This middleware looks only at the declared
+    ``Content-Length`` and short-circuits with 413 before any handler runs.
+
+    A request with no ``Content-Length`` (chunked transfer encoding) is passed
+    through untouched — buffering the stream here would defeat the purpose of
+    the guard, and the in-route check still catches those bodies afterwards.
+    """
+
+    def __init__(self, app, max_size: int = MAX_AUDIO_SIZE):
+        super().__init__(app)
+        self.max_size = max_size
+
+    async def dispatch(self, request: Request, call_next):
+        raw_length = request.headers.get("content-length")
+        if raw_length is not None:
+            try:
+                content_length = int(raw_length)
+            except (TypeError, ValueError):
+                # Malformed header: do not guess, let the request through.
+                content_length = None
+            if content_length is not None and content_length > self.max_size:
+                logger.warning(
+                    "Rejected oversized body: %d bytes declared (max %d) on %s",
+                    content_length,
+                    self.max_size,
+                    request.url.path,
+                )
+                return JSONResponse(
+                    status_code=413,
+                    content={
+                        "detail": (
+                            f"Request body too large (max {self.max_size} bytes)"
+                        )
+                    },
+                )
+        return await call_next(request)
+
+
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """Simple in-memory rate limiter: N requests per minute per client.
 
@@ -403,6 +454,11 @@ app = FastAPI(
 
 # Rate limiting middleware
 app.add_middleware(RateLimitMiddleware, max_requests=config.RATE_LIMIT_PER_MINUTE)
+
+# Oversized-body guard. Registered after the rate limiter so it sits *inside*
+# CORS (add_middleware inserts outermost-first) and still runs before any
+# route parses a body.
+app.add_middleware(MaxBodySizeMiddleware, max_size=MAX_AUDIO_SIZE)
 
 # CORS — restricted in production, configurable via env var
 cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:8000")
@@ -585,8 +641,9 @@ async def send_message(conversation_id: str, audio: UploadFile = File(...)):
     if len(audio_bytes) == 0:
         raise HTTPException(status_code=422, detail="Empty audio file")
 
-    # File size check (proxy for duration — ~5MB max)
-    MAX_AUDIO_SIZE = 5 * 1024 * 1024  # 5MB
+    # File size check (proxy for duration — ~5MB max). Defence in depth: the
+    # MaxBodySizeMiddleware guard already rejected declared oversize bodies
+    # before parsing, so this only fires for chunked uploads.
     if len(audio_bytes) > MAX_AUDIO_SIZE:
         raise HTTPException(status_code=422, detail="Audio too long (max 30 seconds)")
 
@@ -755,7 +812,6 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
     if len(audio_bytes) == 0:
         raise HTTPException(status_code=422, detail="Empty audio file")
 
-    MAX_AUDIO_SIZE = 5 * 1024 * 1024
     if len(audio_bytes) > MAX_AUDIO_SIZE:
         raise HTTPException(status_code=422, detail="Audio too long (max 30 seconds)")
 
