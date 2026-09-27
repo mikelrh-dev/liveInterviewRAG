@@ -7,7 +7,21 @@ Type=simple
 User=interviewtts
 Group=interviewtts
 WorkingDirectory=/opt/interviewtts
-ExecStart=/opt/interviewtts/venv/bin/uvicorn backend.main:app --host 0.0.0.0 --port 8000
+
+# --host 127.0.0.1: the backend is only reachable from the local reverse
+# proxy. Binding 0.0.0.0 exposed the API directly, bypassing nginx and with
+# it every TLS, header and rate-limit control configured there.
+#
+# --proxy-headers makes uvicorn populate request.client.host from the real
+# client address instead of the proxy, which is what the per-IP rate limiter
+# keys on. Without it every visitor shared one bucket.
+#
+# --forwarded-allow-ips MUST stay restricted to 127.0.0.1. It is the list of
+# peers whose X-Forwarded-For is trusted. Widening it (e.g. to "*") would let
+# ANY client forge its own source address and bypass the rate limit entirely.
+# If nginx ever moves off localhost, update this value deliberately rather
+# than relaxing it.
+ExecStart=/opt/interviewtts/venv/bin/uvicorn backend.main:app --host 127.0.0.1 --port 8000 --proxy-headers --forwarded-allow-ips 127.0.0.1
 Restart=always
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
