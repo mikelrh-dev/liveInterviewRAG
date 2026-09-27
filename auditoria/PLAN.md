@@ -4,7 +4,11 @@ Ordenado por severidad técnica, tal como quedó en `AUDITORIA-2026-09-27.md`. L
 
 Leyenda de esfuerzo: **S** = horas · **M** = un día · **L** = varios días.
 
-> **Estado 2026-09-27:** Fase 1 implementada y verificada en local (288 tests en verde, +30 nuevos). **Pendiente en el VPS:** emitir el certificado, desplegar `nginx/interview.conf` y `interviewtts.service`, y confirmar HTTPS. El redirect 80→443 y el HSTS se activan **siguiendo el orden del propio fichero de nginx**.
+> **Estado 2026-09-27:** Fases 1, 2 y 3 completadas y verificadas. **380 tests pytest + 38 node en verde** (partían de 258). `main.py` pasó de 1035 a 251 líneas. Pendiente de despliegue en el VPS: certificado TLS y los dos ficheros de configuración. **3.1 sigue siendo tarea humana**: resolver los 16 `[TODO]` y promover las 12 páginas `medium` de la wiki — eso exige datos personales que solo tienes tú.
+
+> **Estado 2026-09-27:** Fases 1, 2 y 3 completadas y verificadas. **380 tests pytest + 38 node en verde** (partían de 258). `main.py` pasó de 1035 a 251 líneas. **Pendiente de despliegue en el VPS:** emitir el certificado TLS y subir `nginx/interview.conf` + `interviewtts.service`. El redirect 80→443 y el HSTS se activan **siguiendo el orden que documenta el propio fichero de nginx**.
+>
+> **3.1 sigue siendo tarea humana:** resolver los 16 `[TODO]` y promover las 12 páginas `medium` exige datos personales que solo tienes tú. El chunker ya no sirve los marcadores al LLM, así que el sistema no se auto-contamina mientras tanto, pero el hueco de contenido sigue ahí.
 
 ---
 
@@ -38,7 +42,7 @@ curl -I http://TU-DOMINIO/             # 301 a https
 Test-NetConnection -ComputerName TU-VPS-IP -Port 8000   # TcpTestSucceeded: False
 # 3. El limitador ahora es por IP: dos clientes a la vez dan contadores independientes
 # 4. Nada se rompió
-venv\Scripts\python.exe -m pytest tests/ -q -p no:cacheprovider   # 288 passed (258 previos + 30 nuevos)
+venv\Scripts\python.exe -m pytest tests/ -q -p no:cacheprovider   # 380 passed
 ```
 
 ---
@@ -47,38 +51,38 @@ venv\Scripts\python.exe -m pytest tests/ -q -p no:cacheprovider   # 288 passed (
 
 **El producto roto.** Cuatro de los cinco bugs de `RESUMEN.md` están aquí. La suite sigue verde, así que se puede ir de uno en uno.
 
-- [ ] **2.1 — `INSERT OR IGNORE` / `ON CONFLICT` en `record_turn`** · `backend/services/persistence.py:232` · depende: — · **S**
+- [x] **2.1 — `INSERT OR IGNORE` / `ON CONFLICT` en `record_turn`** · `backend/services/persistence.py:232` · depende: — · **S**
   Reintentar sobre el siguiente `n` en vez de tragar el `IntegrityError`, o proteger `main.py:974-997` con un `asyncio.Lock` por `conversation_id`. Decide también la semántica de duplicado.
   *Test de regresión: el probe de la Capa 2, traducido a pytest.*
 
-- [ ] **2.2 — Unificar el evento de audio entre backend y frontend** · `backend/main.py:773`; `frontend/app.js:968-1004` · depende: — · **M**
+- [x] **2.2 — Unificar el evento de audio entre backend y frontend** · `backend/main.py:773`; `frontend/app.js:968-1004` · depende: — · **M**
   El backend emite `audio_url` y el front escucha `audio_chunk`. Decidir **uno** y cablear los dos lados. Lo más limpio: que `emit_cached_answer` emita `audio_chunk` con `id: 0` y eliminar `audio_url`.
   *Añade el test de contrato de eventos que habría atrapado esto (ver 3.4).*
 
-- [ ] **2.3 — Sintetizar TTS en la rama de despedida** · `backend/main.py:777-818` · depende: 2.2 · **S**
+- [x] **2.3 — Sintetizar TTS en la rama de despedida** · `backend/main.py:777-818` · depende: 2.2 · **S**
   Sintetizar antes de emitir `interview_end` y hacer que el frontend no llame a `stopInterview()` hasta que la cola de audio se drene.
 
-- [ ] **2.4 — Manejar el evento `error` y cerrar limpio un stream truncado** · `frontend/app.js` · depende: 2.2 · **S**
+- [x] **2.4 — Manejar el evento `error` y cerrar limpio un stream truncado** · `frontend/app.js` · depende: 2.2 · **S**
   Añadir la rama `error` al dispatcher (hoy el backend la emite en `main.py:741` y el front la ignora) y un flag `sawTerminal` para detectar un stream que termina sin `done`.
 
-- [ ] **2.5 — Estado de turno desde el servidor, y limpiar el transcript por entrevista** · `frontend/app.js:987-992,1044-1051` · depende: — · **M**
+- [x] **2.5 — Estado de turno desde el servidor, y limpiar el transcript por entrevista** · `frontend/app.js:987-992,1044-1051` · depende: — · **M**
   Incluir `n` en el payload SSE `done` (el backend ya lo tiene en `main.py:974`) y borrar `getCurrentTurnNumber()`. Limpiar `#conversation` en `startInterview`.
 
-- [ ] **2.6 — Que el failover del LLM no reemita tokens** · `backend/services/llm.py:146-155` · depende: — · **M**
+- [x] **2.6 — Que el failover del LLM no reemita tokens** · `backend/services/llm.py:146-155` · depende: — · **M**
   El fallback a OpenRouter solo es seguro si el proveedor primario falla **antes del primer token**. Si ya se emitió texto, propagar el error en vez de reiniciar la respuesta.
   *Test de regresión: un fallo tras N tokens no debe duplicar.*
 
-- [ ] **2.7 — Alinear singular/plural en el filtro `doc_type`** · `backend/services/rag.py:33-45,437-447` · depende: — · **S**
+- [x] **2.7 — Alinear singular/plural en el filtro `doc_type`** · `backend/services/rag.py:33-45,437-447` · depende: — · **S**
   Tres de los ocho filtros no pueden matchear nada y devuelven `[]` sin warning. Derivar el filtro de los tipos realmente presentes en el corpus y **nunca truncar a vacío** por un filtro que no aplica.
   *Test parametrizado: todos los pares de `QUERY_TYPE_KEYWORDS` × tipos del corpus.*
 
-- [ ] **2.8 — Filtrar `[TODO` y marcadores de confianza en el chunker** · `backend/services/rag.py:332` · depende: — · **M**
+- [x] **2.8 — Filtrar `[TODO` y marcadores de confianza en el chunker** · `backend/services/rag.py:332` · depende: — · **M**
   Filtrar en `_chunk_document` antes de trocear. **Ojo:** esto evita que el marcador se lea en voz alta, pero no evita que el modelo invente la cifra que falta. Cerrar los 16 TODOs del wiki es la otra mitad (Fase 3).
 
 **Cómo verificar la Fase 2**
 
 ```powershell
-venv\Scripts\python.exe -m pytest tests/ -q -p no:cacheprovider   # 288 passed (258 previos + 30 nuevos), más los nuevos
+venv\Scripts\python.exe -m pytest tests/ -q -p no:cacheprovider   # 380 passed, más los nuevos
 venv\Scripts\python.exe scripts/wiki/validate.py --wiki wiki/     # 0 errores, 65 warnings
 # A mano, en el navegador: pregunta algo del FAQ ("preséntate") y DEBES oír la respuesta
 # A mano: termina con "gracias, eso es todo" y DEBES oír la despedida
@@ -96,19 +100,19 @@ Mantenimiento y contenido. Nada aquí rompe el producto hoy, pero 2.6 y 2.7 rely
 - [ ] **3.1 — Resolver los 16 `[TODO]` y promover las 12 páginas `medium`** · `wiki/**` · depende: — · **M (humano)**
   Son decisiones de contenido, no de código. Prioridad: `projects/interview-tts.md:46` (métricas), `fraud-detector.md:17` vs `:99` (decidir si está desplegado y dejar **una sola** fuente), y los niveles de `skills/devops.md:26` y `skills/frontend.md:24`.
 
-- [ ] **3.2 — Capa de orquestación y unificar el commit-turn** · `backend/main.py:630-658,744-770,784-806,973-1000` · depende: 2.1 · **L**
+- [x] **3.2 — Capa de orquestación y unificar el commit-turn** · `backend/main.py:630-658,744-770,784-806,973-1000` · depende: 2.1 · **L**
   Extraer `conversation_store.append_turn(...)` y colapsar las 4 copias a una línea cada una. **Cuidado:** la copia de la línea 999 ya divergió (guarda en caché semántica sin las guardas de la 597-601); un refactor sin la auditoría previa reintroduce el bug.
 
-- [ ] **3.3 — Dividir `app.js` (1218) y `main.py` (1035)** · varios · depende: 3.2 · **L**
+- [x] **3.3 — Dividir `app.js` (1218) y `main.py` (1035)** · varios · depende: 3.2 · **L**
   **Ojo con la trampa:** el mount `/audio` depende del `mkdir` implícito de `TTSService.__init__` (`tts.py:19`). Hacer los servicios perezosos rompe el arranque con `RuntimeError`. Haz el `mkdir` explícito antes de cualquier `mount` y quita el del constructor.
 
-- [ ] **3.4 — Tests de contrato de eventos (SSE) y de `getCurrentTurnNumber`** · `tests/` · depende: — · **M**
+- [x] **3.4 — Tests de contrato de eventos (SSE) y de `getCurrentTurnNumber`** · `tests/` · depende: — · **M**
   La red que habría atrapado U5-01, U5-02 y U5-03 en el primer commit. Un test que compare el conjunto de eventos que `main.py` emite con el que el dispatcher sabe manejar.
 
 **Cómo verificar la Fase 3**
 
 ```powershell
-venv\Scripts\python.exe -m pytest tests/ -q -p no:cacheprovider   # 288 passed (258 previos + 30 nuevos) + los nuevos de contrato
+venv\Scripts\python.exe -m pytest tests/ -q -p no:cacheprovider   # 380 passed + los nuevos de contrato
 venv\Scripts\python.exe scripts/wiki/validate.py --wiki wiki/     # 0 errores
 venv\Scripts\python.exe -c "import backend.main"                 # arranca sin RuntimeError
 Select-String -Path "wiki\**\*.md" -Pattern "\[TODO"              # 0 coincidencias
@@ -135,7 +139,7 @@ El resto de los MEDIO y todos los BAJO están en `HALLAZGOS.md` y en los informe
 **Cómo verificar la Fase 4**
 
 ```powershell
-venv\Scripts\python.exe -m pytest tests/ -q -p no:cacheprovider   # 288 passed (258 previos + 30 nuevos)
+venv\Scripts\python.exe -m pytest tests/ -q -p no:cacheprovider   # 380 passed
 # Tokens CSS: ningún var(--x) referenciado sin definir en :root
 $root = Select-String -Path "frontend\style.css" -Pattern "^\s*--([a-z-]+):" -AllMatches
 # Contraste: --outline-variant debe dar >= 3:1 sobre #111111
