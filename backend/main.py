@@ -22,6 +22,20 @@ from starlette.middleware.base import BaseHTTPMiddleware
 load_dotenv()
 
 from backend.config import config
+from backend.conversation import (  # noqa: F401  (re-exported)
+    _rate_limit_store,
+    build_conversation_context,
+    conversations,
+    get_conversation_or_hydrate,
+    persist_turn,
+    turn_done_payload,
+    update_conversation_summary,
+)
+from backend.farewell import detect_farewell  # noqa: F401  (re-exported)
+from backend.maintenance import (  # noqa: F401  (re-exported)
+    cleanup_stale_audio,
+    periodic_cleanup,
+)
 from backend.prompts.candidate import build_system_prompt, sanitize_for_tts
 from backend.services.candidate import CandidateProfile
 from backend.services.llm import LLMService, SentenceBuffer
@@ -71,35 +85,12 @@ def sse_format(event: str, data: dict) -> str:
     return f"data: {payload}\n\n"
 
 
-# ─── Farewell detection ─────────────────────────────────
-import re
+# ─── Session state ──────────────────────────────────────
+# conversations, _rate_limit_store, the rolling summary and the write-through
+# now live in backend/conversation.py; farewell detection in
+# backend/farewell.py; the periodic sweep in backend/maintenance.py. All are
+# re-exported above so existing importers keep working.
 
-_FAREWELL_PATTERNS = [
-    r"\bgracias\b.*\b(eso es todo|terminamos|finalizamos|nos vemos|adiós|chao)\b",
-    r"\b(eso es todo|nada más|no tengo más preguntas)\b",
-    r"\bno (tengo|hay) (más |ninguna )?(preguntas|dudas|cosas)\b",
-    r"\bya (está|terminé|acabé|estamos)\b",
-    r"\b(terminamos|finalizamos|cerramos) (la entrevista|por hoy|aquí|acá)\b",
-    r"\b(gracias|muchas gracias).*(por tu tiempo|por la entrevista|ha sido un placer)\b",
-    r"\bfue un placer\b",
-    r"\b(adiós|chao|nos vemos|hasta luego)\b",
-]
-
-
-def detect_farewell(text: str) -> bool:
-    """Check if the user is indicating the interview should end."""
-    lower = text.lower().strip()
-    for pattern in _FAREWELL_PATTERNS:
-        if re.search(pattern, lower):
-            return True
-    return False
-
-
-# In-memory conversation store
-conversations: dict[str, dict] = {}
-
-# Rate limiting store: {ip: [timestamps]}
-_rate_limit_store: dict[str, list] = {}
 
 
 # ─── Trusted-proxy client IP resolution ────────────────────
@@ -276,94 +267,6 @@ async def lifespan(app: FastAPI):
     logger.info("InterviewTTS backend stopped")
 
 
-def cleanup_stale_audio():
-    """Clean up audio files older than 1 hour from previous runs."""
-    from datetime import datetime
-
-    cutoff = datetime.utcnow() - timedelta(hours=1)
-    for f in config.AUDIO_DIR.rglob("*"):
-        if f.is_file() and f.suffix in (".mp3", ".webm", ".wav"):
-            mtime = datetime.fromtimestamp(f.stat().st_mtime)
-            if mtime < cutoff:
-                f.unlink(missing_ok=True)
-                logger.info("Cleaned up stale audio: %s", f.name)
-
-
-async def periodic_cleanup(interval_seconds: int) -> None:
-    """Periodic background task: evict stale conversations, prune rate-limit store, clean audio."""
-    from datetime import datetime
-
-    # Initial 30s delay so first cleanup doesn't fire during first request
-    await asyncio.sleep(30)
-    while True:
-        try:
-            cutoff = datetime.utcnow() - timedelta(hours=config.SESSION_TTL_HOURS)
-            stale_ids = [
-                cid
-                for cid, c in conversations.items()
-                if datetime.fromisoformat(c.get("last_activity_at", "")) < cutoff
-            ]
-            for cid in stale_ids:
-                logger.debug("Evicting stale conversation: %s", cid)
-                try:
-                    report_path = report_service.generate(cid, conversations.get(cid))
-                    if report_path is not None:
-                        # Link the report row BEFORE eviction — evict_conversation
-                        # preserves it while deleting conversation/turn/message rows
-                        await asyncio.to_thread(
-                            persistence.record_report, cid, str(report_path)
-                        )
-                except Exception as e:  # defense-in-depth; service already swallows
-                    logger.warning("Report on eviction failed for %s: %s", cid, e)
-                del conversations[cid]
-                # Remove the DB rows too; reports row survives by design (D6)
-                try:
-                    await asyncio.to_thread(persistence.evict_conversation, cid)
-                except Exception as e:
-                    logger.warning("DB eviction failed for %s: %s", cid, e)
-        except Exception as e:
-            logger.error("Conversation eviction failed: %s", e)
-        try:
-            now = time.time()
-            for ip in list(_rate_limit_store.keys()):
-                _rate_limit_store[ip] = [
-                    t for t in _rate_limit_store[ip] if now - t < 60
-                ]
-                if not _rate_limit_store[ip]:
-                    del _rate_limit_store[ip]
-        except Exception as e:
-            logger.error("Rate-limit pruning failed: %s", e)
-        try:
-            cleanup_stale_audio()
-        except Exception as e:
-            logger.error("Audio cleanup failed: %s", e)
-        try:
-            report_service.cleanup_expired()
-        except Exception as e:
-            logger.error("Report cleanup failed: %s", e)
-        try:
-            pruned_rows = persistence.prune_reports(config.REPORT_RETENTION_DAYS)
-            if pruned_rows:
-                logger.info("Pruned %d expired report rows from the store", pruned_rows)
-        except Exception as e:
-            logger.error("Report-row pruning failed: %s", e)
-        try:
-            pruned_convs = await asyncio.to_thread(
-                persistence.prune_conversations, config.SESSION_TTL_HOURS
-            )
-            if pruned_convs:
-                logger.info("Pruned %d stale conversations from the store", pruned_convs)
-        except Exception as e:
-            logger.error("Conversation pruning failed: %s", e)
-        try:
-            swept = semantic_cache.sweep_expired()
-            if swept:
-                logger.info("Swept %d expired semantic-cache rows", swept)
-        except Exception as e:
-            logger.error("Semantic cache sweep failed: %s", e)
-        await asyncio.sleep(interval_seconds)
-
-
 class MaxBodySizeMiddleware(BaseHTTPMiddleware):
     """Reject oversized request bodies before they are parsed.
 
@@ -520,180 +423,10 @@ async def get_config():
     }
 
 
-# ─── Conversation memory (rolling summary) ────────────────
-
-MAX_SUMMARY_CHARS = 1500  # ~300 tokens for the rolling summary
-MAX_TURN_TEXT_CHARS = 200  # Truncate each turn's text in the prompt
-
-
-async def _get_conversation_or_hydrate(conversation_id: str) -> dict:
-    """Return the conversation from memory, hydrating it from the DB on miss.
-
-    Load-on-demand hydration (design D5): a persisted-but-unknown cid is
-    rebuilt into ``conversations`` so the interview continues seamlessly
-    after a restart. Unknown-and-unpersisted ids still raise 404, exactly
-    as the pre-change bare guards did.
-    """
-    conv = conversations.get(conversation_id)
-    if conv is not None:
-        return conv
-
-    persisted = await asyncio.to_thread(persistence.load_conversation, conversation_id)
-    if persisted is None:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-
-    conversations[conversation_id] = persisted
-    logger.info(
-        "Hydrated conversation %s from persistent store (%d turns)",
-        conversation_id,
-        len(persisted.get("turns", [])),
-    )
-    return persisted
-
-
-def update_conversation_summary(conversation_id: str, new_turn: dict) -> None:
-    """Append a compressed entry for the new turn to the rolling summary.
-
-    Older entries are dropped if the summary exceeds MAX_SUMMARY_CHARS.
-    """
-    if conversation_id not in conversations:
-        return
-
-    summary = conversations[conversation_id].get("summary", "")
-    user_brief = (new_turn.get("user_text") or "")[:80]
-    assist_brief = (new_turn.get("assistant_text") or "")[:120]
-    new_line = f"- P: {user_brief} → R: {assist_brief}\n"
-
-    combined = summary + new_line
-    if len(combined) > MAX_SUMMARY_CHARS:
-        # Drop oldest lines until it fits, keep at least the most recent
-        lines = combined.split("\n")
-        while len("\n".join(lines)) > MAX_SUMMARY_CHARS and len(lines) > 1:
-            lines.pop(0)
-        combined = (
-            "[Resumen — turnos más antiguos omitidos por longitud]\n" + "\n".join(lines)
-        )
-
-    conversations[conversation_id]["summary"] = combined
-
-
-def _store_is_configured() -> bool:
-    """Whether the installed store is meant to receive writes at all.
-
-    Read from the service rather than from ``config.PERSISTENCE_ENABLED``:
-    ``persistence`` is a swappable module global, and the config flag only
-    describes the instance built at import time. They agree in production and
-    disagree the moment the store is replaced, which is exactly when guessing
-    wrong would silently drop turns. Falls back to "configured" so an
-    unfamiliar store implementation is treated as live.
-
-    ``_enabled`` has no public accessor; that reach is the price of not
-    touching ``persistence.py`` in this phase, and it is isolated here.
-    """
-    return bool(getattr(persistence, "_enabled", config.PERSISTENCE_ENABLED))
-
-
-def _turn_done_payload(committed_turn: dict | None) -> dict:
-    """``done`` payload for a turn that reached disk.
-
-    The turn number is the server's to report. The pipeline derives ``n`` from
-    memory, so the number the client must ask the Context panel about is
-    whatever was committed, not whatever was requested — reporting the
-    provisional one would put the original bug on the wire.
-
-    ``has_context`` exists so the client can tell "this turn has no context"
-    from "I do not know yet": the first means show nothing, the second would
-    mean firing a request that 404s.
-
-    An empty payload means no turn was stored, so the client must not ask
-    about one.
-    """
-    if committed_turn is None:
-        return {}
-    return {
-        "n": int(committed_turn["n"]),
-        "has_context": bool(committed_turn.get("chunks_used") or []),
-    }
-
-
-async def _persist_turn(
-    conversation_id: str, new_turn: dict, new_message: dict
-) -> dict | None:
-    """Write a turn through to the DB, then make memory match what landed.
-
-    ``n`` is a request, not a fact. The pipeline derives it from
-    ``len(conversations[cid]["turns"])``, so two in-flight turns on the same
-    conversation ask for the same one. ``record_turn`` resolves that (same
-    content = idempotent retry, different content = commit at the next free
-    ``n``) and reports the turn it actually committed. Appending the provisional
-    turn and discarding that return value left memory claiming a number the DB
-    never used, so the Context panel for that turn 404s forever.
-
-    A ``None`` return means nothing reached disk, so memory is left untouched —
-    a turn that is not stored must not look stored. The one exception is a
-    deliberately disabled store, where nothing was ever meant to hit disk and
-    memory is the only record there is; conflating that with a failure would
-    silently discard every turn of a DB-less deployment.
-
-    Returns the committed turn, or ``None`` when it was not stored. The
-    response the client is already receiving is built from local variables, so
-    dropping the turn costs nothing on the wire.
-    """
-    committed = await asyncio.to_thread(
-        persistence.record_turn, conversation_id, new_turn, new_message
-    )
-
-    if committed is None:
-        if _store_is_configured():
-            logger.warning(
-                "Turn write failed for %s — left out of memory so memory and "
-                "disk agree",
-                conversation_id,
-            )
-            return None
-        # Store deliberately off: memory is the record of record.
-        committed = new_turn
-
-    conv = conversations[conversation_id]
-    conv["turns"].append(committed)
-    update_conversation_summary(conversation_id, committed)
-    conv["messages"].append(new_message)
-    return committed
-
-
-def build_conversation_context(conversation_id: str, recent_count: int = 3) -> str:
-    """Build the conversation history to inject into the system prompt.
-
-    Combines:
-    - Rolling summary of older turns (compressed)
-    - Recent turns in full text (truncated to MAX_TURN_TEXT_CHARS)
-
-    Returns empty string if no turns exist.
-    """
-    if conversation_id not in conversations:
-        return ""
-
-    turns = conversations[conversation_id].get("turns", [])
-    if not turns:
-        return ""
-
-    summary = conversations[conversation_id].get("summary", "")
-    recent = turns[-recent_count:] if len(turns) >= recent_count else turns
-    older_count = len(turns) - len(recent)
-
-    parts = []
-    if summary and older_count > 0:
-        parts.append(f"[Resumen de la conversación — {older_count} turnos anteriores]")
-        parts.append(summary)
-    if recent:
-        parts.append(f"\n[Últimos {len(recent)} turnos — texto completo]")
-        for turn in recent:
-            user_t = (turn.get("user_text") or "")[:MAX_TURN_TEXT_CHARS]
-            assist_t = (turn.get("assistant_text") or "")[:MAX_TURN_TEXT_CHARS]
-            parts.append(f"- P: {user_t}")
-            parts.append(f"  R: {assist_t}")
-
-    return "\n".join(parts)
+# ─── Conversation memory ────────────────────────────────────
+# Moved to backend/conversation.py: the conversations and _rate_limit_store
+# dicts, the rolling summary, DB hydration, build_conversation_context and
+# the write-through persist_turn. Re-exported above for existing importers.
 
 
 @app.post("/api/conversation")
@@ -729,7 +462,7 @@ async def create_conversation():
 async def send_message(conversation_id: str, audio: UploadFile = File(...)):
     """Process a voice message through the full pipeline: STT → RAG → LLM → TTS."""
     # Validate conversation exists (hydrates from DB on memory miss)
-    await _get_conversation_or_hydrate(conversation_id)
+    await get_conversation_or_hydrate(conversation_id)
     # First-substantive-turn rule (design D10): evaluated post-hydration,
     # pre-generation. Turns are appended post-generation, so only the
     # recruiter's opening question is ever looked up or stored.
@@ -875,7 +608,7 @@ async def send_message(conversation_id: str, audio: UploadFile = File(...)):
 
         # Write-through: persist turn + message + activity atomically, then let
         # the committed n decide what memory keeps.
-        await _persist_turn(conversation_id, new_turn, new_message)
+        await persist_turn(conversation_id, new_turn, new_message)
         # Cache the fresh answer for future paraphrased first questions
         if store_in_semantic_cache:
             await asyncio.to_thread(semantic_cache.store, user_text, response_text)
@@ -924,7 +657,7 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
     behind a slow disk.
     """
     # Validate conversation exists (hydrates from DB on memory miss)
-    await _get_conversation_or_hydrate(conversation_id)
+    await get_conversation_or_hydrate(conversation_id)
     if not audio.content_type or not audio.content_type.startswith("audio/"):
         raise HTTPException(status_code=422, detail="Invalid audio format")
 
@@ -1020,14 +753,14 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
 
                 # Write-through: persist the cache-hit exchange atomically,
                 # then let the committed n decide what memory keeps.
-                committed = await _persist_turn(
+                committed = await persist_turn(
                     conversation_id, new_turn, new_message
                 )
 
                 yield sse_format(
                     "audio_url", {"url": f"/audio/{conversation_id}/{message_id}.mp3"}
                 )
-                yield sse_format("done", _turn_done_payload(committed))
+                yield sse_format("done", turn_done_payload(committed))
                 terminal_emitted = True
 
             # ── Farewell check ──────────────────────────────────
@@ -1084,7 +817,7 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
                 # interview_end on purpose — the goodbye must not queue behind
                 # a slow disk. Memory is reconciled before the report is built,
                 # so the report describes exactly what survived the write.
-                await _persist_turn(conversation_id, farewell_turn, farewell_message)
+                await persist_turn(conversation_id, farewell_turn, farewell_message)
                 # Post-hoc report — must never break the SSE stream.
                 # to_thread keeps the event loop free during the file write.
                 report_path = await asyncio.to_thread(
@@ -1275,12 +1008,12 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
 
             # Write-through: persist turn + message + activity atomically, then
             # let the committed n decide what memory keeps.
-            committed = await _persist_turn(conversation_id, new_turn, new_message)
+            committed = await persist_turn(conversation_id, new_turn, new_message)
             # Cache the fresh answer for future paraphrased first questions
             if is_first_substantive:
                 await asyncio.to_thread(semantic_cache.store, user_text, full_response)
 
-            yield sse_format("done", _turn_done_payload(committed))
+            yield sse_format("done", turn_done_payload(committed))
             terminal_emitted = True
 
         except HTTPException:
@@ -1317,7 +1050,7 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
 @app.get("/api/conversation/{conversation_id}/context")
 async def get_conversation_context(conversation_id: str, turn: int = 0):
     """Return the RAG chunks used for a specific conversation turn."""
-    await _get_conversation_or_hydrate(conversation_id)
+    await get_conversation_or_hydrate(conversation_id)
 
     conv = conversations[conversation_id]
     turns = conv.get("turns", [])
