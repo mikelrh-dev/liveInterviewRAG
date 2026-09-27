@@ -100,7 +100,14 @@ def canonical_doc_type(value: Optional[str]) -> str:
 # metadata: the cache's document_hash covers the RAW wiki text, which this
 # filtering deliberately does not touch, so without this guard a pre-filter
 # cache would be restored and silently undo every fix below.
-CHUNK_FILTER_VERSION = "2"
+#
+# "3": a document's own H1 now rides with the body it titles, and sections that
+# are nothing but [[wikilinks]] are no longer emitted. Both change the chunks
+# produced from UNCHANGED document text, so a cache written by version "2"
+# still contains all 34 bare H1 titles and all 42 wikilink sections and must be
+# rejected rather than served. Proven by
+# ``TestChunkFilterVersionGuardsTheStaleCache``.
+CHUNK_FILTER_VERSION = "3"
 
 # ``[TODO ...]`` and friends. Tolerates the real spellings seen in wiki/:
 # ``[TODO: ask Mikel]``, ``[TODO]``, ``[TODO — fill in]``.

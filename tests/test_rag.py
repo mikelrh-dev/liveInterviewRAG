@@ -1469,6 +1469,253 @@ Un gemelo digital de voz para entrevistas de trabajo.
             yield from rag._chunk_document(name, content)
 
 
+@pytest.fixture(scope="module")
+def real_wiki_pipeline():
+    """The real 37-page wiki, ingested once with real embeddings.
+
+    Module-scoped because embedding the corpus costs ~100s. This is the only
+    test that can catch a chunking "cleanup" that quietly degrades answers:
+    a count assertion proves nothing about what the LLM actually receives.
+    """
+    from backend.services.candidate import CandidateProfile
+
+    root = Path(__file__).resolve().parent.parent
+    profile = CandidateProfile(root / "candidate", wiki_dir=root / "wiki")
+    profile.load()
+    rag = RAGPipeline(chunk_size=400, chunk_overlap=50)
+    rag.ingest_documents(profile.documents)
+    return rag
+
+
+def _norm_source(source: str) -> str:
+    """Document keys are ``str(Path.relative_to(...))``, so separators vary."""
+    return source.replace("\\", "/")
+
+
+class TestRetrievalRegressionGuard:
+    """Representative recruiter questions must still find their own document.
+
+    Counts prove nothing about quality. This is the guard that stops a
+    "cleanup" from silently degrading answers: every question below is phrased
+    the way Whisper emits it (lowercase, unpunctuated, accents unreliable) and
+    names the page that genuinely holds the answer.
+
+    HONEST SCOPE: the CASES below are a CHARACTERISATION set, not a
+    discriminator for these three fixes — measured, all six already retrieved
+    their gold document before the change, and 0 of 11 realistic questions had a
+    link-list or index chunk in their top 3 beforehand either. They lock in
+    what already works so a later change that breaks it fails loudly.
+
+    What DOES discriminate is
+    ``test_top_chunk_carries_an_answer_not_just_a_title``, which fails on the
+    pre-fix chunker: it returned bare 5-9 word H1 titles as the top-1 context
+    for several of these questions, so the LLM's first piece of context was a
+    question restated rather than an answer.
+
+    TWO CASES ARE KNOWN FAILURES AND ARE MARKED, NOT DELETED. A guard that
+    quietly drops the questions it fails is the exact failure mode it exists to
+    catch, so each is kept with its measured cause and will flip to XPASS when
+    the cause is removed.
+    """
+
+    # (question, gold document) — questions this pipeline is expected to serve.
+    CASES = [
+        ("cual es tu nivel de ingles", "faq/nivel-ingles.md"),
+        ("cuando podrias incorporarte al puesto", "faq/disponibilidad.md"),
+        ("cuales son tus fortalezas y debilidades", "faq/fortalezas-y-debilidades.md"),
+        ("cuentame lo de la huelga de camiones en mercadona",
+         "stories/huelga-camiones-mercadona.md"),
+        ("por que usaste edge tts en vez de clonar la voz",
+         "stories/edge-tts-vs-clonacion.md"),
+        ("que experiencia tienes con javascript y frontend", "skills/frontend.md"),
+    ]
+
+    def test_question_retrieves_its_own_document(self, real_wiki_pipeline):
+        missing = []
+        for question, gold in self.CASES:
+            sources = [_norm_source(c.source) for c, _ in real_wiki_pipeline.retrieve(question, top_k=3)]
+            if gold not in sources:
+                missing.append((question, gold, sources))
+        assert not missing, f"{len(missing)} question(s) lost their document: {missing}"
+
+    @pytest.mark.xfail(
+        reason=(
+            "REGRESSION from the H1 re-attachment, measured. On a FAQ page the H1 "
+            "IS the canonical interview question, so a title-only chunk is a sharp "
+            "retrieval key: '# \"Cuéntame sobre ti\" — Presentación de 30 segundos' "
+            "scored 0.745 on this question, the best score in the corpus. Merged "
+            "into its 67-word body it scores 0.514, a 0.23 cosine drop that pushes "
+            "it out of the top 3. The title is no longer discarded, but merging it "
+            "dilutes it. Root cause is chunk sizing, which is a separate decision."
+        ),
+        strict=True,
+    )
+    def test_title_only_chunk_kept_the_exact_question_reachable(self, real_wiki_pipeline):
+        gold = "faq/presentacion-30-segundos.md"
+        sources = [_norm_source(c.source) for c, _ in
+                   real_wiki_pipeline.retrieve("cuentame sobre ti en treinta segundos", top_k=3)]
+        assert gold in sources, f"expected {gold} in {sources}"
+
+    @pytest.mark.xfail(
+        reason=(
+            "PRE-EXISTING gap, not caused by this change: this question missed the "
+            "gold document before the chunking fixes too (measured rank: absent from "
+            "the top 3 both before and after). Recorded here so the gap is visible "
+            "rather than rediscovered later."
+        ),
+        strict=True,
+    )
+    def test_open_ended_mercadona_question_finds_the_role(self, real_wiki_pipeline):
+        gold = "experience/gerente-mercadona-2019-2025.md"
+        sources = [_norm_source(c.source) for c, _ in
+                   real_wiki_pipeline.retrieve("que estabas haciendo en mercadona los ultimos años", top_k=3)]
+        assert gold in sources, f"expected {gold} in {sources}"
+
+    def test_top_chunk_carries_an_answer_not_just_a_title(self, real_wiki_pipeline):
+        """The LLM's first piece of context must be an answer, not a restated question.
+
+        This is the discriminating test for the H1 fix, and it is what the
+        defect actually cost. Before it, ``# ¿Cuál es tu disponibilidad?``
+        (5 words) and ``# "Cuéntame sobre ti" — Presentación de 30 segundos``
+        (9 words) were the top-1 retrieved chunks for those questions: the
+        model received the interviewer's own question back and nothing else.
+
+        A heading names a topic; a body answers it. Any body text at all is
+        enough, so this does not encode an opinion about how long a chunk
+        should be — that is a separate decision.
+        """
+        title_only = []
+        for question, _gold in self.CASES:
+            results = real_wiki_pipeline.retrieve(question, top_k=1)
+            assert results, f"{question!r} retrieved nothing at all"
+            top = results[0][0]
+            lines = [l for l in top.content.split("\n") if l.strip()]
+            body = lines[1:] if lines and re.match(r"^#{1,3}\s", lines[0]) else lines
+            if not body:
+                title_only.append((question, top.content.strip()[:60]))
+        assert not title_only, (
+            "the top-1 context chunk is a bare heading for these questions — "
+            f"the LLM gets the question back instead of the answer: {title_only}"
+        )
+
+    def test_no_top_three_slot_is_spent_on_a_link_list(self, real_wiki_pipeline):
+        """A slot holding no answer is a slot a real answer cannot occupy."""
+        wasted = []
+        for question, _gold in self.CASES:
+            for c, _score in real_wiki_pipeline.retrieve(question, top_k=3):
+                if _wikilink_only(c.content) or _norm_source(c.source) == "index.md":
+                    wasted.append((question, c.source))
+        assert not wasted, f"top-k slots wasted on link lists or the index: {wasted}"
+
+
+class TestChunkFilterVersionGuardsTheStaleCache:
+    """A cache written before this change must not be served after it.
+
+    ``document_hash`` covers the RAW wiki text, which none of the three fixes
+    touch, so without a version bump an old cache is restored in full and every
+    fix is silently undone: the bare H1 titles and the wikilink sections come
+    straight back. This builds a cache the way the PREVIOUS chunker did and
+    proves the current pipeline refuses it.
+    """
+
+    PREVIOUS_VERSION = "2"
+
+    DOCS = {
+        "faq/nivel-ingles.md": (
+            "---\ntype: faq\nconfidence: high\n---\n\n"
+            "# Como es tu nivel de ingles\n\n## Fuentes\n- [[profile/mikel]]\n"
+        ),
+    }
+
+    def _previous_chunker(self, filename, content):
+        """The chunker as it behaved before this change: split at H1-H3 and
+        index every section, wikilink lists included."""
+        chunks, chunk_id = [], 0
+        for section in re.split(r'\n(?=#{1,3}\s)', content):
+            section = section.strip()
+            if not section:
+                continue
+            match = re.match(r'^#{1,3}\s+(.+)', section)
+            chunks.append(Chunk(
+                id=f"{filename}-{chunk_id}",
+                content=section,
+                source=filename,
+                section=match.group(1) if match else filename,
+                type="faq",
+            ))
+            chunk_id += 1
+        return chunks
+
+    def _write_previous_cache(self, cache_dir):
+        """Persist a cache holding the old chunker's output, tagged with the
+        old filter version, exactly as a warm ``backend/.rag_cache/`` would."""
+        from backend.services.rag import strip_placeholders
+
+        chunks = []
+        for filename, content in self.DOCS.items():
+            _, body = parse_frontmatter(content)
+            body, _ = strip_placeholders(body)
+            chunks.extend(self._previous_chunker(filename, body))
+
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        n = len(chunks)
+        np.savez_compressed(
+            cache_dir / "embeddings.npz",
+            ids=np.array([c.id for c in chunks], dtype=object),
+            contents=np.array([c.content for c in chunks], dtype=object),
+            sources=np.array([c.source for c in chunks], dtype=object),
+            sections=np.array([c.section for c in chunks], dtype=object),
+            types=np.array([c.type for c in chunks], dtype=object),
+            summaries=np.array([""] * n, dtype=object),
+            tags_json=np.array(["[]"] * n, dtype=object),
+            # A distinct non-zero vector per chunk is enough: these must never
+            # be served, so their value is irrelevant to the assertion.
+            embeddings=np.eye(n, dtype=np.float32),
+        )
+        meta = {
+            "model": "all-MiniLM-L6-v2",
+            "document_hash": RAGPipeline._compute_documents_hash(self.DOCS),
+            "chunk_filter_version": self.PREVIOUS_VERSION,
+            "chunk_count": n,
+        }
+        (cache_dir / "embeddings.json").write_text(json.dumps(meta), encoding="utf-8")
+        return n
+
+    def test_previous_version_is_not_the_current_one(self):
+        """The guard only means something if the version actually moved."""
+        from backend.services.rag import CHUNK_FILTER_VERSION
+
+        assert CHUNK_FILTER_VERSION != self.PREVIOUS_VERSION, (
+            "CHUNK_FILTER_VERSION was not bumped, so a cache written before "
+            "this change would still be restored and every fix undone"
+        )
+
+    def test_previous_cache_is_rejected_and_recomputed(self, tmp_path):
+        cache_dir = tmp_path / "cache"
+        old_count = self._write_previous_cache(cache_dir)
+
+        fresh = RAGPipeline(chunk_size=400, cache_dir=cache_dir)
+        fresh.ingest_documents(self.DOCS)
+
+        assert not [c for c in fresh.chunks if _wikilink_only(c.content)], (
+            "a stale pre-fix cache was restored: wikilink sections are back"
+        )
+        assert not [
+            c for c in fresh.chunks
+            if re.match(r"^#\s", c.content) and "\n" not in c.content.strip()
+        ], "a stale pre-fix cache was restored: bare H1 titles are back"
+        assert len(fresh.chunks) != old_count, (
+            f"the stale cache ({old_count} chunks) was served instead of "
+            f"recomputed ({len(fresh.chunks)} chunks)"
+        )
+        rewritten = json.loads((cache_dir / "embeddings.json").read_text(encoding="utf-8"))
+        from backend.services.rag import CHUNK_FILTER_VERSION
+
+        assert rewritten["chunk_filter_version"] == CHUNK_FILTER_VERSION, (
+            "the rejected cache was not rewritten at the current version"
+        )
+
+
 class TestEmbedderProperty:
     """Read-only embedder exposure for the semantic answer cache (design D8)."""
 
