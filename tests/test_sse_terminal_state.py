@@ -28,11 +28,12 @@ from fastapi.testclient import TestClient
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FRONTEND_APP = REPO_ROOT / "frontend" / "app.js"
 #: Node suites, run by the Python suite so the JS contract is gated in CI.
-#: Both extract their unit under test from frontend/app.js and drive it with
+#: Each extracts its unit under test from frontend/app.js and drives it with
 #: injected hooks -- no DOM, no bundler, no dependencies.
 NODE_TESTS = (
     Path(__file__).resolve().parent / "frontend" / "terminal_state.test.mjs",
     Path(__file__).resolve().parent / "frontend" / "turn_state.test.mjs",
+    Path(__file__).resolve().parent / "frontend" / "telemetry.test.mjs",
 )
 
 #: Events that terminate a turn. ``error`` is deliberately NOT one of them:

@@ -444,6 +444,21 @@ header {
     animation: pulse-sync 2s ease-in-out infinite;
 }
 
+/* Degraded: the health check came back, and something in it is not ready.
+   Amber, not red — the server answered, it is just not fully able. */
+.dot-amber {
+    background: #f5a623;
+    box-shadow: 0 0 6px rgba(245, 166, 35, 0.55);
+    animation: pulse-sync 2s ease-in-out infinite;
+}
+
+/* Unreachable: /api/health did not answer at all. */
+.dot-red {
+    background: #ff3b30;
+    box-shadow: 0 0 6px rgba(255, 59, 48, 0.55);
+    animation: pulse-sync 2s ease-in-out infinite;
+}
+
 @keyframes pulse-sync {
     0%, 100% { opacity: 1; }
     50%      { opacity: 0.5; }

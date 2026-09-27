@@ -102,8 +102,20 @@
                     <span class="dot"></span>
                     ONLINE
                 </span>
-                <!-- Static latency (per Q2=A decision) -->
-                <span class="latency">LATENCY 12ms</span>
+                <!-- Latency pill. Nothing here is hardcoded on purpose.
+                     Every number in it is measured in app.js with
+                     performance.now() around a real /message/stream request:
+                     TTFT is armed before the fetch and stamped on the first
+                     `token` SSE event, i.e. upload + Whisper STT + RAG + first
+                     LLM token. TTFB is stamped on the first body byte.
+
+                     This span used to carry a fixed millisecond figure that no
+                     code produced, sitting directly beside model names that
+                     are genuinely fetched from GET /api/config — so a reader
+                     had no way to tell instrumentation from props. Do not put a
+                     literal number back: the honest value is a dash until a
+                     turn has actually been timed. -->
+                <span id="latency" class="latency">TTFT —</span>
                 <!-- Contexto toggle button -->
                 <button id="context-toggle">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -130,12 +142,19 @@
                     <div id="sidebar-turns" class="sidebar-placeholder">Turnos: 0</div>
                 </div>
 
-                <!-- System Status -->
+                <!-- System Status. Driven by GET /api/health in app.js, which
+                     reports whisper_loaded, rag_chunks and candidate_loaded.
+                     The initial label describes the unknown rather than
+                     asserting health, and the dot carries no green class
+                     until a check has actually come back clean. This used to
+                     assert a healthy system as a literal string that no code
+                     could falsify; a failed check must never land on that
+                     kind of claim. -->
                 <div class="sidebar-section">
                     <h3 class="sidebar-label">SISTEMA</h3>
                     <div id="sidebar-status" class="sidebar-placeholder">
-                        <span class="dot dot-green"></span>
-                        <span>All Systems Online</span>
+                        <span class="dot"></span>
+                        <span class="status-text">Sin verificar…</span>
                     </div>
                 </div>
 

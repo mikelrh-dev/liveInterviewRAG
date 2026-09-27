@@ -113,6 +113,242 @@ function setText(id, text) {
 }
 
 /**
+ * The header latency pill, measured for real.
+ *
+ * This rail used to ship the literal string "LATENCY 12ms" — a number no code
+ * produced, sitting directly beside model names that are genuinely fetched from
+ * GET /api/config. A reader had no way to tell instrumentation from props, and
+ * for a portfolio piece that is the one thing a reviewer will actually check.
+ *
+ * Every figure here is timed in this file with performance.now() around a real
+ * /message/stream request. Two of them, because they are two different claims:
+ *
+ *   TTFB — request sent -> first byte of the response body. Transport plus
+ *          any queueing before the server starts answering.
+ *   TTFT — request sent -> the first `token` SSE event, which is the whole
+ *          pipeline: upload, Whisper STT, RAG retrieval, first LLM token.
+ *
+ * TTFT is the headline because it is the one a candidate actually feels, and
+ * perceived responsiveness is this product's entire thesis.
+ *
+ * The three states are the point. "Measuring" shows no number at all, because a
+ * previous turn's figure left on screen during a new turn is the same
+ * fabrication in a subtler costume. Only `ttft()` being non-null may render
+ * digits.
+ */
+function createLatencyReadout(el, now) {
+    const clock = typeof now === "function" ? now : () => performance.now();
+
+    // null means "not measured" for all three. It is never 0 and never a
+    // placeholder, so a zero-length turn cannot masquerade as a fast one.
+    let startMs = null;
+    let ttfbMs = null;
+    let ttftMs = null;
+
+    function render() {
+        if (!el) return;
+        if (ttftMs !== null) {
+            el.textContent = "TTFT " + (ttftMs / 1000).toFixed(2) + "s";
+        } else if (startMs !== null) {
+            el.textContent = "TTFT midiendo…";
+        } else {
+            el.textContent = "TTFT —";
+        }
+    }
+
+    return {
+        /** Arm the stopwatch for a new turn. Clears the previous turn's value. */
+        begin() {
+            startMs = clock();
+            ttfbMs = null;
+            ttftMs = null;
+            render();
+        },
+        firstByte() {
+            if (startMs === null || ttfbMs !== null) return;
+            ttfbMs = clock() - startMs;
+        },
+        firstToken() {
+            if (startMs === null || ttftMs !== null) return;
+            ttftMs = clock() - startMs;
+            render();
+        },
+        /**
+         * The turn finished. Stop the stopwatch but KEEP the result, so a
+         * completed turn's real figure stays readable.
+         *
+         * This also guarantees the pill always leaves the measuring state: an
+         * empty transcription answers `error` + `done` with no `token` event
+         * at all, and without this the pill would sit on "midiendo…" for the
+         * rest of the session — a loading state that can never resolve.
+         */
+        settle() {
+            startMs = null;
+            render();
+        },
+        /**
+         * The turn failed before producing a token — a rejected upload, a dead
+         * stream. Drop the measurement: a number we never finished taking is
+         * not a result, and leaving it up would date the turn.
+         */
+        abandon() {
+            startMs = null;
+            ttfbMs = null;
+            ttftMs = null;
+            render();
+        },
+        ttfb() {
+            return ttfbMs;
+        },
+        ttft() {
+            return ttftMs;
+        },
+    };
+}
+
+const latencyReadout = createLatencyReadout(
+    document.getElementById("latency"),
+);
+
+/**
+ * The SISTEMA rail, driven by GET /api/health.
+ *
+ * It used to read a literal "All Systems Online": a claim nothing could
+ * falsify. It is now built from fields the endpoint actually returns —
+ * `whisper_loaded`, `rag_chunks`, `candidate_loaded` — so the rail can show a
+ * real number (how many chunks the RAG index holds) and can show which
+ * subsystem is actually down.
+ *
+ * Two constraints shape the polling. `/api/health` sits behind the same
+ * 10-requests-per-minute per-IP bucket as the conversation endpoints
+ * (backend/middleware.py RateLimitMiddleware), so a chatty poll would spend
+ * the interview's own budget and 429 the message POST. Hence: one request per
+ * minute, an in-flight guard so a slow check cannot stack behind itself, and
+ * `pause()` around the turn itself — the interview is the priority, the rail
+ * is decoration.
+ *
+ * A failed check is information, not a crash: `check()` never rejects, so
+ * init() cannot break the conversation, and it never falls back to a
+ * reassuring default, because "we could not verify" and "everything is fine"
+ * are different claims.
+ */
+function createHealthStatus(el, options) {
+    const opts = options || {};
+    const doFetch = opts.fetch || ((url) => fetch(url));
+    const schedule = opts.setTimer || ((fn, ms) => setTimeout(fn, ms));
+    const unschedule = opts.clearTimer || ((id) => clearTimeout(id));
+    const intervalMs = opts.intervalMs || 60000;
+
+    let timerId = null;
+    let inFlight = false;
+    let paused = false;
+
+    function paint(tone, text) {
+        if (!el) return;
+        const dot = el.querySelector(".dot");
+        if (dot) dot.className = "dot " + tone;
+        const label = el.querySelector(".status-text");
+        if (label) label.textContent = text;
+    }
+
+    /**
+     * Turn a health payload into what the rail says. Pure, so the classification
+     * is testable without a network: anything that is not positively healthy
+     * is not reported as healthy.
+     */
+    function describe(payload) {
+        if (!payload || typeof payload !== "object") {
+            return { tone: "dot-amber", text: "Sin verificar: respuesta ilegible" };
+        }
+
+        const problems = [];
+        if (payload.whisper_loaded !== true) problems.push("STT sin modelo");
+        if (payload.candidate_loaded !== true) problems.push("perfil no cargado");
+
+        const chunks = Number(payload.rag_chunks);
+        if (!Number.isFinite(chunks) || chunks <= 0) {
+            problems.push("RAG sin índice");
+        }
+
+        if (problems.length === 0) {
+            return {
+                tone: "dot-green",
+                text: "Sistema OK · RAG " + chunks + " chunks",
+            };
+        }
+        return { tone: "dot-amber", text: "Degradado: " + problems.join(" · ") };
+    }
+
+    async function check() {
+        // The storm guard: concurrent callers share the one in-flight request.
+        if (inFlight) return null;
+        inFlight = true;
+        try {
+            const res = await doFetch("/api/health");
+
+            if (res.status === 429) {
+                // We asked too often. That is a fact about our polling, not
+                // about the server, so it must not be rendered as an outage.
+                const view = { tone: "dot-amber", text: "Sin verificar (límite de peticiones)" };
+                paint(view.tone, view.text);
+                return view;
+            }
+            if (!res.ok) throw new Error("HTTP " + res.status);
+
+            const view = describe(await res.json());
+            paint(view.tone, view.text);
+            return view;
+        } catch (e) {
+            const view = { tone: "dot-red", text: "Servidor no responde" };
+            paint(view.tone, view.text);
+            return view;
+        } finally {
+            inFlight = false;
+        }
+    }
+
+    function start() {
+        if (timerId === null) {
+            const tick = () => {
+                timerId = null;
+                if (paused) {
+                    // Skipped, not dropped: the next tick re-checks.
+                    timerId = schedule(tick, intervalMs);
+                    return;
+                }
+                check();
+                timerId = schedule(tick, intervalMs);
+            };
+            timerId = schedule(tick, intervalMs);
+        }
+        check();
+    }
+
+    function stop() {
+        if (timerId !== null) {
+            unschedule(timerId);
+            timerId = null;
+        }
+    }
+
+    return {
+        check,
+        describe,
+        start,
+        stop,
+        pause(value) {
+            paused = value === true;
+        },
+        isPaused: () => paused,
+        isChecking: () => inFlight,
+    };
+}
+
+const healthStatus = createHealthStatus(
+    document.getElementById("sidebar-status"),
+);
+
+/**
  * Populate the left sidebar with real data from the backend.
  * - Model names come from GET /api/config
  * - VU meter is driven by mic RMS via startVisualizationLoop
@@ -244,6 +480,10 @@ function init() {
     initAvatarOrb();
     populateStaticSidebar();
     startSessionTimer();
+    // The SISTEMA rail is polled, not hardcoded. Rate-limit pressure is the
+    // reason this is one request a minute and pausable rather than a timer
+    // hammering the same per-IP bucket the interview spends from.
+    healthStatus.start();
 
     // Smart scroll
     conversation.addEventListener("scroll", () => {
@@ -995,6 +1235,13 @@ async function processRecordingStream() {
     turnState.reset();
     currentCandidateDiv = null;
     showTyping();
+    // Arm the stopwatch before the request leaves, and clear any previous
+    // turn's figure: the pill must never show turn N-1's latency as if it
+    // were turn N's.
+    latencyReadout.begin();
+    // The interview owns the rate-limit budget; the health rail stands down
+    // for the duration of the turn.
+    healthStatus.pause(true);
 
     const blob = new Blob(audioChunks, {
         type: selectedMimeType || "audio/webm",
@@ -1047,6 +1294,7 @@ async function processRecordingStream() {
         while (true) {
             const { done, value } = await reader.read();
             if (done) break;
+            latencyReadout.firstByte();
 
             buffer += decoder.decode(value, { stream: true });
             const lines = buffer.split("\n");
@@ -1068,6 +1316,9 @@ async function processRecordingStream() {
                 if (type === "transcription") {
                     addMessage("user", event.data.text);
                 } else if (type === "token") {
+                    // First LLM token of this turn: the number the candidate
+                    // actually perceives, measured rather than asserted.
+                    latencyReadout.firstToken();
                     if (!currentCandidateDiv) {
                         currentCandidateDiv = addMessage("candidate", "");
                         hideTyping();
@@ -1143,6 +1394,9 @@ async function processRecordingStream() {
         console.error("SSE pipeline error:", e);
         addMessage("error", e.message || "Algo salió mal.");
         setStatus("Error", true);
+        // The turn produced no measurable result, so the pill must not keep
+        // showing one — including the partial stopwatch.
+        latencyReadout.abandon();
         // Transport-level failure (HTTP error, network drop). We do not know
         // what the server did, so the interview cannot be trusted to be in a
         // clean state; end it rather than let the candidate talk into a void.
@@ -1151,6 +1405,10 @@ async function processRecordingStream() {
         // Backstop: settles if neither a terminal event nor a clean EOF was
         // reached (e.g. the catch above took over).
         turn.settle("eof");
+        // Always leaves the measuring state, and keeps a real measurement if
+        // one was taken. Runs after the catch, so a failed turn stays blank.
+        latencyReadout.settle();
+        healthStatus.pause(false);
         isProcessing = false;
         btnMic.disabled = false;
         checkAllDone();
