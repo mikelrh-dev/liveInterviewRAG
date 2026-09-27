@@ -11,11 +11,19 @@ prompt: concise, first person, plain text (no Markdown, no emoji).
 import re
 import unicodedata
 
-# Entries are checked in order — more specific entries come first so a generic
-# keyword (e.g. "tests") never shadows a more precise phrase. Each entry has:
+# Entries are checked in order — more specific entries come first so a keyword
+# never shadows a more precise phrase. Each entry has:
 #   phrases:  normalized substrings that trigger the answer (strong match)
 #   keywords: normalized keywords that trigger the answer (weaker match)
 #   answer:   pre-generated response in the candidate's voice
+#
+# Keyword vocabulary is deliberately tiny. A keyword matches as a whole word
+# anywhere in the question, so a generic technical word ("tests", "python",
+# "docker", "sql", "api", "rest", "rag", "dam") selects a pre-generated answer
+# for questions it does not address — "¿Qué cobertura de tests tiene el
+# proyecto de fraude?" is not "¿Haces tests?". Those questions belong to the
+# LLM. Only contextually specific terms belong in `keywords`; anything broader
+# belongs in `phrases`, which require the surrounding words to match.
 _CACHED_QUESTIONS = [
     {
         # Combined question — must come before the separate strengths/weakness entries
@@ -125,7 +133,7 @@ _CACHED_QUESTIONS = [
             "harias pruebas",
             "testeas tu codigo",
         ],
-        "keywords": ["tests"],
+        "keywords": [],
         "answer": (
             "Sí, hago tests unitarios y de integración, sobre todo con pytest, "
             "después de cada cambio significativo. Los veo como una red de seguridad, "
@@ -173,7 +181,7 @@ _CACHED_QUESTIONS = [
             "has usado python",
             "trabajas con python",
         ],
-        "keywords": ["python"],
+        "keywords": [],
         "answer": (
             "Python es mi lenguaje principal. Lo uso en InterviewTTS con FastAPI para "
             "el backend, integración de IA y procesamiento de voz. También lo usé en "
@@ -187,7 +195,7 @@ _CACHED_QUESTIONS = [
             "has usado docker",
             "trabajas con docker",
         ],
-        "keywords": ["docker"],
+        "keywords": [],
         "answer": (
             "He usado Docker con docker-compose para desplegar InterviewTTS en un VPS. "
             "Lo configuré con Nginx como reverse proxy. Aún estoy aprendiendo, pero "
@@ -230,7 +238,7 @@ _CACHED_QUESTIONS = [
             "has usado bases de datos",
             "que sabes de sql",
         ],
-        "keywords": ["bases de datos", "sql"],
+        "keywords": ["bases de datos"],
         "answer": (
             "Trabajo con MySQL, PostgreSQL y SQLite. En el DAM hice diseño de bases de datos, "
             "consultas complejas, triggers y procedimientos almacenados. También usé Hibernate "
@@ -268,7 +276,7 @@ _CACHED_QUESTIONS = [
             "has creado apis",
             "que sabes de api",
         ],
-        "keywords": ["api", "rest"],
+        "keywords": [],
         "answer": (
             "Diseño y consumo APIs REST con FastAPI. En InterviewTTS creé endpoints para "
             "conversación, streaming de audio con SSE y gestión de sesiones. Entiendo "
@@ -280,7 +288,7 @@ _CACHED_QUESTIONS = [
             "que es rag",
             "que es retrieval augmented",
         ],
-        "keywords": ["rag"],
+        "keywords": [],
         "answer": (
             "RAG es Retrieval Augmented Generation: combina búsqueda de documentos "
             "relevantes con generación de texto por IA. En InterviewTTS lo uso para que "
@@ -293,7 +301,7 @@ _CACHED_QUESTIONS = [
             "por que estudias dam",
             "por que te metiste en dam",
         ],
-        "keywords": ["dam"],
+        "keywords": [],
         "answer": (
             "Elegí estudiar desarrollo de software porque siempre me atrajo la tecnología. "
             "A raíz de descubrir la programación, mi cabeza hizo click y empezó un no parar "

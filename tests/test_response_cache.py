@@ -1,6 +1,12 @@
 """Tests for the response cache service (backend/services/response_cache.py)."""
 
-from backend.services.response_cache import get_cached_response, normalize_text
+import pytest
+
+from backend.services.response_cache import (  # noqa: F401  (_CACHED_QUESTIONS: repo precedent tests/test_api.py)
+    _CACHED_QUESTIONS,
+    get_cached_response,
+    normalize_text,
+)
 
 # ─── normalize_text ───────────────────────────────────────
 
@@ -221,10 +227,10 @@ def test_keyword_presenta_inside_word_misses():
 
 
 def test_keyword_exact_word_hits():
-    """Keyword 'api' as a standalone word DOES trigger the APIs answer."""
-    answer = get_cached_response("¿Sabes trabajar con API?")
+    """A kept keyword as a standalone word DOES trigger its answer."""
+    answer = get_cached_response("¿Cuáles son tus fortalezas y cómo las demuestras?")
     assert answer is not None
-    assert "APIs REST" in answer or "endpoints" in answer.lower()
+    assert "disciplina" in answer.lower()
 
 
 def test_multiword_keyword_hits():
@@ -232,3 +238,213 @@ def test_multiword_keyword_hits():
     answer = get_cached_response("¿Has usado IA generativa en tus proyectos?")
     assert answer is not None
     assert "IA" in answer
+
+
+# ─── Keyword strictness: generic technical words must not trigger ──
+#
+# `keywords` is a weak, whole-word match anywhere in the question. Generic
+# technical words ("tests", "python", "docker", "sql", "api", "rest", "rag",
+# "dam") occur in recruiter questions the cached answer does not address, so
+# they misroute: the cache answered "Have you used Python?" with a Spanish
+# InterviewTTS answer. The cache must answer only what it recognises, and
+# defer everything else to the LLM.
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        pytest.param("¿Qué cobertura de tests tiene el proyecto de fraude?", id="tests"),
+        pytest.param("Have you used Python?", id="python"),
+        pytest.param("¿Por qué no usaste Docker en producción?", id="docker-negated"),
+        pytest.param("¿Prefieres SQL declarativo o modelos NoSQL?", id="sql"),
+        pytest.param("¿Qué API usasteis para el bot de Telegram?", id="api"),
+        pytest.param(
+            "¿Alguna vez has integrado un servicio REST de terceros?", id="rest"
+        ),
+        pytest.param("¿Tenéis RAG en producción o es solo una demo?", id="rag"),
+        pytest.param("¿Cuánto dura el ciclo formativo de DAM?", id="dam"),
+    ],
+)
+def test_generic_technical_keyword_does_not_trigger_a_cached_answer(question):
+    """A generic technical word alone must not select a pre-generated answer."""
+    assert get_cached_response(question) is None
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        pytest.param("¿Qué API usasteis para el bot de Telegram?", id="api"),
+        pytest.param("¿Por qué no usaste Docker en producción?", id="docker"),
+        pytest.param("Have you used Python?", id="python-english"),
+        pytest.param("¿Qué framework de Python usas en el detector?", id="python-project"),
+    ],
+)
+def test_demonstrated_misroute_reaches_the_llm(question):
+    """The four misroutes whose trigger was a generic keyword now fall through."""
+    assert get_cached_response(question) is None
+
+
+def test_misroute_more_about_interviewtts_still_hits_kept_keyword():
+    """'Cuéntame más sobre InterviewTTS' is NOT fixed by the keyword change.
+
+    Verified against the running cache: this question matches on the keyword
+    ``interviewtts``, which the removal list explicitly keeps, and on no
+    phrase. The answer it returns is the InterviewTTS project description —
+    topically correct, but the same text the candidate already heard, which is
+    why it was reported as a misroute.
+
+    It is left hitting on purpose: the fix would be to drop the ``interviewtts``
+    keyword, and that is the owner's call, not a silent edit here. Recorded as
+    a test so the behaviour cannot drift unnoticed.
+    """
+    answer = get_cached_response("Cuéntame más sobre InterviewTTS")
+    assert answer is not None
+    assert answer is get_cached_response("¿Qué es InterviewTTS?")
+
+
+# ─── Positive control: the legitimate fast path must survive ──
+#
+# Removing over-broad keywords must not touch `phrases`. These are the exact
+# questions a recruiter asks and the answers are correct and wiki-backed, so a
+# miss here is a real cost (4-8s of LLM latency) and a real regression.
+
+
+@pytest.mark.parametrize(
+    ("question", "expected_fragment"),
+    [
+        pytest.param("¿Haces tests unitarios?", "pytest", id="phrase-tests"),
+        pytest.param(
+            "¿Qué experiencia tienes con Python?", "FastAPI", id="phrase-python"
+        ),
+        pytest.param(
+            "¿Qué experiencia tienes con Docker?", "docker-compose", id="phrase-docker"
+        ),
+        pytest.param("¿Qué sabes de SQL?", "Hibernate", id="phrase-sql"),
+        pytest.param("¿Qué sabes de APIs REST?", "SSE", id="phrase-rest"),
+        pytest.param("¿Qué es RAG?", "Retrieval Augmented", id="phrase-rag"),
+        pytest.param("¿Por qué elegiste DAM?", "tecnología", id="phrase-dam"),
+        pytest.param("¿Qué sabes de bases de datos?", "MySQL", id="phrase-db"),
+        pytest.param("¿Has trabajado en equipo?", "equipo", id="phrase-team"),
+        pytest.param("¿Por qué quieres trabajar aquí?", "aprender", id="phrase-company"),
+    ],
+)
+def test_intact_phrase_still_returns_its_answer(question, expected_fragment):
+    """An untouched multi-word phrase still selects its pre-generated answer."""
+    answer = get_cached_response(question)
+    assert answer is not None, f"fast path lost for {question!r}"
+    assert expected_fragment in answer
+
+
+def test_no_phrase_was_removed():
+    """Guards the rule that only keywords may be removed, never a phrase.
+
+    Snapshot of the phrase count (20 entries, 85 phrases). Bump it when an
+    entry or phrase is added on purpose; never to silence a deletion.
+    """
+    assert len(_CACHED_QUESTIONS) == 20
+    assert sum(len(entry["phrases"]) for entry in _CACHED_QUESTIONS) == 85
+
+
+def test_only_contextually_specific_keywords_remain():
+    """The keyword vocabulary is exactly the nine contextually specific terms."""
+    remaining = sorted({kw for entry in _CACHED_QUESTIONS for kw in entry["keywords"]})
+    assert remaining == [
+        "aprendes",
+        "aprendiste",
+        "bases de datos",
+        "debilidades",
+        "fortalezas",
+        "ia generativa",
+        "interviewtts",
+        "la ia",
+        "presenta",
+    ]
+
+
+# ─── Language: English questions must reach the LLM ──
+#
+# The cache is Spanish-only with no language awareness, and it must stay that
+# way — a language detector is scope creep. The contract is instead that the
+# cache answers only what it confidently recognises, so every English question
+# falls through rather than returning a Spanish answer.
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        pytest.param("Tell me about yourself", id="pitch"),
+        pytest.param("What are your strengths", id="strengths"),
+        pytest.param("Why did you leave Mercadona", id="career-change"),
+        pytest.param("What is RAG", id="rag"),
+        pytest.param("Do you use Docker in production", id="docker"),
+        pytest.param("Where do you see yourself in 5 years", id="future"),
+        pytest.param("How do you learn new things", id="learning"),
+        pytest.param("What database experience do you have", id="databases"),
+    ],
+)
+def test_english_question_reaches_the_llm(question):
+    """An English question must not be answered with a Spanish cached answer."""
+    assert get_cached_response(question) is None
+
+
+# ─── Negation: no heuristic guard, and none is needed ──
+#
+# "¿Por qué no usaste Docker?" matched on `docker` and returned a positive
+# Docker answer. The keyword is gone, so it falls through on its own. No
+# negation detector was added: a fixed token window either misses the
+# demonstrated case (window=1: the token before "bases de datos" is "usaste",
+# not "no") or rejects legitimate questions (window=2: "¿No puedes diseñar
+# bases de datos?"). Resolving scope properly needs parsing, which contradicts
+# this module's "no external dependencies" design.
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        pytest.param("¿Por qué no usaste Docker en producción?", id="docker"),
+        pytest.param("¿Por qué no dejaste Mercadona?", id="mercadona"),
+        pytest.param("¿Por qué no elegiste DAM?", id="dam"),
+        pytest.param("¿Has usado alguna vez RAG?", id="rag-not-used"),
+    ],
+)
+def test_negated_question_never_returns_a_positive_cached_answer(question):
+    """A negated question about a removed keyword falls through to the LLM."""
+    assert get_cached_response(question) is None
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        pytest.param("¿Por qué no usaste bases de datos?", id="why-not"),
+        pytest.param("¿Nunca has trabajado con bases de datos?", id="never"),
+        pytest.param("Que no es InterviewTTS?", id="what-is-not"),
+    ],
+)
+def test_known_residual_negation_exposure_on_a_kept_keyword(question):
+    """KNOWN LIMITATION, needs the owner's call — negation on a kept keyword.
+
+    The eight removed keywords are fixed, but a negation that scopes over one
+    of the nine *kept* keywords still selects a positive answer, because
+    `bases de datos` and `interviewtts` are contextually specific enough to
+    keep and are matched as whole words with no regard to negation.
+
+    This is the case a negation guard would fix, and the case a naive guard
+    would break: "no" also occurs in legitimate questions ("¿No puedes diseñar
+    bases de datos?"), so a keyword-level negation check would reject those
+    too. Recorded here so the exposure stays visible and deliberate rather
+    than accidental. Asserted as current behaviour on purpose — if a guard is
+    ever added, this test is the one that should flip.
+    """
+    assert get_cached_response(question) is not None
+
+
+def test_negation_interposed_in_a_phrase_breaks_the_substring():
+    """Characterisation, not a defect test: 'no' inside a phrase breaks the match.
+
+    This is why the phrase fast path needs no negation guard. Inserting the
+    negation between two words of a multi-word phrase breaks contiguity, so
+    the phrase cannot match. The residual exposure is limited to the nine kept
+    keywords, which are contextually specific.
+    """
+    assert get_cached_response("¿Por qué no dejaste Mercadona?") is None
+
