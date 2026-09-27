@@ -277,10 +277,10 @@ class TestStreamingTTSErrors:
 
         error_events = [e for e in events if e.get("event") == "error"]
         done_events = [e for e in events if e.get("event") == "done"]
-        audio_chunk_events = [e for e in events if e.get("event") == "audio_chunk"]
+        audio_events = [e for e in events if e.get("event") == "audio_url"]
 
         assert len(error_events) >= 1, "Expected at least one error event"
-        assert len(audio_chunk_events) >= 1, "Expected successful audio_chunk events"
+        assert len(audio_events) >= 1, "Expected successful audio_url events"
         assert len(done_events) >= 1, "Expected done event (stream should continue)"
         assert "detail" in error_events[0].get("data", {})
 
@@ -451,8 +451,16 @@ class TestStreamingResponseCache:
         # LLM streaming path used — tokens come from the LLM mock, not the cache
         mock_services["llm"].generate_stream_with_context.assert_called_once()
         assert "".join(token_texts) == "I built InterviewTTS using Python and FastAPI."
-        # The LLM path emits per-sentence audio_chunk events, never audio_url
-        assert len(audio_url_events) == 0
+        # Both paths emit the canonical audio_url event; they differ by shape.
+        # The LLM path is per-sentence, so every event carries a sequential id
+        # for the frontend playback cursor.
+        assert len(audio_url_events) >= 1
+        for event in audio_url_events:
+            assert isinstance(event["data"]["id"], int)
+            assert event["data"]["url"].startswith("/audio/")
+        assert [e["data"]["id"] for e in audio_url_events] == list(
+            range(len(audio_url_events))
+        ), "per-sentence audio ids must be gapless and ordered"
         assert len(done_events) == 1
 
 

@@ -796,12 +796,23 @@ async def send_message(conversation_id: str, audio: UploadFile = File(...)):
 async def send_message_stream(conversation_id: str, audio: UploadFile = File(...)):
     """Streaming version: STT + RAG + LLM (SSE tokens) + TTS + audio URL.
 
-    Events:
-      - transcription: {"text": "..."}
-      - token: {"text": "..."}        (one per LLM chunk)
-      - audio_url: {"url": "..."}
-      - error: {"detail": "..."}
-      - done: {}
+    Event contract (kept in lockstep with the dispatcher in
+    ``frontend/app.js``; ``tests/test_sse_contract.py`` enforces that every
+    name below has a frontend branch, because an unhandled event is dropped
+    silently rather than reported):
+
+      - transcription:  {"text": "..."}                 always first
+      - token:          {"text": "..."}                 one per LLM chunk
+      - audio_url:      {"url": "..."}                  cached/farewell
+                        {"id": int, "url": "..."}        per-sentence stream
+      - error:          {"detail": "..."}               fatal, non-recoverable
+                        {"detail": "...", "id": int}    recoverable, per-chunk
+      - done:           {}                               terminal (normal turn)
+      - interview_end:  {"message": "..."}              terminal (farewell)
+
+    Exactly one terminal event is emitted per stream. ``audio_url`` is the
+    single canonical audio event name; the optional ``id`` is the frontend
+    playback cursor and is absent when the answer is one whole file.
     """
     # Validate conversation exists (hydrates from DB on memory miss)
     await _get_conversation_or_hydrate(conversation_id)
@@ -1068,7 +1079,7 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
                         try:
                             sid, audio_path = done.result()
                             yield sse_format(
-                                "audio_chunk",
+                                "audio_url",
                                 {
                                     "id": sid,
                                     "url": f"/audio/{conversation_id}/{audio_path.name}",

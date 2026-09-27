@@ -978,8 +978,16 @@ async function processRecordingStream() {
                     // Typing animation: append character by character
                     appendTypingText(currentCandidateDiv, event.data.text);
                     scrollToBottom();
-                } else if (type === "audio_chunk") {
-                    audioQueue.push({ id: event.data.id, url: event.data.url });
+                } else if (type === "audio_url") {
+                    // Canonical audio event. Two shapes arrive under this name:
+                    // the incremental per-sentence stream carries an explicit
+                    // `id`, while the single-file cached/farewell answer does
+                    // not. Fall back to the queue cursor so the playback
+                    // ordering contract in tryPlayNextChunk() still holds.
+                    const id = Number.isFinite(event.data.id)
+                        ? event.data.id
+                        : nextChunkId;
+                    audioQueue.push({ id, url: event.data.url });
                     tryPlayNextChunk();
                 } else if (type === "done") {
                     allChunksReceived = true;
