@@ -254,6 +254,121 @@ class TestTerminalEventGuarantee:
         assert "error" in types, types
         assert _terminal_count(events) == 1, types
 
+    def test_real_llm_mid_stream_failure_emits_no_second_answer(
+        self, client, mock_services
+    ):
+        """End-to-end proof that the two halves compose.
+
+        The real LLMService runs its real Google→OpenRouter fallback against
+        mocked HTTP: Google yields two tokens and the transport dies. Before
+        the fix the SSE stream carried four tokens — the partial Google answer
+        immediately followed by the whole OpenRouter answer — and the turn was
+        stored that way, so the garbage was replayed on hydration. Now the
+        stream carries the two Google tokens, reports the failure, and stores
+        nothing.
+        """
+        import httpx
+
+        from backend.services.llm import LLMService
+
+        def _google_iter_lines():
+            yield (
+                'data: {"candidates": [{"content": {"parts": '
+                '[{"text": "GOOGLE-PARTIAL-1 "}]}}]}'
+            )
+            yield (
+                'data: {"candidates": [{"content": {"parts": '
+                '[{"text": "GOOGLE-PARTIAL-2"}]}}]}'
+            )
+            raise httpx.ReadError("connection reset by peer")
+
+        google = MagicMock()
+        google.status_code = 200
+        google.__enter__ = MagicMock(return_value=google)
+        google.__exit__ = MagicMock(return_value=False)
+        google.iter_lines = _google_iter_lines
+
+        openrouter = MagicMock()
+        openrouter.status_code = 200
+        openrouter.__enter__ = MagicMock(return_value=openrouter)
+        openrouter.__exit__ = MagicMock(return_value=False)
+        openrouter.iter_lines.return_value = [
+            'data: {"choices": [{"delta": '
+            '{"content": "OpenRouter-SEGUNDA-RESPUESTA"}}]}',
+            "data: [DONE]",
+        ]
+        openrouter_iter_lines = openrouter.iter_lines
+
+        http_client = MagicMock()
+        http_client.stream.side_effect = lambda method, url, **kw: (
+            google if "generativelanguage" in url else openrouter
+        )
+
+        real_llm = LLMService(api_key="test-key", google_api_key="test-google-key")
+
+        def _real_stream(**kwargs):
+            return (
+                real_llm.generate_stream(
+                    prompt=kwargs["prompt"],
+                    context=kwargs.get("context", ""),
+                    system_prompt=kwargs.get("system_prompt", ""),
+                ),
+                kwargs.get("context_chunks") or [],
+            )
+
+        mock_services["llm"].generate_stream_with_context.side_effect = _real_stream
+
+        async def tts_ok(text, sentence_id, output_dir):
+            # synthesize_sentence must yield (sentence_id, path); returning the
+            # wrong shape would make this test pass for the wrong reason.
+            return sentence_id, Path(output_dir) / f"{sentence_id}.mp3"
+
+        mock_services["tts"].synthesize_sentence = tts_ok
+
+        conversation_id = client.post("/api/conversation").json()["conversation_id"]
+        with patch("backend.services.llm._get_client", return_value=http_client):
+            events = _stream_events(client, conversation_id)
+
+        types = [e["event"] for e in events]
+        assert "error" in types, types
+        # One coherent terminal outcome, not a truncated stream.
+        assert _terminal_count(events) == 1, types
+
+        spoken = "".join(e["data"]["text"] for e in events if e["event"] == "token")
+        assert spoken == "GOOGLE-PARTIAL-1 GOOGLE-PARTIAL-2", repr(spoken)
+        assert "OpenRouter" not in spoken
+        # The fallback stream was never even opened.
+        openrouter_iter_lines.assert_not_called()
+
+    def test_llm_mid_stream_failure_stores_nothing(self, client, mock_services):
+        """A lost answer must not be persisted as if it had succeeded.
+
+        This is the payoff of aborting instead of retrying: the partial text
+        never reaches the database, so hydration cannot replay garbage.
+        """
+        from backend.main import conversations
+
+        def exploding_stream(*args, **kwargs):
+            def gen():
+                yield "Partial answer."
+                raise RuntimeError("provider connection reset")
+
+            return (gen(), [])
+
+        mock_services["llm"].generate_stream_with_context.side_effect = exploding_stream
+
+        conversation_id = client.post("/api/conversation").json()["conversation_id"]
+        _stream_events(client, conversation_id)
+
+        turns = conversations[conversation_id]["turns"]
+        messages = conversations[conversation_id]["messages"]
+        assert turns == [], "a lost answer must not become a stored turn"
+        # The transcript and the turn numbering must agree with each other.
+        assert len(turns) == len(messages), (
+            f"{len(turns)} turns but {len(messages)} messages -- the transcript "
+            "and the turn numbering disagree"
+        )
+
     def test_farewell_terminates_with_interview_end(self, client, mock_services):
         mock_services["stt"].transcribe.return_value = "Muchas gracias, eso es todo"
         conversation_id = client.post("/api/conversation").json()["conversation_id"]
