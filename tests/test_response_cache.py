@@ -1,5 +1,8 @@
 """Tests for the response cache service (backend/services/response_cache.py)."""
 
+import re
+from pathlib import Path
+
 import pytest
 
 from backend.services.response_cache import (  # noqa: F401  (_CACHED_QUESTIONS: repo precedent tests/test_api.py)
@@ -448,3 +451,103 @@ def test_negation_interposed_in_a_phrase_breaks_the_substring():
     """
     assert get_cached_response("¿Por qué no dejaste Mercadona?") is None
 
+
+# ─── Wiki consistency: the cache is a derived store ─────────
+#
+# `wiki/` is the single source of truth for any factual claim about the
+# candidate; this cache is a derived store that loses every disagreement, so a
+# divergence is a wrong answer in a real interview. These tests read the wiki
+# at test time, so editing the wiki to drop or add a technology fails here
+# instead of in front of a recruiter.
+
+WIKI_DIR = Path(__file__).resolve().parents[1] / "wiki"
+
+# Vocabulary used only to *detect* a database name inside a cached answer.
+# This is a scanner, not an allowlist of approved claims: a database the wiki
+# does not list fails the test, and a database the wiki adds passes without
+# touching the test. That is what keeps the assertion maintainable.
+_DATABASE_VOCABULARY = {
+    "cassandra", "cockroach", "db2", "dynamodb", "elasticsearch", "firebird",
+    "mariadb", "mongo", "mongodb", "mssql", "mysql", "oracle", "postgres",
+    "postgresql", "redis", "sqlite", "sqlalchemy", "sqlserver",
+}
+
+
+def _cached_answers() -> list[str]:
+    return [entry["answer"] for entry in _CACHED_QUESTIONS]
+
+
+def _wiki_text(relative_path: str) -> str:
+    return (WIKI_DIR / relative_path).read_text(encoding="utf-8")
+
+
+def _wiki_databases() -> set[str]:
+    """Databases the wiki attributes to the candidate, from the profile summary.
+
+    wiki/profile/mikel.md, "## Top skills (summary)" -> "**Databases:** ...".
+    """
+    profile = _wiki_text("profile/mikel.md")
+    marker = "**Databases:**"
+    for line in profile.splitlines():
+        if marker in line:
+            listed = line.split(marker, 1)[1]
+            return {name.strip().lower() for name in listed.split(",") if name.strip()}
+    raise AssertionError("wiki/profile/mikel.md no longer has a '**Databases:**' line")
+
+
+def test_wiki_lists_the_databases_the_cache_answers_with():
+    """The database answer names only databases the wiki attributes to him.
+
+    Regression: the answer claimed "MySQL, PostgreSQL y SQLite" while the wiki
+    lists MySQL, PostgreSQL and MongoDB (wiki/profile/mikel.md,
+    wiki/skills/data.md) and no SQLite anywhere.
+    """
+    answer = get_cached_response("¿Qué sabes de bases de datos?")
+    assert answer is not None
+
+    named = {
+        word.lower()
+        for word in re.findall(r"[A-Za-z]+", answer)
+        if word.lower() in _DATABASE_VOCABULARY
+    }
+    wiki_databases = _wiki_databases()
+
+    assert named, f"no database name detected in the cached answer: {answer!r}"
+    assert named <= wiki_databases, (
+        f"cache names databases the wiki does not list: {sorted(named - wiki_databases)}; "
+        f"wiki lists {sorted(wiki_databases)}"
+    )
+
+
+def test_cache_answer_names_every_database_the_wiki_lists():
+    """The spoken answer covers the whole wiki claim, so it cannot understate it.
+
+    Omission is how "MySQL, PostgreSQL y SQLite" hid the fact that MongoDB is
+    the third database the wiki actually attributes to him.
+    """
+    answer = get_cached_response("¿Qué sabes de bases de datos?")
+    assert answer is not None
+    for database in _wiki_databases():
+        assert database in answer.lower(), f"{database} is in the wiki but not the answer"
+
+
+def test_cache_never_claims_sqlite():
+    """SQLite appears nowhere in the wiki, so it must appear nowhere in the cache."""
+    offenders = [
+        answer for answer in _cached_answers() if "sqlite" in answer.lower()
+    ]
+    assert not offenders, f"SQLite claimed by the cache, unsupported by the wiki: {offenders}"
+
+
+def test_pitch_matches_the_wiki_presentation():
+    """The pitch must not describe the pre-DAM job as 'encargado de supermercado'.
+
+    The wiki supersedes it: wiki/faq/presentacion-30-segundos.md (2026-08-28)
+    replaced that phrasing with "empecé como frutero, progresé a encargado y
+    terminé como gerente en Mercadona liderando equipos de ~50 personas", and
+    wiki/profile/mikel.md records Gerente B, Mercadona, 2019-Nov 2025.
+    """
+    answer = get_cached_response("Cuéntame sobre ti")
+    assert answer is not None
+    assert "encargado de supermercado" not in answer.lower()
+    assert "gerente" in answer.lower()

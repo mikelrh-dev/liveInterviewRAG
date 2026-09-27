@@ -51,8 +51,9 @@ _CACHED_QUESTIONS = [
         "keywords": ["presenta"],
         "answer": (
             "Soy Mikel, desarrollador junior DAM. Estudié Desarrollo de Aplicaciones "
-            "Multiplataforma en Tartanga y antes trabajé años como encargado de supermercado, "
-            "pero quise dar un giro y dedicarme a algo que me apasiona: el desarrollo de software."
+            "Multiplataforma en Tartanga y antes era gerente en Mercadona, liderando un equipo "
+            "de unas 50 personas, pero quise dar un giro y dedicarme a algo que me apasiona: "
+            "el desarrollo de software."
         ),
     },
     {
@@ -240,7 +241,7 @@ _CACHED_QUESTIONS = [
         ],
         "keywords": ["bases de datos"],
         "answer": (
-            "Trabajo con MySQL, PostgreSQL y SQLite. En el DAM hice diseño de bases de datos, "
+            "Trabajo con MySQL, PostgreSQL y MongoDB. En el DAM hice diseño de bases de datos, "
             "consultas complejas, triggers y procedimientos almacenados. También usé Hibernate "
             "para ORM en Java."
         ),
