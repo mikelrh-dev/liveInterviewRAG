@@ -28,15 +28,60 @@ QUERY_EXPANSIONS: Dict[str, List[str]] = {
     "proyecto": ["project", "entrevista", "prácticas"],
 }
 
-# Query keywords -> document type. Used to pre-filter chunks before similarity
-# search when a query clearly maps to a single type.
+# Canonical document types -> the frontmatter ``type:`` spellings that map to
+# them. Data-driven from the ``type:`` values actually present in wiki/ (all
+# SINGULAR: profile, project, experience, skills, story, opinion, decision, faq),
+# extended with the plural spellings authors reach for naturally.
+#
+# This table replaces the old ``if doc_type == "projects" ...`` special-case that
+# only ever covered project: because QUERY_TYPE_KEYWORDS used PLURAL keys
+# ("stories", "opinions", "decisions") while the wiki used singular values, a
+# recruiter question about a story, opinion or decision produced a filter that
+# matched nothing and returned [] with no warning at all — the LLM then answered
+# with zero grounding from the candidate's own profile.
+DOC_TYPE_ALIASES: Dict[str, Tuple[str, ...]] = {
+    "profile": ("profile", "profiles"),
+    "project": ("project", "projects"),
+    "experience": ("experience", "experiences"),
+    "skills": ("skill", "skills"),
+    "story": ("story", "stories"),
+    "opinion": ("opinion", "opinions"),
+    "decision": ("decision", "decisions"),
+    "faq": ("faq", "faqs"),
+}
+
+# Reverse index: every accepted spelling -> its canonical type.
+_TYPE_LOOKUP: Dict[str, str] = {
+    alias: canonical
+    for canonical, aliases in DOC_TYPE_ALIASES.items()
+    for alias in aliases
+}
+
+
+def canonical_doc_type(value: Optional[str]) -> str:
+    """Normalise a frontmatter ``type:`` or a filter request to canonical form.
+
+    Unknown or absent types are returned lowercased and unchanged, so an
+    unfamiliar type still compares by exact match (and, if nothing matches,
+    retrieve() will warn loudly rather than silently returning nothing).
+    """
+    if not value:
+        return ""
+    key = str(value).strip().lower()
+    return _TYPE_LOOKUP.get(key, key)
+
+
+# Query keywords -> canonical document type. Used to pre-filter chunks before
+# similarity search when a query clearly maps to a single type.
+# Keys are CANONICAL types (see DOC_TYPE_ALIASES), so every filter this table
+# can emit is reachable from the wiki corpus.
 QUERY_TYPE_KEYWORDS: Dict[str, List[str]] = {
     "skills": ["tests", "testing", "test", "pytest", "tdd", "skills", "lenguajes", "frameworks"],
     "experience": ["experiencia", "mercadona", "encargado", "gerente", "retail"],
     "project": ["proyecto", "proyectos", "project", "projects", "portfolio"],
-    "stories": ["historia", "anécdota", "story", "situación"],
-    "opinions": ["opinión", "opinion", "piensas", "crees"],
-    "decisions": ["decisión", "decision", "dejaste", "dejar"],
+    "story": ["historia", "anécdota", "story", "situación"],
+    "opinion": ["opinión", "opinion", "piensas", "crees"],
+    "decision": ["decisión", "decision", "dejaste", "dejar"],
     "faq": ["presentación", "presentacion", "fortalezas", "debilidades", "área preferida"],
     "profile": ["sobre ti", "quién eres", "quien eres", "presentate", "preséntate"],
 }
@@ -435,16 +480,34 @@ class RAGPipeline:
 
         candidates = self.chunks
         if doc_type:
-            # Normalize type aliases: "projects" ↔ "project" so wiki docs using
-            # either singular or plural in frontmatter are found consistently.
-            _norm = "project" if doc_type in ("project", "projects") else doc_type
+            # Normalise both sides through canonical_doc_type so wiki docs using
+            # either singular or plural frontmatter (story/stories, project/
+            # projects, ...) are all reachable, for EVERY type — not just
+            # project, which was the only one previously special-cased.
+            wanted = canonical_doc_type(doc_type)
             candidates = [
-                c for c in self.chunks
-                if c.type == _norm or c.type == doc_type
-                or (doc_type in ("project", "projects") and c.type in ("project", "projects"))
+                c for c in self.chunks if canonical_doc_type(c.type) == wanted
             ]
             if not candidates:
-                return []
+                # Documented fallback: RETRIEVE UNFILTERED rather than return [].
+                #
+                # A filter matching nothing means the very next step hands the
+                # LLM zero context, and an interview answer with no grounding
+                # from the candidate's own profile is worse than a slightly less
+                # precise one. Retrieval semantics are therefore NOT changed
+                # silently: the substitution is logged as a warning naming the
+                # requested type and the available ones, so the owner sees the
+                # mapping gap instead of the hole quietly disappearing.
+                available = sorted({c.type for c in self.chunks if c.type})
+                logger.warning(
+                    "doc_type filter %r matched no chunks (canonical %r); "
+                    "available types: %s. Falling back to unfiltered retrieval "
+                    "so the answer stays grounded in the candidate's profile.",
+                    doc_type,
+                    wanted,
+                    ", ".join(available) if available else "<none>",
+                )
+                candidates = self.chunks
 
         # Expand the query with synonyms before embedding to improve recall
         expanded_query = expand_query(query)

@@ -1,11 +1,21 @@
 """Tests for RAG pipeline with known documents."""
 
 import json
+import logging
 import numpy as np
 import pytest
 from pathlib import Path
 
-from backend.services.rag import RAGPipeline, Chunk, parse_frontmatter, expand_query, detect_doc_type
+from backend.services.rag import (
+    DOC_TYPE_ALIASES,
+    QUERY_TYPE_KEYWORDS,
+    Chunk,
+    RAGPipeline,
+    canonical_doc_type,
+    detect_doc_type,
+    expand_query,
+    parse_frontmatter,
+)
 
 
 class TestRAGPipeline:
@@ -492,6 +502,175 @@ App de entrevistas por voz.""",
         rag.ingest_documents(docs)
         context = rag.get_context_string("¿Qué es InterviewTTS?")
         assert "entrevistas por voz" in context
+
+
+# ── Item B: every real wiki `type:` must be reachable through a filter ──────
+#
+# Regression net.  QUERY_TYPE_KEYWORDS used plural keys ("stories", "opinions",
+# "decisions") while the wiki frontmatter uses singular `type:` values
+# ("story", "opinion", "decision").  retrieve() normalised only project↔projects,
+# so a recruiter question about a decision, an opinion or a story produced a
+# filter that matched nothing and returned [] *silently* — the LLM then answered
+# with zero grounding from the candidate's own profile.
+
+# The canonical types actually present in wiki/, each with a probe query built
+# from a token that maps to exactly that type (so detect_doc_type is unambiguous).
+_TYPE_PROBES = {
+    "profile": "preséntate",
+    "project": "portfolio",
+    "experience": "retail",
+    "skills": "frameworks",
+    "story": "anécdota",
+    "opinion": "crees",
+    "decision": "decisión",
+    "faq": "fortalezas",
+}
+
+
+def _doc_for_type(doc_type: str) -> str:
+    """A minimal single-section document carrying the given frontmatter type."""
+    return (
+        f"---\n"
+        f"type: {doc_type}\n"
+        f"tags: [{doc_type}]\n"
+        f"summary_1line: Contenido de tipo {doc_type}\n"
+        f"---\n\n"
+        f"# {doc_type}\n\n"
+        f"Contenido único y relevante del tipo {doc_type} para la entrevista.\n"
+    )
+
+
+class TestDocTypeFilterCoverage:
+    """Every real wiki type must produce a non-empty filtered candidate set."""
+
+    def test_wiki_types_are_all_covered_by_the_type_mapping(self):
+        """Read the real wiki/ frontmatter: no `type:` may be unreachable.
+
+        This is the data-driven net. Adding a new `type:` to the wiki without
+        extending the mapping must fail here, loudly, instead of silently
+        producing ungrounded answers at interview time.
+        """
+        wiki_dir = Path(__file__).resolve().parent.parent / "wiki"
+        real_types = set()
+        for md in wiki_dir.rglob("*.md"):
+            meta, _ = parse_frontmatter(md.read_text(encoding="utf-8"))
+            raw = str(meta.get("type", "") or "").strip()
+            if raw and "|" not in raw:  # CONVENCIONES.md lists all types
+                real_types.add(raw)
+
+        assert real_types, f"no wiki documents with a type: found under {wiki_dir}"
+        unreached = {
+            t for t in real_types if canonical_doc_type(t) != t or t not in _TYPE_PROBES
+        }
+        assert not unreached, (
+            f"wiki types not covered by the doc_type mapping: {sorted(unreached)}. "
+            f"Add them to DOC_TYPE_ALIASES and to _TYPE_PROBES so recruiter "
+            f"questions about them stay grounded."
+        )
+
+    def test_each_real_type_yields_non_empty_candidates(self, caplog):
+        """For each real type, a keywordised query must reach that type's chunks.
+
+        Asserts the FILTER matched, not merely that results came back: the
+        documented unfiltered fallback would otherwise satisfy a loose
+        "non-empty" assertion and hide this very bug forever. Proof that the
+        filter itself worked: every returned chunk is of the requested type, and
+        no unmatched-filter warning was logged.
+        """
+        rag = RAGPipeline(chunk_size=1000, threshold=0.0)
+        rag.ingest_documents(
+            {f"{t}.md": _doc_for_type(t) for t in _TYPE_PROBES}
+        )
+
+        for doc_type, probe in _TYPE_PROBES.items():
+            detected = detect_doc_type(probe)
+            assert detected == doc_type, (
+                f"probe {probe!r} should detect {doc_type!r}, got {detected!r}"
+            )
+            with caplog.at_level(logging.WARNING, logger="backend.services.rag"):
+                caplog.clear()
+                results = rag.retrieve(probe, top_k=5, doc_type=detected)
+
+            assert results, (
+                f"type {doc_type!r} produced ZERO candidates for probe {probe!r} "
+                f"— the filter cannot match, so the answer loses its grounding"
+            )
+            assert all(c.type == doc_type for c, _ in results), (
+                f"type {doc_type!r} filter returned chunks of other types: "
+                f"{[c.type for c, _ in results]}"
+            )
+            assert not [
+                r for r in caplog.records if "matched no chunks" in r.getMessage()
+            ], (
+                f"type {doc_type!r} only reached results via the unfiltered "
+                f"fallback — the filter itself still cannot match"
+            )
+
+    def test_plural_and_singular_spellings_both_reach_the_same_chunks(self):
+        """Frontmatter may be singular or plural; both must reach the same type."""
+        rag = RAGPipeline(chunk_size=1000, threshold=0.0)
+        rag.ingest_documents({
+            "story-a.md": _doc_for_type("story"),
+            "opinion-a.md": _doc_for_type("opinion"),
+            "decision-a.md": _doc_for_type("decision"),
+        })
+
+        for plural, probe in [
+            ("stories", "anécdota"),
+            ("opinions", "crees"),
+            ("decisions", "decisión"),
+        ]:
+            canonical = canonical_doc_type(plural)
+            results = rag.retrieve(probe, top_k=5, doc_type=canonical)
+            assert results, f"plural spelling {plural!r} must reach canonical {canonical!r}"
+            assert all(canonical_doc_type(c.type) == canonical for c, _ in results)
+
+    def test_no_query_type_key_is_absent_from_the_wiki(self):
+        """QUERY_TYPE_KEYWORDS keys must be real, resolvable document types."""
+        for key in QUERY_TYPE_KEYWORDS:
+            assert key in DOC_TYPE_ALIASES, (
+                f"QUERY_TYPE_KEYWORDS key {key!r} is not a canonical document "
+                f"type — detect_doc_type would emit a filter that matches nothing"
+            )
+
+
+class TestUnmatchedDocTypeIsLoud:
+    """A filter that matches nothing must warn and fall back, not vanish."""
+
+    def test_unmatched_filter_logs_warning_naming_types_and_falls_back(
+        self, caplog
+    ):
+        rag = RAGPipeline(chunk_size=1000, threshold=0.0)
+        rag.ingest_documents({
+            "skills/testing.md": _doc_for_type("skills"),
+            "faq/area.md": _doc_for_type("faq"),
+        })
+
+        with caplog.at_level(logging.WARNING, logger="backend.services.rag"):
+            results = rag.retrieve("algo sin filtro valido", top_k=5,
+                                   doc_type="decision")
+
+        warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert warnings, "an unmatched doc_type filter must be logged, not silent"
+        message = warnings[0].getMessage()
+        assert "decision" in message, "the warning must name the requested type"
+        assert "skills" in message and "faq" in message, (
+            "the warning must name the available types so the owner can fix the "
+            "mapping: %r" % message
+        )
+        # Documented fallback: unfiltered retrieval, so the answer stays grounded
+        assert results, "unmatched filter must fall back to unfiltered retrieval"
+        assert {canonical_doc_type(c.type) for c, _ in results} == {"skills", "faq"}
+
+    def test_matched_filter_does_not_warn(self, caplog):
+        """A filter that matches must stay quiet — no warning spam per request."""
+        rag = RAGPipeline(chunk_size=1000, threshold=0.0)
+        rag.ingest_documents({"story-a.md": _doc_for_type("story")})
+
+        with caplog.at_level(logging.WARNING, logger="backend.services.rag"):
+            assert rag.retrieve("anécdota", top_k=3, doc_type="story")
+
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
 
 class TestEmbeddingCache:
