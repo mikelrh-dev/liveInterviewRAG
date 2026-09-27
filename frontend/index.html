@@ -196,18 +196,25 @@
                             <!-- Three.js canvas (populated by avatar.js) -->
                             <canvas id="orb-canvas"></canvas>
                         </div>
-                    </div>
 
-                    <!-- Orbital Ring SVG -->
-                    <svg id="orbital-ring" class="orbital-ring" viewBox="0 0 220 220" width="220" height="220">
-                        <defs>
-                            <linearGradient id="ring-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
-                                <stop offset="0%" stop-color="#00d4ff" stop-opacity="1"/>
-                                <stop offset="100%" stop-color="#00d4ff" stop-opacity="0.3"/>
-                            </linearGradient>
-                        </defs>
-                        <circle cx="110" cy="110" r="105" fill="none" stroke="url(#ring-gradient)" stroke-width="2" stroke-dasharray="8 12" class="ring-circle"/>
-                    </svg>
+                        <!-- Orbital Ring SVG. Lives INSIDE the wrapper: it centres
+                             itself with top/left 50%, so its containing block has
+                             to be the avatar. As a sibling of the wrapper it
+                             resolved against #hero-center (~599px) instead of
+                             the avatar (380px) and hung ~93px low. It also
+                             needs z-index 3 (see style.css) to stay readable
+                             over the videos and the orb canvas it now shares a
+                             stacking context with. -->
+                        <svg id="orbital-ring" class="orbital-ring" viewBox="0 0 220 220" width="220" height="220">
+                            <defs>
+                                <linearGradient id="ring-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                                    <stop offset="0%" stop-color="#00d4ff" stop-opacity="1"/>
+                                    <stop offset="100%" stop-color="#00d4ff" stop-opacity="0.3"/>
+                                </linearGradient>
+                            </defs>
+                            <circle cx="110" cy="110" r="105" fill="none" stroke="url(#ring-gradient)" stroke-width="2" stroke-dasharray="8 12" class="ring-circle"/>
+                        </svg>
+                    </div>
 
                     <!-- Waveform SVG -->
                     <svg id="waveform" class="waveform" viewBox="0 0 200 40" width="200" height="40">
