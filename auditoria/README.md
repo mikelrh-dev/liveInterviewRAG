@@ -1,20 +1,41 @@
 # Auditoría en breve — InterviewTTS
 
-Resumen corto y legible de la auditoría del 2026-09-27: **118 hallazgos** (1 CRÍTICO, 16 ALTO, 68 MEDIO, 33 BAJO).
+Auditoría del 2026-09-27: **118 hallazgos** (1 CRÍTICO, 16 ALTO, 68 MEDIO, 33 BAJO),
+remediados en 4 fases y después revisados por dos jueces ciegos.
 
-**Veredicto en una frase:** el proyecto está bien construido y bien probado, pero en su estado actual **no se puede desplegar** porque no tiene TLS, y en uso real tiene cuatro rutas rotas (respuestas mudas, despedida en silencio, turnos que se pierden y datos inventados).
+**Veredicto:** el proyecto estaba bien construido y bien probado, pero en su estado
+original **no se podía desplegar** (sin TLS) y tenía cuatro rutas rotas en el flujo
+principal. Todo eso está corregido y verificado.
+
+**Estado actual: 390 tests pytest + 38 node en verde** (partían de 258).
 
 ## Por dónde empezar
 
-| Archivo | Qué contiene | Líneas |
-|---|---|---|
-| [`RESUMEN.md`](RESUMEN.md) | El veredicto, los 5 bugs que rompen el producto y lo que ya está bien | ~110 |
-| [`HALLAZGOS.md`](HALLAZGOS.md) | Los 118 hallazgos, uno por línea, agrupados por severidad | ~200 |
-| [`PLAN.md`](PLAN.md) | Qué arreglar y en qué orden, en 4 fases | ~90 |
-| [`VERIFICACION.md`](VERIFICACION.md) | Comandos para reproducir la suite y comprobar cada bug a mano | ~90 |
+| Archivo | Qué contiene |
+|---|---|
+| [`RESUMEN.md`](RESUMEN.md) | El veredicto, los bugs que rompían el producto y lo que ya estaba bien |
+| [`REVISION-ADVERSARIAL.md`](REVISION-ADVERSARIAL.md) | Lo que encontraron los dos jueces ciegos, y por qué dos tests fijaban el bug |
+| [`PLAN.md`](PLAN.md) | Qué se corrigió, en qué orden, y lo que queda pendiente |
+| [`HALLAZGOS.md`](HALLAZGOS.md) | Los 118 hallazgos, uno por línea, agrupados por severidad |
+| [`VERIFICACION.md`](VERIFICACION.md) | Comandos para reproducir la suite y comprobar cada punto a mano |
 
-Estos cuatro archivos se entienden por sí solos. Para el detalle técnico completo de cada capa está `reports/audit/` (7 informes) y el informe consolidado en `AUDITORIA-2026-09-27.md`; se citan como referencia opcional, no hacen falta para entender nada de esta carpeta.
+Los cinco se entienden por sí solos. Para el detalle técnico completo de cada capa
+está `reports/audit/` (7 informes) y el informe consolidado en
+`AUDITORIA-2026-09-27.md`; se citan como referencia opcional.
 
-## Una advertencia antes de tocar nada
+## Lo que sigue pendiente
 
-La suite de tests está **sana: 258 pasan, 0 fallan**. Hay red de seguridad, así que cada corrección se puede verificar. La segunda causa más frecuente de errores en este repositorio no es el código: es el entorno. Lee [`VERIFICACION.md`](VERIFICACION.md) antes de ejecutar pytest, porque una variable de entorno contaminada hace que 8 tests asíncronos parezcan rotos sin serlo.
+1. **Desplegar en el VPS**: emitir el certificado TLS y subir `nginx/interview.conf`
+   y `interviewtts.service`. El redirect 80→443 va comentado a propósito en el
+   fichero, y el orden importa.
+2. **Tarea humana**: resolver los 16 `[TODO]` de la wiki y promover las 12 páginas
+   `confidence: medium`. Requiere datos personales que solo tienes tú. El chunker ya
+   no entrega los marcadores al LLM, así que el sistema no se auto-contamina mientras
+   tanto.
+
+## Una advertencia sobre el entorno
+
+La segunda causa más frecuente de errores en este repositorio no es el código: es el
+entorno. Una variable `PYTEST_DISABLE_PLUGIN_AUTOLOAD` contaminada hace que 8 tests
+asíncronos parezcan rotos sin serlo, y ya costó una hora de trabajo en la auditoría.
+Lee [`VERIFICACION.md`](VERIFICACION.md) antes de ejecutar pytest.
