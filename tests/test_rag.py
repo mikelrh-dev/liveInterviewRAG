@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 import numpy as np
 import pytest
 from pathlib import Path
@@ -671,6 +672,286 @@ class TestUnmatchedDocTypeIsLoud:
             assert rag.retrieve("anécdota", top_k=3, doc_type="story")
 
         assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+class TestPlaceholderStripping:
+    """Item C: the RAG must not serve `[TODO` placeholders to the LLM.
+
+    `_chunk_document` used to strip only the frontmatter, then split by headings
+    and tokens — filtering nothing, and never reading the `confidence` field.
+    Measured over the real wiki: 38 documents -> 214 chunks, 11 of them
+    containing a literal `[TODO`, inside sections titled "Outcomes" and "What I'd
+    do differently" — exactly what a recruiter asks about. The LLM could read a
+    TODO aloud, or invent the missing figure, with nothing in the wiki to
+    contradict it.
+
+    The wiki is the candidate's own data and is NEVER modified: this changes how
+    the RAG *reads* it, and the per-document warning names the file so the owner
+    can find the hole.
+    """
+
+    TODO_DOC = """---
+type: project
+confidence: high
+summary_1line: InterviewTTS
+---
+
+# InterviewTTS
+
+Entrevista por voz en tiempo real con FastAPI y WebSockets.
+
+## Outcomes
+
+- [TODO: ask Mikel] — Any metrics? (e.g., response latency, user testing?)
+
+## What I'd do differently
+
+- [TODO: ask Mikel] — What would you change about InterviewTTS?
+- Persistiría las conversaciones en SQLite desde el primer día.
+"""
+
+    def test_todo_document_yields_no_todo_chunks(self):
+        """A document with [TODO ...] must yield zero chunks containing '[TODO'."""
+        rag = RAGPipeline(chunk_size=1000)
+        chunks = rag._chunk_document("projects/interview-tts.md", self.TODO_DOC)
+        assert chunks, "the real content must survive"
+        assert not [c for c in chunks if "[TODO" in c.content], (
+            "the RAG is still serving literal [TODO placeholders to the LLM"
+        )
+
+    def test_real_content_survives_todo_removal(self):
+        """Only the placeholder goes; the candidate's real answers stay."""
+        rag = RAGPipeline(chunk_size=1000)
+        chunks = rag._chunk_document("projects/interview-tts.md", self.TODO_DOC)
+        joined = "\n".join(c.content for c in chunks)
+        assert "Entrevista por voz en tiempo real con FastAPI" in joined
+        assert "SQLite desde el primer día" in joined, (
+            "removing a placeholder must not take the surrounding answer with it"
+        )
+        assert "Any metrics?" not in joined, (
+            "the placeholder's question text must go too — it invites the LLM "
+            "to invent the missing figure"
+        )
+
+    def test_todo_removal_leaves_no_punctuation_artifacts(self):
+        """Stripping a placeholder must not leave orphaned bullets or dashes."""
+        rag = RAGPipeline(chunk_size=1000)
+        doc = """---
+type: story
+confidence: high
+---
+
+# Historia
+
+- Un logro real y verificable del candidato.
+- [TODO: ask Mikel] — Something the owner must still fill in?
+- Otro logro real y verificable.
+"""
+        chunks = rag._chunk_document("stories/x.md", doc)
+        for c in chunks:
+            assert not re.search(r"^\s*[-*]\s*[-*—–:]\s*$", c.content, re.MULTILINE), (
+                f"orphaned bullet/punctuation left behind: {c.content!r}"
+            )
+            assert "---" not in c.content, f"orphaned rule left behind: {c.content!r}"
+            assert not re.search(r"\s—\s*$", c.content), (
+                f"dangling em dash left behind: {c.content!r}"
+            )
+
+    def test_confidence_low_page_contributes_no_chunks(self, caplog):
+        """`confidence: low` is placeholder content per wiki/CONVENCIONES.md."""
+        doc = """---
+type: story
+confidence: low
+summary_1line: Borrador sin confirmar
+---
+
+# Historia
+
+Contenido inferido por IA que el dueño aún no ha confirmado.
+"""
+        rag = RAGPipeline(chunk_size=1000)
+        with caplog.at_level(logging.WARNING, logger="backend.services.rag"):
+            chunks = rag._chunk_document("stories/draft.md", doc)
+        assert chunks == [], (
+            "a confidence:low page must contribute no chunks — per the wiki's own "
+            "convention it is draft/placeholder content, not the candidate's truth"
+        )
+        assert any("draft.md" in r.getMessage() for r in caplog.records), (
+            "dropping a whole page must be logged, naming the file"
+        )
+
+    def test_confidence_medium_page_still_contributes_its_content(self, caplog):
+        """Over-filtering guard: `medium` is reviewed real content, not a hole.
+
+        Per wiki/CONVENCIONES.md, `medium` means "Reviewed but not tested /
+        inferred from the codebase". Dropping it would silently break the
+        candidate's answers — this test exists to stop that from happening.
+        """
+        doc = """---
+type: project
+confidence: medium
+summary_1line: Proyecto revisado
+---
+
+# Proyecto
+
+Contenido revisado por el dueño; real y aprovechable en la entrevista.
+"""
+        rag = RAGPipeline(chunk_size=1000)
+        with caplog.at_level(logging.WARNING, logger="backend.services.rag"):
+            chunks = rag._chunk_document("projects/medium.md", doc)
+        assert chunks, "a confidence:medium page MUST still contribute its content"
+        assert any("revisado por el dueño" in c.content for c in chunks)
+        assert not [
+            r for r in caplog.records
+            if "medium.md" in r.getMessage() and r.levelno >= logging.WARNING
+        ], "a healthy medium page must not be reported as filtered"
+
+    def test_document_without_confidence_is_untouched(self):
+        """No `confidence:` field at all means unstated, not low."""
+        doc = "---\ntype: faq\n---\n\n# FAQ\n\nRespuesta real sin campo confidence.\n"
+        rag = RAGPipeline(chunk_size=1000)
+        chunks = rag._chunk_document("faq/x.md", doc)
+        assert chunks and any("Respuesta real" in c.content for c in chunks)
+
+    def test_stripped_content_is_logged_once_per_document(self, caplog):
+        """The owner must learn the wiki still has holes, once, findably."""
+        rag = RAGPipeline(chunk_size=1000)
+        with caplog.at_level(logging.WARNING, logger="backend.services.rag"):
+            rag._chunk_document("projects/interview-tts.md", self.TODO_DOC)
+        hits = [
+            r for r in caplog.records
+            if r.levelno >= logging.WARNING and "interview-tts.md" in r.getMessage()
+        ]
+        assert len(hits) == 1, (
+            f"expected exactly one warning for the document, got {len(hits)}"
+        )
+
+    def test_clean_document_chunks_exactly_as_before(self):
+        """No regression in chunk count, boundaries, or content for clean input."""
+        doc = """---
+type: project
+confidence: high
+tags: [python]
+summary_1line: Proyecto limpio
+---
+
+# Proyecto
+
+Una primera seccion con contenido real.
+
+## Subseccion
+
+Contenido de la subseccion, tambien real y verificado.
+"""
+        rag = RAGPipeline(chunk_size=1000)
+        chunks = rag._chunk_document("projects/clean.md", doc)
+
+        # Pinned to the pre-existing output: the heading split regex yields two
+        # sections, and both must come through byte-identical.
+        assert len(chunks) == 2, "clean input must chunk exactly as before"
+        assert [c.id for c in chunks] == [
+            "projects/clean.md-0", "projects/clean.md-1",
+        ]
+        assert [c.section for c in chunks] == ["Proyecto", "Subseccion"]
+        assert [c.type for c in chunks] == ["project", "project"]
+        assert [c.tags for c in chunks] == [["python"], ["python"]]
+        assert [c.summary for c in chunks] == ["Proyecto limpio"] * 2
+        assert [c.content for c in chunks] == [
+            "# Proyecto\n\nUna primera seccion con contenido real.",
+            "## Subseccion\n\nContenido de la subseccion, tambien real y verificado.",
+        ]
+
+    def test_large_clean_document_split_is_unchanged(self):
+        """Token-overlap splitting for clean input must not shift either."""
+        rag = RAGPipeline(chunk_size=10, chunk_overlap=2)
+        chunks = rag._chunk_document("clean.md", " ".join(["palabra"] * 50))
+        assert len(chunks) == 7  # unchanged boundary arithmetic
+        assert all("palabra" in c.content for c in chunks)
+
+    def test_section_emptied_by_stripping_keeps_its_heading(self):
+        """Deliberate: a section that held only a placeholder keeps its heading.
+
+        The heading is real structure ("What I'd do differently"), so dropping
+        it would erase a topic the candidate does have. A bare heading is inert
+        for retrieval — it states nothing the candidate did not — and the corpus
+        already carries 36 such heading-only chunks, so this is the established
+        shape rather than a new one.
+        """
+        doc = """---
+type: project
+confidence: high
+---
+
+# Proyecto
+
+Contenido real del proyecto.
+
+## What I'd do differently
+
+- [TODO: ask Mikel] — What would you change about InterviewTTS?
+"""
+        rag = RAGPipeline(chunk_size=1000)
+        chunks = rag._chunk_document("projects/x.md", doc)
+        emptied = [c for c in chunks if "differently" in c.content]
+        assert emptied, "the emptied section should survive as its heading"
+        assert emptied[0].content.strip() == "## What I'd do differently"
+        assert not any("[TODO" in c.content for c in chunks)
+
+    def test_stale_cache_carrying_todo_content_is_rejected(self, tmp_path):
+        """A cache built before filtering must not be served after it.
+
+        The cache document_hash covers the RAW wiki text, which this change does
+        not touch. Without a filter-version guard the old, unfiltered cache would
+        be restored and every fix here silently undone.
+        """
+        cache_dir = tmp_path / "cache"
+        docs = {"projects/t.md": self.TODO_DOC}
+        old = RAGPipeline(chunk_size=100, cache_dir=cache_dir)
+        old.ingest_documents(docs)
+
+        meta_path = cache_dir / "embeddings.json"
+        meta = json.loads(meta_path.read_text())
+        meta.pop("chunk_filter_version", None)  # simulate a pre-fix cache
+        meta_path.write_text(json.dumps(meta))
+
+        fresh = RAGPipeline(chunk_size=100, cache_dir=cache_dir)
+        fresh.ingest_documents(docs)
+        assert not [c for c in fresh.chunks if "[TODO" in c.content], (
+            "a stale pre-filter cache was restored and still carries [TODO"
+        )
+        assert "chunk_filter_version" in json.loads(meta_path.read_text())
+
+
+class TestWikiCorpusHasNoPlaceholders:
+    """The real corpus must reach the LLM free of [TODO placeholders."""
+
+    def _real_wiki_documents(self) -> dict:
+        from backend.services.candidate import CandidateProfile
+
+        profile = CandidateProfile(
+            Path(__file__).resolve().parent.parent / "candidate",
+            wiki_dir=Path(__file__).resolve().parent.parent / "wiki",
+        )
+        profile.load()
+        assert profile.documents, "the real wiki must still load"
+        return profile.documents
+
+    def test_no_chunk_from_the_real_wiki_contains_todo(self):
+        rag = RAGPipeline(chunk_size=400, chunk_overlap=50)
+        documents = self._real_wiki_documents()
+        offenders = []
+        total = 0
+        for name, content in documents.items():
+            for c in rag._chunk_document(name, content):
+                total += 1
+                if "[TODO" in c.content:
+                    offenders.append((c.source, c.section))
+        assert not offenders, (
+            f"{len(offenders)} chunk(s) from the real wiki still contain [TODO: "
+            f"{offenders}"
+        )
+        assert total > 100, f"expected a substantial corpus, chunked {total}"
 
 
 class TestEmbeddingCache:

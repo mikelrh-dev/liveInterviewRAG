@@ -71,6 +71,81 @@ def canonical_doc_type(value: Optional[str]) -> str:
     return _TYPE_LOOKUP.get(key, key)
 
 
+# ── Placeholder filtering (read-time, never destructive) ─────────────────────
+#
+# The wiki marks unwritten content with `[TODO: ...]` markers and rates each page
+# with `confidence:`. Before this, `_chunk_document` stripped only the
+# frontmatter: it filtered nothing and read `confidence` nowhere, so the LLM was
+# served 11 chunks containing a literal `[TODO` from the real corpus — inside
+# "Outcomes" and "What I'd do differently", exactly what a recruiter asks
+# about. The model could read a TODO aloud, or invent the missing figure, with
+# nothing in the wiki to contradict it.
+#
+# Two complementary parts, because neither is sufficient alone:
+#   1. This module strips the markers (below) and drops `confidence: low` pages.
+#   2. ``_chunk_document`` WARNS once per affected document, so the owner learns
+#      the wiki still has holes instead of the holes quietly disappearing.
+#
+# NOTHING under wiki/ is ever modified. This changes how the RAG *reads* the
+# candidate's data; the transformation is pure and fully reversible by filling
+# the marker in the file. Semantics follow the wiki's own conventions
+# (wiki/CONVENCIONES.md "Confidence Lifecycle"):
+#   * ``low``    -> draft/placeholder awaiting owner confirmation -> SERVE NOTHING
+#   * ``medium`` -> "reviewed but not tested", real content     -> SERVED AS IS
+#   * absent     -> unstated, not low                           -> SERVED AS IS
+# Discarding `medium` would be the dangerous move — it is the level most of the
+# wiki sits at, and it holds real, reviewed answers.
+
+# Bumped whenever chunking semantics change. Stored in the embedding cache
+# metadata: the cache's document_hash covers the RAW wiki text, which this
+# filtering deliberately does not touch, so without this guard a pre-filter
+# cache would be restored and silently undo every fix below.
+CHUNK_FILTER_VERSION = "2"
+
+# ``[TODO ...]`` and friends. Tolerates the real spellings seen in wiki/:
+# ``[TODO: ask Mikel]``, ``[TODO]``, ``[TODO — fill in]``.
+_PLACEHOLDER_RE = re.compile(r"\[\s*TODO\b[^\]]*\]", re.IGNORECASE)
+
+# Markdown emphasis and list/separator punctuation that can be orphaned once a
+# marker is removed, e.g. ``- **[TODO: x]:** text`` -> ``- :** text``.
+_MD_NOISE_RE = re.compile(r"[*_`>#]+")
+_SEPARATORS = " \t\u2014\u2013-:,;.!?\u00bb\u00ab"
+_HAS_WORD_RE = re.compile(r"\w", re.UNICODE)
+
+
+def strip_placeholders(text: str) -> Tuple[str, int]:
+    """Remove ``[TODO ...]`` placeholders from ``text``.
+
+    A line carrying a marker is a note-to-self, not an answer: the marker leads
+    and everything after it is the question the owner still has to answer, so
+    the whole line goes. Any real words *before* a marker on the same line are
+    kept, with the leftover emphasis/separators tidied so clean text never
+    accumulates punctuation artifacts.
+
+    Returns the cleaned text and the number of markers removed. Headings are
+    left intact — an empty "Outcomes" section is honest, inventing its contents
+    is not.
+    """
+    if not _PLACEHOLDER_RE.search(text):
+        return text, 0
+
+    kept_lines = []
+    removed = 0
+    for line in text.split("\n"):
+        markers = _PLACEHOLDER_RE.findall(line)
+        if not markers:
+            kept_lines.append(line)
+            continue
+        removed += len(markers)
+
+        prefix = _PLACEHOLDER_RE.split(line)[0]
+        prefix = _MD_NOISE_RE.sub("", prefix).strip(_SEPARATORS).strip()
+        if _HAS_WORD_RE.search(prefix):
+            kept_lines.append(prefix)
+
+    return "\n".join(kept_lines), removed
+
+
 # Query keywords -> canonical document type. Used to pre-filter chunks before
 # similarity search when a query clearly maps to a single type.
 # Keys are CANONICAL types (see DOC_TYPE_ALIASES), so every filter this table
@@ -257,6 +332,7 @@ class RAGPipeline:
             metadata = {
                 "model": self._embedding_model,
                 "document_hash": documents_hash,
+                "chunk_filter_version": CHUNK_FILTER_VERSION,
                 "chunk_count": len(chunks),
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }
@@ -285,6 +361,18 @@ class RAGPipeline:
                 logger.info(
                     "Cache model mismatch (cache=%s, current=%s) — recomputing",
                     meta.get("model"), self._embedding_model,
+                )
+                return None
+
+            # 1b. Validate the chunking/filtering semantics. The document hash
+            # below covers the RAW wiki text, which placeholder filtering does
+            # not touch, so a cache written before this filter existed would
+            # otherwise be restored with its [TODO chunks intact.
+            if meta.get("chunk_filter_version") != CHUNK_FILTER_VERSION:
+                logger.info(
+                    "Cache chunk filter version mismatch (cache=%s, current=%s) "
+                    "— recomputing so stale placeholders are not served",
+                    meta.get("chunk_filter_version"), CHUNK_FILTER_VERSION,
                 )
                 return None
 
@@ -379,6 +467,13 @@ class RAGPipeline:
 
         YAML frontmatter (if present) is parsed for metadata and stripped
         from the content before chunking.
+
+        Placeholder filtering (see ``strip_placeholders``): a ``confidence: low``
+        page contributes nothing, and ``[TODO ...]`` markers are removed from
+        every other page. Anything stripped is reported as ONE warning naming the
+        document, so the owner can see the wiki's holes instead of the pipeline
+        hiding them. ``confidence: medium`` is served untouched — it is reviewed
+        real content, not a placeholder.
         """
         metadata, content = parse_frontmatter(content)
         doc_type = str(metadata.get("type", ""))
@@ -386,6 +481,28 @@ class RAGPipeline:
         if isinstance(tags, str):
             tags = [tags]
         summary = str(metadata.get("summary_1line", ""))
+
+        confidence = str(metadata.get("confidence", "") or "").strip().lower()
+        if confidence == "low":
+            # Per wiki/CONVENCIONES.md, `low` means draft/placeholder content
+            # awaiting the owner's confirmation. Serving it is how the LLM ends
+            # up stating something the candidate never did.
+            logger.warning(
+                "Skipping %s: confidence=low (draft/placeholder per the wiki's "
+                "confidence lifecycle) — it must not reach the LLM until the "
+                "owner confirms it. Filter version %s.",
+                filename, CHUNK_FILTER_VERSION,
+            )
+            return []
+
+        content, removed = strip_placeholders(content)
+        if removed:
+            logger.warning(
+                "Stripped %d [TODO] placeholder(s) from %s — that page is "
+                "incomplete; fill them in so the answers are grounded. "
+                "Filter version %s.",
+                removed, filename, CHUNK_FILTER_VERSION,
+            )
 
         chunks = []
 
