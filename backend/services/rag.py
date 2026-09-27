@@ -107,24 +107,36 @@ CHUNK_FILTER_VERSION = "2"
 _PLACEHOLDER_RE = re.compile(r"\[\s*TODO\b[^\]]*\]", re.IGNORECASE)
 
 # Markdown emphasis and list/separator punctuation that can be orphaned once a
-# marker is removed, e.g. ``- **[TODO: x]:** text`` -> ``- :** text``.
-_MD_NOISE_RE = re.compile(r"[*_`>#]+")
+# marker is removed, e.g. ``- **[TODO: x]:** text`` -> ``- :** text``. Underscores
+# and hashes are excluded from the class used on body text: they appear inside
+# real identifiers (``snake_case_name``) far more often than as noise, and
+# rewriting them would corrupt the indexed content.
+_MD_NOISE_RE = re.compile(r"[*`]+")
 _SEPARATORS = " \t\u2014\u2013-:,;.!?\u00bb\u00ab"
 _HAS_WORD_RE = re.compile(r"\w", re.UNICODE)
+# A heading line: leading #'s define the section boundary the chunker splits on,
+# so a placeholder inside a heading must not cost them.
+_HEADING_RE = re.compile(r"^#{1,6}\s")
 
 
 def strip_placeholders(text: str) -> Tuple[str, int]:
     """Remove ``[TODO ...]`` placeholders from ``text``.
 
-    A line carrying a marker is a note-to-self, not an answer: the marker leads
-    and everything after it is the question the owner still has to answer, so
-    the whole line goes. Any real words *before* a marker on the same line are
-    kept, with the leftover emphasis/separators tidied so clean text never
-    accumulates punctuation artifacts.
+    Only the marker itself is removed. Text before *and* after it on the same
+    line survives: a line such as ``- [TODO: metricas] Reduje la latencia un
+    40%`` carries a real answer, and dropping the tail would silently delete
+    content the owner already wrote. The owner's job is to remove the marker;
+    what they wrote around it is data.
 
-    Returns the cleaned text and the number of markers removed. Headings are
-    left intact — an empty "Outcomes" section is honest, inventing its contents
-    is not.
+    What the marker usually trails is a note-to-self ("[TODO: ask Mikel] — Any
+    metrics?"), and that trailing prose is indistinguishable from an answer
+    without a semantic judgement this function must not make. The chunker keeps
+    it, the RAG answers from it, and resolving the marker is the owner's task.
+    Stripping it is a content decision, not a sanitisation one.
+
+    Returns the cleaned text and the number of markers removed. Headings keep
+    their ``#`` markers, so a heading that happens to carry a placeholder still
+    splits as a section boundary.
     """
     if not _PLACEHOLDER_RE.search(text):
         return text, 0
@@ -138,10 +150,26 @@ def strip_placeholders(text: str) -> Tuple[str, int]:
             continue
         removed += len(markers)
 
+        # A heading keeps its leading #'s: losing them would merge the section
+        # into its predecessor and silently change chunk boundaries.
+        is_heading = bool(_HEADING_RE.match(line))
         prefix = _PLACEHOLDER_RE.split(line)[0]
-        prefix = _MD_NOISE_RE.sub("", prefix).strip(_SEPARATORS).strip()
-        if _HAS_WORD_RE.search(prefix):
-            kept_lines.append(prefix)
+        suffix = _PLACEHOLDER_RE.split(line)[-1]
+
+        if is_heading:
+            cleaned = prefix + suffix
+        else:
+            # Outside a heading, only orphaned emphasis/separators are noise;
+            # stripping '_' or '#' here would rewrite real words.
+            head = _MD_NOISE_RE.sub("", prefix)
+            tail = _MD_NOISE_RE.sub("", suffix)
+            # Collapse the gap the marker leaves, without eating the word
+            # boundaries: "40%  con" must not become "40% con" only by luck.
+            cleaned = f"{head} {tail}".split()
+            cleaned = " ".join(cleaned).strip(_SEPARATORS).strip()
+
+        if _HAS_WORD_RE.search(cleaned):
+            kept_lines.append(cleaned)
 
     return "\n".join(kept_lines), removed
 

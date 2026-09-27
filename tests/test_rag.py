@@ -720,7 +720,14 @@ Entrevista por voz en tiempo real con FastAPI y WebSockets.
         )
 
     def test_real_content_survives_todo_removal(self):
-        """Only the placeholder goes; the candidate's real answers stay."""
+        """Only the marker is removed; every real answer around it stays.
+
+        Sanitisation must not decide what is an answer. A line like
+        ``- [TODO: metricas] Reduje la latencia un 40%`` carries content the
+        owner already wrote, and the prose trailing a marker ("Any metrics?")
+        is indistinguishable from a real answer without a semantic judgement
+        this layer must not make. Resolving the marker is the owner's task.
+        """
         rag = RAGPipeline(chunk_size=1000)
         chunks = rag._chunk_document("projects/interview-tts.md", self.TODO_DOC)
         joined = "\n".join(c.content for c in chunks)
@@ -728,10 +735,44 @@ Entrevista por voz en tiempo real con FastAPI y WebSockets.
         assert "SQLite desde el primer día" in joined, (
             "removing a placeholder must not take the surrounding answer with it"
         )
-        assert "Any metrics?" not in joined, (
-            "the placeholder's question text must go too — it invites the LLM "
-            "to invent the missing figure"
+        assert "Any metrics" in joined, (
+            "prose trailing a marker must survive: dropping it is a content "
+            "decision, not a sanitisation one"
         )
+
+    def test_answer_written_after_a_leading_marker_is_kept(self):
+        """The real defect: a leading marker used to take the whole line with it."""
+        doc = (
+            "---\ntype: project\nconfidence: high\n---\n\n"
+            "# P\n\n## Outcomes\n\n- [TODO: metricas] Reduje la latencia un 40%\n"
+        )
+        rag = RAGPipeline(chunk_size=1000)
+        joined = "\n".join(
+            c.content for c in rag._chunk_document("projects/p.md", doc)
+        )
+        assert "Reduje la latencia un 40%" in joined, (
+            "a real answer written after a placeholder must not be deleted"
+        )
+
+    def test_heading_keeps_its_hashes_so_chunking_is_unchanged(self):
+        """Stripping a marker from a heading must not merge two sections."""
+        doc = (
+            "---\ntype: project\nconfidence: high\n---\n\n"
+            "# P\n\n## A [TODO: renombrar]\ncontenido A\n\n## B\ncontenido B\n"
+        )
+        rag = RAGPipeline(chunk_size=1000)
+        chunks = rag._chunk_document("projects/p.md", doc)
+        contents = [c.content for c in chunks]
+        assert any("## B" in c and "contenido A" not in c for c in contents), (
+            "losing a heading's #'s merges sections and shifts chunk boundaries"
+        )
+
+    def test_identifiers_with_underscores_are_not_rewritten(self):
+        """`_MD_NOISE_RE` must not strip '_' out of real words in body text."""
+        from backend.services.rag import strip_placeholders
+
+        cleaned, _ = strip_placeholders("- field snake_case_name [TODO: x]")
+        assert "snake_case_name" in cleaned
 
     def test_todo_removal_leaves_no_punctuation_artifacts(self):
         """Stripping a placeholder must not leave orphaned bullets or dashes."""
@@ -894,8 +935,15 @@ Contenido real del proyecto.
         rag = RAGPipeline(chunk_size=1000)
         chunks = rag._chunk_document("projects/x.md", doc)
         emptied = [c for c in chunks if "differently" in c.content]
-        assert emptied, "the emptied section should survive as its heading"
-        assert emptied[0].content.strip() == "## What I'd do differently"
+        assert emptied, "the section should survive with its heading intact"
+        # The section is no longer *empty*: the prose that trailed the marker is
+        # the owner's own question, and sanitisation does not get to delete it.
+        # The heading keeps its '##' so this stays a section boundary.
+        assert emptied[0].content.strip().startswith("## What I'd do differently")
+        assert "What would you change about InterviewTTS" in emptied[0].content, (
+            "the owner's question survives; only the [TODO marker] is removed"
+        )
+        assert "[TODO" not in emptied[0].content
         assert not any("[TODO" in c.content for c in chunks)
 
     def test_stale_cache_carrying_todo_content_is_rejected(self, tmp_path):

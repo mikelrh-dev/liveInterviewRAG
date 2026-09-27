@@ -129,15 +129,43 @@ class TestMaxAudioSizeConstant:
         assert MAX_AUDIO_SIZE == 5 * 1024 * 1024
 
     def test_both_routes_reuse_the_module_constant(self):
-        """No route may redeclare its own local limit."""
+        """No consumer may redeclare its own local limit.
+
+        Scans the whole package, not just ``main``: after the module split the
+        declaration moved to ``backend.uploads`` and the routes live in
+        ``backend.routers.turns`` / ``backend.turns``, so scanning one module
+        would pass for any content whatsoever.
+        """
+        import pathlib
+        import re
+
+        import backend
+
+        package = pathlib.Path(backend.__file__).parent
+        # Horizontal whitespace only: \s would also match the newline before the
+        # declaration and make the module-level line look indented.
+        pattern = re.compile(r"^[ \t]+MAX_AUDIO_SIZE[ \t]*=", re.MULTILINE)
+        offenders = [
+            path.relative_to(package).as_posix()
+            for path in package.rglob("*.py")
+            if pattern.search(path.read_text(encoding="utf-8"))
+        ]
+        assert not offenders, (
+            f"these modules declare a local MAX_AUDIO_SIZE, shadowing the "
+            f"single source of truth in backend/uploads.py: {offenders}"
+        )
+
+    def test_the_single_declaration_is_in_uploads(self):
+        """Pin where the constant actually lives, so the scan stays meaningful."""
         import inspect
+        import re
 
-        import backend.main as main
+        from backend import uploads
 
-        source = inspect.getsource(main)
-        # Any assignment inside a function body would be indented further than
-        # the module-level constant declaration.
-        assert "    MAX_AUDIO_SIZE =" not in source
+        source = inspect.getsource(uploads)
+        assert re.search(r"^MAX_AUDIO_SIZE[ \t]*=", source, re.MULTILINE), (
+            "the scan above is only meaningful if uploads.py is the sole owner"
+        )
 
 
 class TestMaxBodySizeEndToEnd:

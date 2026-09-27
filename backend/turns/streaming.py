@@ -36,6 +36,7 @@ into a refactor.
 
 import asyncio
 import logging
+import sys
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -417,13 +418,31 @@ def build_stream(
                 terminal_emitted = True
         finally:
             if not terminal_emitted:
-                # Reaching here means some path returned without a terminal
-                # event. Logged rather than patched over: a terminal event
-                # emitted from this finally would risk yielding into a closing
-                # generator, and an unterminated stream is a bug worth seeing.
-                logger.error(
-                    "Stream for %s ended without a terminal event", conversation_id
-                )
+                # Two very different situations land here and must not share a
+                # log level, or every ordinary disconnect drowns the real bugs.
+                #
+                # GeneratorExit is a BaseException, so it is not caught by the
+                # `except Exception` above: a client closing the tab, navigating
+                # away or losing the connection raises it at the current yield.
+                # The browser settles on EOF, so this is normal operation.
+                #
+                # Anything else means a path returned or was cancelled without a
+                # terminal event, which is a real defect.
+                if sys.exc_info()[0] is GeneratorExit:
+                    logger.info(
+                        "Stream for %s closed by the client before completion",
+                        conversation_id,
+                    )
+                else:
+                    # Logged rather than patched over: a terminal event emitted
+                    # from this finally would risk yielding into a closing
+                    # generator, and an unterminated stream is a bug worth
+                    # seeing.
+                    logger.error(
+                        "Stream for %s ended without a terminal event",
+                        conversation_id,
+                        exc_info=True,
+                    )
             if temp_audio.exists():
                 temp_audio.unlink(missing_ok=True)
 

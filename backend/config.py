@@ -91,9 +91,13 @@ class Config:
         )
 
         # Server
-        # Intentional 0.0.0.0 binding: app sits behind nginx on the same VPS host.
+        # The bind address is NOT read from here. It is a process-level concern
+        # owned by the unit file, which runs uvicorn with `--host 127.0.0.1` so
+        # the API is only reachable through the local reverse proxy. Keeping a
+        # second copy of that decision in config is how the two drifted apart:
+        # this value used to default to 0.0.0.0 with a comment asserting that
+        # was intentional, while the hardened unit file bound to loopback.
         # pi-lens-ignore: B104
-        self.HOST: str = os.getenv("HOST", "0.0.0.0")
         self.PORT: int = _env_int("PORT", "8000")
 
         # Rate limiting

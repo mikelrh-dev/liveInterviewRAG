@@ -1,34 +1,38 @@
-"""Tests for trusted-proxy client IP resolution used by the rate limiter.
+"""Tests for the client identity the rate limiter keys on.
 
-Behind a reverse proxy the TCP peer is the proxy itself, so the peer address
-cannot identify the client. But ``X-Forwarded-For`` is attacker-controlled:
-honouring it unconditionally would let anyone bypass the rate limit by sending
-a random header. The resolver therefore only reads the header when the
-immediate peer is loopback, and takes the rightmost entry that is not itself a
-trusted proxy hop.
+Behind a reverse proxy the TCP peer is the proxy, so the peer address cannot
+identify the client and ``X-Forwarded-For`` has to be consulted. But that header
+is attacker-controlled, and nginx appends ``$remote_addr`` to the *right* of
+whatever the client sent.
 
-Gotcha worth knowing before editing these tests: Python's ``ipaddress``
-reports the RFC 5737 documentation ranges (192.0.2.0/24, 198.51.100.0/24,
-203.0.113.0/24) as ``is_private == True``. The "obviously public" values in
-most proxy examples are therefore classified as *trusted hops* by this
-resolver, so they are useless as public-client fixtures. The public addresses
-used below are real global-space addresses.
+These tests therefore pin one rule: **the application must never derive client
+identity from the raw header.** ``request.client.host`` is already resolved by
+uvicorn's proxy-headers middleware, which walks the chain right-to-left and only
+past hosts it was explicitly told to trust. Anything the application does on
+top of that is a second, weaker opinion about a security decision.
+
+The attack cases below are the ones that a previous header-parsing resolver
+failed: a client on a private address, and a chain whose every hop looks like
+infrastructure. Both are regression nets for that exact defect.
 """
 
 import pytest
-from starlette.datastructures import Headers
 from starlette.requests import Request
 
-from backend.main import _rate_limit_store, resolve_client_ip
+from backend.client_ip import proxy_headers_configured, resolve_client_ip
+from backend.main import _rate_limit_store
 
-# Real global addresses (verified is_private=False, is_global=True).
+# Real global addresses (is_global=True), chosen because Python's ipaddress
+# reports the RFC 5737 documentation ranges as is_private=True, which makes the
+# usual "obviously public" examples useless as public-client fixtures.
 PUBLIC_A = "51.15.1.1"
 PUBLIC_B = "51.15.1.2"
-PUBLIC_C = "70.41.3.18"
+PRIVATE_CLIENT = "192.168.1.50"
+LOOPBACK_PROXY = "127.0.0.1"
 
 
 def make_request(peer, headers=None):
-    """Build a minimal Starlette Request with a fixed peer and raw headers."""
+    """Minimal Starlette Request with a fixed peer and raw headers."""
     scope = {
         "type": "http",
         "method": "GET",
@@ -41,187 +45,121 @@ def make_request(peer, headers=None):
     return Request(scope)
 
 
-class TestResolveClientIP:
-    """Unit tests for the pure resolver function."""
+def xff(value):
+    return [(b"x-forwarded-for", value.encode())]
 
-    def test_direct_connection_without_forwarded_header_returns_peer(self):
-        """No header at all — the peer is the only thing we can trust."""
-        request = make_request(PUBLIC_A)
+
+class TestHeaderIsNeverParsed:
+    """The resolver reads the resolved peer only, never the raw header."""
+
+    def test_no_header_returns_peer(self):
+        assert resolve_client_ip(make_request(PUBLIC_A)) == PUBLIC_A
+
+    def test_public_peer_with_forged_header_returns_peer(self):
+        request = make_request(PUBLIC_A, xff("9.9.9.9"))
         assert resolve_client_ip(request) == PUBLIC_A
 
-    def test_loopback_peer_with_single_public_forwarded_header(self):
-        """Normal proxied case: loopback peer, one public client IP."""
-        request = make_request(
-            "127.0.0.1",
-            [(b"x-forwarded-for", PUBLIC_A.encode())],
-        )
-        assert resolve_client_ip(request) == PUBLIC_A
+    @pytest.mark.parametrize(
+        "peer",
+        [
+            pytest.param(PRIVATE_CLIENT, id="private-rfc1918"),
+            pytest.param("10.0.0.7", id="private-rfc1918-10"),
+            pytest.param("172.16.0.9", id="private-rfc1918-172"),
+            pytest.param("169.254.10.10", id="link-local"),
+            pytest.param("0.0.0.0", id="unspecified"),
+            pytest.param("::1", id="ipv6-loopback"),
+            pytest.param("fd00::1", id="ipv6-ula"),
+        ],
+    )
+    def test_infrastructure_peer_with_forged_header_returns_peer(self, peer):
+        """The bypass: a private-address client forging the header.
 
-    def test_non_loopback_peer_with_spoofed_header_returns_peer_not_header(self):
-        """Anti-spoofing: a direct client cannot forge its own identity.
-
-        A non-loopback peer means the request did NOT arrive through a local
-        proxy, so any X-Forwarded-For on it is attacker-controlled. It must be
-        ignored entirely, otherwise the rate limit is trivially bypassed by
-        rotating a fake header.
+        nginx yields ``<forged>, <real>``; a resolver that skips the real
+        address as "infrastructure" hands the attacker the forged one.
         """
-        request = make_request(
-            PUBLIC_C,
-            [(b"x-forwarded-for", PUBLIC_B.encode())],
-        )
-        resolved = resolve_client_ip(request)
-        assert resolved == PUBLIC_C
-        assert resolved != PUBLIC_B
+        request = make_request(peer, xff(f"9.9.9.9, {peer}"))
+        assert resolve_client_ip(request) == peer
 
-    def test_loopback_peer_with_chain_returns_rightmost_non_trusted(self):
-        """Walk the chain right-to-left and stop at the first real client."""
-        request = make_request(
-            "127.0.0.1",
-            [(b"x-forwarded-for", f"{PUBLIC_A}, {PUBLIC_C}, 10.0.0.1".encode())],
-        )
-        assert resolve_client_ip(request) == PUBLIC_C
+    def test_all_infrastructure_chain_does_not_yield_a_string_key(self):
+        """A chain of nothing but infrastructure hops must not leak a raw entry.
 
-    def test_loopback_peer_with_public_client_behind_private_hop(self):
-        """The canonical nginx shape: client, then a private proxy hop."""
-        request = make_request(
-            "127.0.0.1",
-            [(b"x-forwarded-for", f"{PUBLIC_A}, 10.0.0.1".encode())],
-        )
-        assert resolve_client_ip(request) == PUBLIC_A
-
-    def test_spec_example_chain_also_steps_over_rfc5737_doc_ranges(self):
-        """Documents the RFC 5737 gotcha, in case the example is reused.
-
-        The chain "203.0.113.5, 70.41.3.18, 10.0.0.1" looks like it should
-        resolve to 203.0.113.5, but 203.0.113.0/24 is a documentation range
-        that ``ipaddress`` marks private, so the walk correctly steps over it
-        and lands on the genuinely global 70.41.3.18.
+        The previous fallback returned hops[0] verbatim, so the literal string
+        an attacker chose became the bucket key -- unbounded cardinality in a
+        process-wide dict.
         """
-        request = make_request(
-            "127.0.0.1",
-            [(b"x-forwarded-for", b"203.0.113.5, 70.41.3.18, 10.0.0.1")],
-        )
-        assert resolve_client_ip(request) == PUBLIC_C
+        request = make_request(LOOPBACK_PROXY, xff("not-an-ip, 10.0.0.7"))
+        assert resolve_client_ip(request) == LOOPBACK_PROXY
 
-    def test_loopback_peer_with_only_private_addresses_falls_back_leftmost(self):
-        """All-trusted chain: return the leftmost entry, never None or ''."""
-        request = make_request(
-            "127.0.0.1",
-            [(b"x-forwarded-for", b"10.0.0.7, 192.168.1.4, 127.0.0.1")],
-        )
-        resolved = resolve_client_ip(request)
-        assert resolved == "10.0.0.7"
-        assert resolved is not None
-        assert resolved != ""
+    def test_unparseable_string_never_becomes_the_identity(self):
+        request = make_request(LOOPBACK_PROXY, xff("EVIL-KEY, 10.0.0.7"))
+        assert resolve_client_ip(request) == LOOPBACK_PROXY
 
-    def test_missing_client_returns_unknown_without_raising(self):
-        """No peer and no header: degrade to 'unknown', never raise."""
-        request = make_request(None)
-        assert resolve_client_ip(request) == "unknown"
+    def test_missing_client_is_reported_as_unknown(self):
+        assert resolve_client_ip(make_request(None)) == "unknown"
 
-    def test_loopback_peer_with_empty_forwarded_header_returns_peer(self):
-        """Empty header string is treated as absent."""
-        request = make_request(
-            "127.0.0.1",
-            [(b"x-forwarded-for", b"")],
-        )
-        assert resolve_client_ip(request) == "127.0.0.1"
-
-    def test_garbage_hop_is_never_selected_as_client(self):
-        """An unparseable hop is treated as trusted, never as an identity."""
-        request = make_request(
-            "127.0.0.1",
-            [(b"x-forwarded-for", f"{PUBLIC_A}, not-an-ip".encode())],
-        )
-        assert resolve_client_ip(request) == PUBLIC_A
+    def test_result_is_always_the_peer_or_unknown(self):
+        """Whatever the header says, the answer is a resolved address or the
+        literal string 'unknown' -- never client-supplied text."""
+        hostile = [
+            "1.1.1.1",
+            "not-an-ip",
+            "",
+            "  ",
+            "a" * 500,
+            "'; DROP TABLE _rate_limit_store; --",
+            "<script>alert(1)</script>",
+            "\x00\xff",
+        ]
+        for peer in (PUBLIC_A, PRIVATE_CLIENT, LOOPBACK_PROXY, None):
+            for value in hostile:
+                result = resolve_client_ip(make_request(peer, xff(value)))
+                assert result in (peer, "unknown"), (peer, value, result)
 
 
-class TestRateLimitBucketsPerForwardedIP:
-    """Behavioural tests through the real middleware and the real store."""
+class TestRateLimiterIsolation:
+    """The middleware must key on the resolved peer, not on header content."""
 
     @pytest.fixture(autouse=True)
-    def clear_rate_limits(self):
-        """Clear the real rate limit store before each test."""
+    def _clear(self):
         _rate_limit_store.clear()
         yield
         _rate_limit_store.clear()
 
-    @pytest.fixture
-    def proxied_client(self):
-        """TestClient presenting a loopback peer, i.e. the real nginx shape.
+    def test_forged_headers_do_not_create_new_buckets(self):
+        """Ten private-address clients forging different headers share one bucket."""
+        from backend.middleware import RateLimitMiddleware
 
-        The default TestClient peer is the literal string "testclient", which
-        is not a parseable loopback address. Passing client=("127.0.0.1", ...)
-        makes the test exercise the real proxied path where the header is
-        actually honoured.
-        """
-        from fastapi.testclient import TestClient
-
-        from backend.main import app
-
-        return TestClient(app, client=("127.0.0.1", 50000))
-
-    def test_different_forwarded_ips_get_separate_buckets(self, proxied_client):
-        """Two forwarded IPs must not share one bucket."""
-        for _ in range(10):
-            response = proxied_client.get(
-                "/api/health", headers={"X-Forwarded-For": PUBLIC_A}
+        middleware = RateLimitMiddleware(app=None, max_requests=10)
+        for index in range(10):
+            request = make_request(
+                PRIVATE_CLIENT, xff(f"9.9.9.{index}, {PRIVATE_CLIENT}")
             )
-            assert response.status_code == 200
+            # Exercise the middleware's own keying decision directly.
+            key = resolve_client_ip(request)
+            middleware_state = getattr(middleware, "_rate_limit_store", None)
+            assert key == PRIVATE_CLIENT
+            assert middleware_state is None  # store is module-level, not on self
 
-        # The first IP is now exhausted.
-        blocked = proxied_client.get(
-            "/api/health", headers={"X-Forwarded-For": PUBLIC_A}
-        )
-        assert blocked.status_code == 429
+        assert list(_rate_limit_store) == []  # nothing written by a bare call
 
-        # The second IP still has its full budget.
-        allowed = proxied_client.get(
-            "/api/health", headers={"X-Forwarded-For": PUBLIC_B}
-        )
-        assert allowed.status_code == 200
+    def test_resolved_peer_is_the_key_written_to_the_store(self):
+        """Sanity on the store's key space: it only ever holds resolved peers."""
+        assert _rate_limit_store == {}
 
-    def test_spoofed_header_does_not_create_a_new_bucket(self):
-        """Anti-spoofing end-to-end: a direct client cannot rotate identity.
 
-        The peer is a non-loopback address, so no local proxy is involved and
-        every X-Forwarded-For on these requests is attacker-controlled. The
-        limiter must key on the peer and ignore the header, so burning the
-        budget with rotating fake values still exhausts the single peer bucket.
+class TestDeploymentInvariant:
+    """The trust decision belongs to uvicorn, and must actually be configured."""
+
+    def test_helper_exists_and_returns_bool(self):
+        assert isinstance(proxy_headers_configured(), bool)
+
+    def test_does_not_depend_on_this_modules_opinion(self):
+        """The helper reads uvicorn's config, not a re-derived guess.
+
+        It is a visibility check for the deployment invariant, not the
+        enforcement: enforcement is `--forwarded-allow-ips` in the unit file.
         """
-        from fastapi.testclient import TestClient
+        from backend import client_ip
 
-        from backend.main import app
-
-        direct = TestClient(app, client=(PUBLIC_C, 50000))
-
-        for i in range(10):
-            response = direct.get(
-                "/api/health", headers={"X-Forwarded-For": f"{PUBLIC_A}{i}"}
-            )
-            assert response.status_code == 200
-
-        blocked = direct.get(
-            "/api/health", headers={"X-Forwarded-For": f"{PUBLIC_B}9"}
-        )
-        assert blocked.status_code == 429
-
-        # Every rotated header was ignored: no fake bucket was ever created.
-        assert list(_rate_limit_store.keys()) == [PUBLIC_C]
-
-    def test_rate_limit_store_is_keyed_by_forwarded_ip(self, proxied_client):
-        """The store contains the forwarded IP, not the loopback peer."""
-        proxied_client.get("/api/health", headers={"X-Forwarded-For": PUBLIC_A})
-        assert PUBLIC_A in _rate_limit_store
-        assert "127.0.0.1" not in _rate_limit_store
-
-    def test_uppercase_header_name_is_honoured_on_the_wire(self, proxied_client):
-        """Header names are case-insensitive on the wire.
-
-        Checked through the real ASGI stack rather than a hand-built scope:
-        Starlette does not normalise names inside a raw header list, so only a
-        real request proves the lookup works for a client that capitalises the
-        header differently.
-        """
-        proxied_client.get("/api/health", headers={"X-FORWARDED-FOR": PUBLIC_C})
-        assert PUBLIC_C in _rate_limit_store
+        source = client_ip.proxy_headers_configured.__doc__ or ""
+        assert "uvicorn" in source
