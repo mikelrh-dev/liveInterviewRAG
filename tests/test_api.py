@@ -804,6 +804,197 @@ class TestPersistenceIntegration:
         assert swallowed, "failed write-through must be logged as a warning"
 
 
+class TestTurnNumberReconciliation:
+    """In-memory turn numbers must be the ones the DB actually committed.
+
+    Every call site derives ``n`` from ``len(conversations[cid]["turns"])`` and
+    appends the turn to memory BEFORE writing it through. That made ``n`` a
+    request rather than a fact: under a genuine collision ``record_turn``
+    re-derives it and commits elsewhere, so memory and disk diverged and the
+    Context panel for that turn 404s forever. Worse, a failed write left a turn
+    in memory that no restart would ever recall.
+
+    ``record_turn`` reports the committed turn; these tests hold every call site
+    to using it.
+    """
+
+    RACE_TURN = {
+        "n": 0,
+        "user_text": "Raced question",
+        "assistant_text": "Raced answer",
+        "chunks_used": [],
+    }
+    RACE_MESSAGE = {
+        "user_text": "Raced question",
+        "response_text": "Raced answer",
+        "audio_url": "/audio/raced.mp3",
+    }
+
+    @pytest.fixture
+    def persisted_store(self, tmp_path, monkeypatch):
+        import backend.main as main_mod
+        from backend.services.persistence import PersistenceService
+
+        svc = PersistenceService(tmp_path / "reconcile.db")
+        svc.initialize()
+        monkeypatch.setattr(main_mod, "persistence", svc)
+        main_mod.conversations.clear()
+        yield svc
+
+    def _new_conversation(self, client):
+        return client.post("/api/conversation").json()["conversation_id"]
+
+    def _ask(self, client, cid):
+        return client.post(
+            f"/api/conversation/{cid}/message",
+            files={"audio": ("test.webm", b"audio data", "audio/webm")},
+        )
+
+    def _stream(self, client, cid):
+        import json
+
+        with client.stream(
+            "POST",
+            f"/api/conversation/{cid}/message/stream",
+            files={"audio": ("test.webm", b"audio data", "audio/webm")},
+        ) as response:
+            assert response.status_code == 200
+            body = "".join(
+                f"{line}\n"
+                for line in response.iter_lines()
+                if line and line.startswith("data: ")
+            )
+        return [json.loads(line[6:]) for line in body.splitlines() if line.strip()]
+
+    # ── The committed n is the only n memory is allowed to keep ──────────
+
+    def test_memory_adopts_the_n_the_db_committed(
+        self, client, mock_services, persisted_store
+    ):
+        """A turn that collided on n=0 must be remembered as whatever landed.
+
+        Reproduces the live race without concurrency: a turn another request
+        already committed is invisible to this process, so memory is empty and
+        derives n=0 for a row that is already taken.
+        """
+        import backend.main as main_mod
+
+        cid = self._new_conversation(client)
+        persisted_store.record_turn(cid, dict(self.RACE_TURN), dict(self.RACE_MESSAGE))
+
+        response = self._ask(client, cid)
+        assert response.status_code == 200
+
+        disk = persisted_store.load_conversation(cid)
+        in_memory = main_mod.conversations[cid]["turns"]
+
+        assert [t["n"] for t in disk["turns"]] == [0, 1], (
+            "the collision must push the new turn to the next free n"
+        )
+        committed_n = next(
+            t["n"] for t in disk["turns"] if t["user_text"] == "What technologies did you use?"
+        )
+        assert in_memory[-1]["n"] == committed_n, (
+            f"memory kept n={in_memory[-1]['n']} but the DB committed "
+            f"n={committed_n} — the two have diverged"
+        )
+
+    def test_collision_does_not_change_the_client_event_sequence(
+        self, client, mock_services, persisted_store
+    ):
+        """The n correction is internal: the client must not be able to tell.
+
+        The candidate already heard the answer, so the response body and event
+        sequence are a contract independent of how the DB resolved the number.
+        """
+        clean_cid = self._new_conversation(client)
+        raced_cid = self._new_conversation(client)
+        persisted_store.record_turn(
+            raced_cid, dict(self.RACE_TURN), dict(self.RACE_MESSAGE)
+        )
+
+        raced = self._stream(client, raced_cid)
+        clean = self._stream(client, clean_cid)
+
+        assert [e["event"] for e in raced] == [e["event"] for e in clean], (
+            "a collision changed the event sequence the client receives"
+        )
+
+    # ── A failed write must not leave a phantom turn behind ──────────────
+
+    @pytest.mark.parametrize(
+        "path",
+        ["message", "stream"],
+        ids=["non_streaming", "streaming"],
+    )
+    def test_failed_write_leaves_no_phantom_turn_in_memory(
+        self, client, mock_services, persisted_store, monkeypatch, path
+    ):
+        """record_turn returning None means nothing reached disk.
+
+        Memory must not keep the turn, the message, or a summary line for it:
+        all three are built from the same provisional turn, and a restart would
+        forget an exchange the transcript still shows.
+        """
+        import backend.main as main_mod
+
+        monkeypatch.setattr(persisted_store, "record_turn", lambda *a, **k: None)
+
+        cid = self._new_conversation(client)
+        if path == "message":
+            assert self._ask(client, cid).status_code == 200
+        else:
+            self._stream(client, cid)
+
+        state = main_mod.conversations[cid]
+        assert state["turns"] == [], "memory kept a turn that was never stored"
+        assert state["messages"] == [], "memory kept a message that was never stored"
+        assert state["summary"] == "", "the rolling summary counts a turn that does not exist"
+
+    def test_failed_write_still_delivers_the_answer(
+        self, client, mock_services, persisted_store, monkeypatch
+    ):
+        """Losing the turn must not cost the candidate their answer.
+
+        The audio is already synthesized and the client is mid-stream; a write
+        failure is a durability problem, not a response problem.
+        """
+        monkeypatch.setattr(persisted_store, "record_turn", lambda *a, **k: None)
+
+        cid = self._new_conversation(client)
+        response = self._ask(client, cid)
+
+        assert response.status_code == 200
+        assert (
+            response.json()["response_text"]
+            == "I built InterviewTTS using Python and FastAPI."
+        )
+
+    def test_disabled_store_keeps_the_turn_in_memory(
+        self, client, mock_services, persisted_store, monkeypatch
+    ):
+        """PERSISTENCE_ENABLED=false is not a failure — nothing was ever stored.
+
+        ``record_turn`` reports ``None`` for a disabled store as well as for a
+        broken one. Conflating them would silently discard every turn of every
+        DB-less deployment, where memory is the only record there is.
+        """
+        import backend.main as main_mod
+        from backend.services.persistence import PersistenceService
+
+        monkeypatch.setattr(
+            main_mod, "persistence", PersistenceService(Path("off.db"), enabled=False)
+        )
+
+        cid = self._new_conversation(client)
+        assert self._ask(client, cid).status_code == 200
+
+        turns = main_mod.conversations[cid]["turns"]
+        assert len(turns) == 1, "a disabled store must not eat the turn"
+        assert turns[0]["n"] == 0
+        assert turns[0]["assistant_text"] == "I built InterviewTTS using Python and FastAPI."
+
+
 class TestSemanticCacheIntegration:
     """Cap-3 semantic answer cache slotted between FAQ cache and RAG/LLM.
 

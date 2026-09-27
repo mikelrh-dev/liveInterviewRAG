@@ -556,6 +556,67 @@ def update_conversation_summary(conversation_id: str, new_turn: dict) -> None:
     conversations[conversation_id]["summary"] = combined
 
 
+def _store_is_configured() -> bool:
+    """Whether the installed store is meant to receive writes at all.
+
+    Read from the service rather than from ``config.PERSISTENCE_ENABLED``:
+    ``persistence`` is a swappable module global, and the config flag only
+    describes the instance built at import time. They agree in production and
+    disagree the moment the store is replaced, which is exactly when guessing
+    wrong would silently drop turns. Falls back to "configured" so an
+    unfamiliar store implementation is treated as live.
+
+    ``_enabled`` has no public accessor; that reach is the price of not
+    touching ``persistence.py`` in this phase, and it is isolated here.
+    """
+    return bool(getattr(persistence, "_enabled", config.PERSISTENCE_ENABLED))
+
+
+async def _persist_turn(
+    conversation_id: str, new_turn: dict, new_message: dict
+) -> dict | None:
+    """Write a turn through to the DB, then make memory match what landed.
+
+    ``n`` is a request, not a fact. The pipeline derives it from
+    ``len(conversations[cid]["turns"])``, so two in-flight turns on the same
+    conversation ask for the same one. ``record_turn`` resolves that (same
+    content = idempotent retry, different content = commit at the next free
+    ``n``) and reports the turn it actually committed. Appending the provisional
+    turn and discarding that return value left memory claiming a number the DB
+    never used, so the Context panel for that turn 404s forever.
+
+    A ``None`` return means nothing reached disk, so memory is left untouched —
+    a turn that is not stored must not look stored. The one exception is a
+    deliberately disabled store, where nothing was ever meant to hit disk and
+    memory is the only record there is; conflating that with a failure would
+    silently discard every turn of a DB-less deployment.
+
+    Returns the committed turn, or ``None`` when it was not stored. The
+    response the client is already receiving is built from local variables, so
+    dropping the turn costs nothing on the wire.
+    """
+    committed = await asyncio.to_thread(
+        persistence.record_turn, conversation_id, new_turn, new_message
+    )
+
+    if committed is None:
+        if _store_is_configured():
+            logger.warning(
+                "Turn write failed for %s — left out of memory so memory and "
+                "disk agree",
+                conversation_id,
+            )
+            return None
+        # Store deliberately off: memory is the record of record.
+        committed = new_turn
+
+    conv = conversations[conversation_id]
+    conv["turns"].append(committed)
+    update_conversation_summary(conversation_id, committed)
+    conv["messages"].append(new_message)
+    return committed
+
+
 def build_conversation_context(conversation_id: str, recent_count: int = 3) -> str:
     """Build the conversation history to inject into the system prompt.
 
@@ -764,18 +825,13 @@ async def send_message(conversation_id: str, audio: UploadFile = File(...)):
             "response_text": response_text,
             "audio_url": f"/audio/{conversation_id}/{message_id}.mp3",
         }
-        conversations[conversation_id]["turns"].append(new_turn)
-        # Update rolling summary for conversation memory
-        update_conversation_summary(conversation_id, new_turn)
         conversations[conversation_id]["last_activity_at"] = (
             datetime.utcnow().isoformat()
         )
-        conversations[conversation_id]["messages"].append(new_message)
 
-        # Write-through: persist turn + message + activity atomically
-        await asyncio.to_thread(
-            persistence.record_turn, conversation_id, new_turn, new_message
-        )
+        # Write-through: persist turn + message + activity atomically, then let
+        # the committed n decide what memory keeps.
+        await _persist_turn(conversation_id, new_turn, new_message)
         # Cache the fresh answer for future paraphrased first questions
         if store_in_semantic_cache:
             await asyncio.to_thread(semantic_cache.store, user_text, response_text)
@@ -905,17 +961,13 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
                     "response_text": response_text,
                     "audio_url": f"/audio/{conversation_id}/{message_id}.mp3",
                 }
-                conversations[conversation_id]["turns"].append(new_turn)
-                update_conversation_summary(conversation_id, new_turn)
                 conversations[conversation_id]["last_activity_at"] = (
                     datetime.utcnow().isoformat()
                 )
-                conversations[conversation_id]["messages"].append(new_message)
 
-                # Write-through: persist the cache-hit exchange atomically
-                await asyncio.to_thread(
-                    persistence.record_turn, conversation_id, new_turn, new_message
-                )
+                # Write-through: persist the cache-hit exchange atomically,
+                # then let the committed n decide what memory keeps.
+                await _persist_turn(conversation_id, new_turn, new_message)
 
                 yield sse_format(
                     "audio_url", {"url": f"/audio/{conversation_id}/{message_id}.mp3"}
@@ -966,22 +1018,18 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
                     "response_text": farewell,
                     "audio_url": audio_url,
                 }
-                conversations[conversation_id]["messages"].append(farewell_message)
                 farewell_turn = {
                     "n": len(conversations[conversation_id].get("turns", [])),
                     "user_text": user_text,
                     "assistant_text": farewell,
                     "chunks_used": [],
                 }
-                conversations[conversation_id]["turns"].append(farewell_turn)
-                update_conversation_summary(conversation_id, farewell_turn)
-                # Write-through: persist the closing exchange atomically
-                await asyncio.to_thread(
-                    persistence.record_turn,
-                    conversation_id,
-                    farewell_turn,
-                    farewell_message,
-                )
+                # Write-through: persist the closing exchange atomically, then
+                # let the committed n decide what memory keeps. Runs after
+                # interview_end on purpose — the goodbye must not queue behind
+                # a slow disk. Memory is reconciled before the report is built,
+                # so the report describes exactly what survived the write.
+                await _persist_turn(conversation_id, farewell_turn, farewell_message)
                 # Post-hoc report — must never break the SSE stream.
                 # to_thread keeps the event loop free during the file write.
                 report_path = await asyncio.to_thread(
@@ -1166,18 +1214,13 @@ async def send_message_stream(conversation_id: str, audio: UploadFile = File(...
                 "response_text": full_response,
                 "audio_url": f"/audio/{conversation_id}/",  # multiple chunks
             }
-            conversations[conversation_id]["turns"].append(new_turn)
-            # Update rolling summary for conversation memory
-            update_conversation_summary(conversation_id, new_turn)
             conversations[conversation_id]["last_activity_at"] = (
                 datetime.utcnow().isoformat()
             )
-            conversations[conversation_id]["messages"].append(new_message)
 
-            # Write-through: persist turn + message + activity atomically
-            await asyncio.to_thread(
-                persistence.record_turn, conversation_id, new_turn, new_message
-            )
+            # Write-through: persist turn + message + activity atomically, then
+            # let the committed n decide what memory keeps.
+            await _persist_turn(conversation_id, new_turn, new_message)
             # Cache the fresh answer for future paraphrased first questions
             if is_first_substantive:
                 await asyncio.to_thread(semantic_cache.store, user_text, full_response)
