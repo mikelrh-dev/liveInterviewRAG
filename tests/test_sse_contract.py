@@ -67,7 +67,7 @@ def backend_sources() -> list[Path]:
 def emitted_event_types(sources: list[Path] | None = None) -> set[str]:
     """Distinct event names passed as the first argument of ``sse_format``.
 
-    ``\\s*`` spans newlines so multi-line calls (``sse_format(\n    "done", {}``)
+    ``\\s*`` spans newlines so multi-line calls (``sse_format(\\n    "done", {}``)
     are captured as well as single-line ones.
     """
     found: set[str] = set()
