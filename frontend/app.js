@@ -374,47 +374,6 @@ async function resumeAudioContext() {
     }
 }
 
-// ─── Particles ─────────────────────────────────────────
-
-function initParticles() {
-    if (typeof tsParticles === "undefined") {
-        console.warn("tsparticles not loaded — skipping particles");
-        return;
-    }
-
-    tsParticles.load("particles-bg", {
-        fullScreen: { enable: false },
-        particles: {
-            number: { value: 60, density: { enable: true, value_area: 800 } },
-            color: { value: "#00d4ff" },
-            opacity: { value: 0.15, random: true },
-            size: { value: 2, random: true },
-            move: {
-                enable: true,
-                speed: 0.5,
-                direction: "top",
-                out_mode: "out",
-            },
-            line_linked: {
-                enable: true,
-                distance: 100,
-                color: "#00d4ff",
-                opacity: 0.1,
-                width: 0.5,
-            },
-        },
-        interactivity: {
-            events: {
-                onhover: { enable: false },
-                onclick: { enable: true, mode: "repulse" },
-            },
-            modes: {
-                repulse: { distance: 100, duration: 0.4 },
-            },
-        },
-    });
-}
-
 // ─── Avatar Orb ────────────────────────────────────────
 
 function initAvatarOrb() {
