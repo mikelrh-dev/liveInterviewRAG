@@ -9,6 +9,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
@@ -232,8 +233,8 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("LLM pre-warm failed (first call may be slower): %s", e)
 
-    # Ensure audio directory exists
-    config.AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+    # Ensure audio directory exists (the /audio mount is served from it)
+    ensure_audio_dir()
 
     # Initialize the persistent store (Cap-2): mkdir + DDL + corrupt recovery
     try:
@@ -470,8 +471,28 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ─── Audio directory bootstrap ───────────────────────────
+def ensure_audio_dir() -> Path:
+    """Create the audio directory and return it.
+
+    ``app.mount`` below runs at import time and ``StaticFiles`` refuses to mount
+    a directory that does not exist. That directory used to be created only as a
+    side effect of ``TTSService.__init__``, so the mount silently depended on a
+    service constructor running earlier in this module: make the service lazy, or
+    reorder two statements, and startup dies here with an error about a
+    directory nobody asked for. Declaring the prerequisite at the line that needs
+    it is the only ordering that cannot rot.
+
+    Idempotent, and called again from the lifespan so a directory deleted while
+    the process runs is restored.
+    """
+    config.AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+    return config.AUDIO_DIR
+
+
 # Serve generated audio files
-app.mount("/audio", StaticFiles(directory=str(config.AUDIO_DIR)), name="audio")
+AUDIO_DIR = ensure_audio_dir()
+app.mount("/audio", StaticFiles(directory=str(AUDIO_DIR)), name="audio")
 
 
 @app.get("/api/health")
