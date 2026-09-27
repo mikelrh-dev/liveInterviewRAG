@@ -133,9 +133,27 @@ class LLMService:
     #
     # generate() / generate_stream() try Google AI first (if a
     # key is set) and fall back to OpenRouter on any exception.
+    #
+    # That rule is unconditional for generate() and CONDITIONAL for
+    # generate_stream(), and the asymmetry is deliberate. A blocking
+    # call that raises produced nothing, so swapping providers is
+    # invisible. A streaming call that raises may already have
+    # forwarded tokens: a yielded token cannot be recalled, no
+    # generation resumes from an arbitrary offset, and no client can
+    # be told to discard what it already heard without breaking the
+    # streaming contract this product is built on. Restarting on a
+    # second provider in that state would append a whole second answer
+    # to a partial one and ship the concatenation to the client and
+    # to the database. So the streaming fallback is allowed strictly
+    # BEFORE the first token, and after it the failure is raised.
 
     def generate(self, prompt: str, context: str = "", system_prompt: str = "") -> str:
-        """Try Google AI first, fallback to OpenRouter."""
+        """Try Google AI first, fallback to OpenRouter.
+
+        Correct as written and intentionally left alone: this call has
+        produced nothing whenever it raises, so the fallback is always
+        safe here regardless of how far the provider had got internally.
+        """
         if self.google_api_key:
             try:
                 return self._googleai_generate(prompt, context, system_prompt)
@@ -145,13 +163,52 @@ class LLMService:
 
     def generate_stream(self, prompt: str, context: str = "",
                         system_prompt: str = "") -> Generator[str, None, None]:
-        """Try Google AI first, fallback to OpenRouter."""
+        """Try Google AI first, falling back to OpenRouter ONLY before the
+        first token reaches the caller.
+
+        After the first token, a Google failure is raised rather than
+        retried elsewhere. The caller decides what a partial answer means
+        (the streaming turn reports an error and terminates without
+        persisting); this layer only guarantees the text it emits is never
+        a concatenation of two different answers.
+        """
         if self.google_api_key:
+            # Counted by hand: `yield from` cannot tell us whether it
+            # forwarded anything before the inner generator raised.
+            emitted = 0
             try:
-                yield from self._googleai_generate_stream(prompt, context, system_prompt)
+                for token in self._googleai_generate_stream(
+                    prompt, context, system_prompt
+                ):
+                    emitted += 1
+                    yield token
                 return
             except Exception as e:
-                logger.warning("Google AI stream failed, falling back to OpenRouter: %s", e)
+                if emitted:
+                    # DEGRADED ANSWER, not a provider switch. The client
+                    # already holds `emitted` tokens of an answer that will
+                    # now never finish, and no second provider may be
+                    # spliced onto it. Logged at ERROR with the original
+                    # traceback so this never hides behind routine 429
+                    # warnings, then re-raised so the caller can settle the
+                    # turn as a failure rather than persist a truncated one.
+                    logger.error(
+                        "Google AI stream failed after %d token(s) were already "
+                        "sent to the client; aborting without fallback because a "
+                        "second provider would concatenate a second answer onto "
+                        "the partial one: %s",
+                        emitted, e, exc_info=True,
+                    )
+                    raise RuntimeError(
+                        f"Google AI stream failed after {emitted} token(s) were "
+                        f"already sent; the answer is incomplete: {e}"
+                    ) from e
+                # NORMAL PROVIDER SWITCH. Nothing reached the client, so the
+                # fallback is free and the answer is whole.
+                logger.warning(
+                    "Google AI stream failed before any token was sent, "
+                    "falling back to OpenRouter: %s", e
+                )
         yield from self._openrouter_generate_stream(prompt, context, system_prompt)
 
     def generate_stream_with_context(
