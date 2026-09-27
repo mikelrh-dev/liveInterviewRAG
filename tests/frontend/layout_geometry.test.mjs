@@ -148,3 +148,40 @@ test("the ring paints above the videos and the orb canvas", () => {
     assert.ok(zIndex > videoZ, `ring (${zIndex}) must paint over the videos (${videoZ})`);
     assert.ok(zIndex > canvasZ, `ring (${zIndex}) must paint over the canvas (${canvasZ})`);
 });
+
+// ─── F3: the avatar fits the column it is given ─────────────────────────────
+
+test("the avatar sizes to its container, not to a fixed pixel value", () => {
+    // `.main-grid` is `320px | 1fr | 320px`, so the centre column is
+    // 100vw - 640px and reaches 380px only at >= 1020px of viewport. A fixed
+    // 380px avatar is therefore clipped on every width in (768px, 1020px).
+    const rule = css.match(/#avatar-wrapper\s*\{([^}]*)\}/);
+    assert.ok(rule, "#avatar-wrapper rule not found in style.css");
+
+    const width = rule[1].match(/(?<!-)\bwidth:\s*([^;]+);/);
+    assert.ok(width, "#avatar-wrapper declares no width");
+    assert.match(
+        width[1],
+        /%/, // container-relative, so it can never exceed the column
+        `#avatar-wrapper width is \`${width[1].trim()}\` — a fixed pixel size ` +
+            "overflows the 1fr centre column below 1020px of viewport",
+    );
+});
+
+test("the avatar stays square whatever the width resolves to", () => {
+    // `width` alone would stretch the circle into an ellipse once the width is
+    // container-driven; the box needs an aspect ratio (or a matching height).
+    const rule = css.match(/#avatar-wrapper\s*\{([^}]*)\}/)[1];
+    const square =
+        /aspect-ratio:\s*1\s*\/\s*1/.test(rule) ||
+        (rule.match(/(?<!-)\bheight:\s*([^;]+);/) || [])[1] === width_under_test(rule);
+
+    assert.ok(
+        square,
+        "#avatar-wrapper has a container-relative width but no square aspect ratio",
+    );
+});
+
+function width_under_test(rule) {
+    return (rule.match(/(?<!-)\bwidth:\s*([^;]+);/) || [])[1];
+}

@@ -516,11 +516,17 @@ main {
 }
 
 /* ─── Avatar Wrapper ────────────────────────────────────── */
+/* The centre column is `320px | 1fr | 320px`, so it measures 100vw - 640px
+   and only reaches the 380px cap at >= 1020px of viewport. Between the 768px
+   mobile breakpoint and that width a fixed 380px box was clipped by `main`
+   (`overflow: hidden`) down to a sliver of the circle. Capping against 100%
+   instead of a fixed pixel makes the avatar follow its container; the aspect
+   ratio keeps it a circle, since the videos inside are border-radius 50%. */
 
 #avatar-wrapper {
     position: relative;
-    width: 380px;
-    height: 380px;
+    width: min(380px, 100%);
+    aspect-ratio: 1 / 1;
     display: flex;
     align-items: center;
     justify-content: center;
