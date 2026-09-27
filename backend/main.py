@@ -1,6 +1,7 @@
 """InterviewTTS — FastAPI application with voice interview pipeline."""
 
 import asyncio
+import ipaddress
 import json
 import logging
 import os
@@ -90,6 +91,63 @@ conversations: dict[str, dict] = {}
 
 # Rate limiting store: {ip: [timestamps]}
 _rate_limit_store: dict[str, list] = {}
+
+
+# ─── Trusted-proxy client IP resolution ────────────────────
+# Address classes that identify an infrastructure hop rather than a real
+# client, so a forwarded-for chain walks past them to reach the visitor.
+_TRUSTED_HOP_PROPERTIES = (
+    "is_loopback",
+    "is_private",
+    "is_link_local",
+    "is_unspecified",
+)
+
+
+def _is_trusted_hop(candidate: str) -> bool:
+    """True if the address is unparseable or is an infrastructure address.
+
+    Unparseable input is treated as trusted so that a malformed or hostile
+    entry can never be picked as the client identity.
+    """
+    try:
+        address = ipaddress.ip_address(candidate)
+    except ValueError:
+        return True
+    return any(getattr(address, prop) for prop in _TRUSTED_HOP_PROPERTIES)
+
+
+def resolve_client_ip(request: Request) -> str:
+    """Resolve the real client IP, trusting X-Forwarded-For only from loopback.
+
+    Behind a reverse proxy the direct peer is the proxy itself, so the peer
+    address cannot identify the client. But X-Forwarded-For is attacker-
+    controlled: honouring it unconditionally would let anyone bypass the
+    rate limit by sending a random header. We therefore only read the header
+    when the immediate peer is loopback, and we take the RIGHTMOST entry that
+    is not itself a trusted proxy hop.
+    """
+    peer = request.client.host if request.client else "unknown"
+    if not _is_trusted_hop(peer) or peer == "unknown":
+        # Not behind a local proxy — the peer is the client. Any
+        # X-Forwarded-For present is attacker-controlled and must be ignored.
+        return peer
+
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    if not forwarded.strip():
+        return peer
+
+    hops = [hop.strip() for hop in forwarded.split(",") if hop.strip()]
+    if not hops:
+        return peer
+
+    # Right to left: the first hop that is not an infrastructure address is
+    # the closest thing to the real client that a hop we do not control did
+    # not overwrite. The visitor can forge entries to the *left* of this one.
+    for hop in reversed(hops):
+        if not _is_trusted_hop(hop):
+            return hop
+    return hops[0]
 
 # Services (initialized at startup)
 stt_service = STTService(
@@ -298,7 +356,12 @@ async def periodic_cleanup(interval_seconds: int) -> None:
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
-    """Simple in-memory rate limiter: N requests per minute per IP."""
+    """Simple in-memory rate limiter: N requests per minute per client.
+
+    The bucket key is produced by :func:`resolve_client_ip`, so behind a
+    loopback reverse proxy each real visitor gets their own bucket instead of
+    the whole internet sharing the proxy's bucket.
+    """
 
     def __init__(self, app, max_requests: int = 10, window: int = 60):
         super().__init__(app)
@@ -308,7 +371,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         # Only rate-limit API endpoints
         if request.url.path.startswith("/api/"):
-            client_ip = request.client.host if request.client else "unknown"
+            client_ip = resolve_client_ip(request)
             now = time.time()
             timestamps = _rate_limit_store.get(client_ip, [])
 
