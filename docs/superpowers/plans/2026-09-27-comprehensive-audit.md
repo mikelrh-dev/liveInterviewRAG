@@ -14,9 +14,9 @@
 
 These facts are verified. Do not re-derive them; build on them.
 
-- **Test baseline:** `250 passed, 8 failed`. The 8 failures are ALL async tests (`tests/test_tts.py` ×4, `tests/test_conversation_memory.py` ×4) failing with "async def functions are not natively supported" — a `pytest-asyncio 1.4.0` / `pytest 9.1.1` incompatibility in the venv, NOT product bugs. The plugin loads and reports `asyncio mode=auto` yet does not collect coroutine tests. This is itself an audit finding (Layer 1 / toolchain).
+- **Test baseline:** `258 passed, 0 failed` (full suite, ~112s). The suite is healthy — there is NO pytest/pytest-asyncio incompatibility. (An earlier claim of "8 broken async tests" was a FALSE POSITIVE caused by a `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` environment variable leaking between shell calls. Always clear it before running the suite.)
 - **Correct interpreter:** `venv\Scripts\python.exe`. The global python lacks `pydantic` and a stray `langsmith` plugin crashes collection.
-- **Run command:** `venv\Scripts\python.exe -m pytest tests/ -q -p no:cacheprovider` (expect 8 async failures; anything else is a new signal).
+- **Run command:** `venv\Scripts\python.exe -m pytest tests/ -q -p no:cacheprovider` (expect 258 passed; anything else is a new signal).
 - **Backend file sizes:** `main.py` 1035, `services/rag.py` 519, `services/llm.py` 407, `services/persistence.py` 411, `services/response_cache.py` 340, `services/semantic_cache.py` 242, `services/candidate.py` 138, `services/report.py` 106, `services/stt.py` 80, `services/tts.py` 72, `config.py` 120, `prompts/candidate.py` 114.
 - **Frontend file sizes:** `app.js` 1218, `style.css` 1175, `index.html` 268, `avatar.js` 218.
 - **Gitignore facts:** `.env` ignored (line 21); `AUDITORIA-*.md` ignored (line 80) — the report is a local working doc by design; `/wiki/`, `/candidate/`, `RAGraw/`, `reports/`, `audio/` ignored.
@@ -56,11 +56,11 @@ Run from repo root:
 ```powershell
 venv\Scripts\python.exe -m pytest tests/ -q -p no:cacheprovider
 ```
-Expected: `250 passed, 8 failed` and the 8 failures are the async ones named in Ground truth. If the counts differ, record the actual counts in the report — do NOT force the expected numbers.
+Expected: `258 passed, 0 failed`. If the counts differ, record the actual counts in the report — do NOT force the expected numbers. Always clear `PYTEST_DISABLE_PLUGIN_AUTOLOAD` first (`Remove-Item Env:PYTEST_DISABLE_PLUGIN_AUTOLOAD -ErrorAction SilentlyContinue`) — a leaked value from a previous shell call produces a false "async tests are broken" result.
 
-- [ ] **Step 2: Record the pytest-asyncio/pytest 9 toolchain break as a finding**
+- [ ] **Step 2: Record the test baseline as a verified fact (no toolchain finding)**
 
-Add to the report under Layer 1 (toolchain integrity) as **ALTO** severity: 8 async tests cannot execute on the installed toolchain, so TTS and conversation-memory async behavior is currently unverified by CI. Evidence: plugin loads, reports `asyncio mode=auto`, yet coroutine tests are not collected. Recommendation: pin compatible versions (e.g. pytest 8.x, or pytest-asyncio latest supporting pytest 9) and re-run.
+Record in the report that the suite is healthy: 258 passed, 0 failed. Do NOT record a toolchain-break finding — that was a false positive from a leaked `PYTEST_DISABLE_PLUGIN_AUTOLOAD` env var. Instead, note as an operational gotcha: always run pytest in a clean environment, and use `venv\Scripts\python.exe`.
 
 - [ ] **Step 3: Write the report header and baseline section**
 
@@ -293,7 +293,7 @@ Go through all findings: each has severity, `file:line` evidence, impact labeled
 
 - [ ] **Step 2: Build the prioritized action plan**
 
-A single table ordered by severity (CRÍTICO → BAJO), columns: #, action, files, depends-on, effort (S/M/L). Group CRÍTICO items as "do first, before any deploy." For the toolchain break, the first action is fixing the test toolchain (it gates verifying every other fix).
+A single table ordered by severity (CRÍTICO → BAJO), columns: #, action, files, depends-on, effort (S/M/L). Group CRÍTICO items as "do first, before any deploy." The first action overall is the TLS fix, since it invalidates the rest of the security posture.
 
 - [ ] **Step 3: Write the executive summary at the top**
 
@@ -316,7 +316,7 @@ git commit -m "docs(audit): complete comprehensive audit with prioritized action
 
 - [ ] Every layer (1-7) has findings or an explicit "no findings, here's why" — no layer silently skipped.
 - [ ] Every finding has `file:line` evidence and a severity from the rubric.
-- [ ] The 8 async test failures are reported as a toolchain finding, not hidden or "fixed" in passing.
+- [ ] The verified test baseline (258 passed) is recorded as a fact, and no false toolchain finding is carried into the report.
 - [ ] The action plan's first item unblocks verification (test toolchain) and CRÍTICO items are listed before MEDIO/BAJO.
 - [ ] Only `AUDITORIA-2026-09-27.md` was created/modified; no product code, test, or wiki file was changed.
 - [ ] Report is self-consistent: summary counts match the per-layer findings.

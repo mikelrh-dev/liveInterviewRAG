@@ -12,9 +12,9 @@
 
 - **1 hallazgo CRÍTICO**: no hay TLS en ninguna capa. Todo el tráfico, incluidas las credenciales de API que viajan al backend, va en claro por el puerto 80. En un producto cuyo activo a proteger es un perfil profesional, esto anula el resto del trabajo de seguridad.
 - **16 hallazgos ALTO**, de los cuales 4 rompen directamente la experiencia principal del producto: la ruta cacheada nunca se habla, la despedida termina en silencio, laFiesta de turnos pierde datos bajo carrera, y el RAG entrega marcadores `[TODO]` al LLM como si fueran hechos.
-- **La documentación pública miente en tres puntos concretos**: el README afirma "10 req/min por IP" (es un tope global), "155+ tests en verde" (250 pasan, 8 no se ejecutan) y "latencia 8-12s" (no existe telemetría para verificarlo). Un portfolio se evalúa por lo que documenta tanto como por lo que ejecuta.
+- **La documentación pública miente en dos puntos concretos**: el README afirma "10 req/min por IP" (es un tope global) y "latencia 8-12s" (no existe telemetría para verificarlo). Un portfolio se evalúa por lo que documenta tanto como por lo que ejecuta. La tercera afirmación —"155+ tests"— es correcta en lo esencial: la suite real es **258 tests, todos en verde** (el README se queda corto en la cuenta, no se equivoca).
 - **La capa de servicios de `backend/` está bien diseñada** (cero código muerto en AST sobre todo el paquete). El problema estructural es cómo se cose: `main.py` (1035 líneas) y `app.js` (1218) son dos objetos dios, y el commit-turn está duplicado 4 veces — dos de las copias ya divergieron.
-- **Acción recomendada antes de cualquier otra cosa:** arreglar el toolchain de tests. Sin tests ejecutables, cualquier corrección se aplica a ciegas.
+- **Acción recomendada antes de cualquier otra cosa:** habilitar TLS. Es el único hallazgo que anula el resto del trabajo de seguridad.
 
 | Severidad | Nº |
 |---|---|
@@ -30,7 +30,7 @@
 
 | Dato | Valor verificado |
 |---|---|
-| Tests | **250 pasan, 8 fallan** (no ejecutan) |
+| Tests | **258 pasan, 0 fallan** (suite completa, 1m52s) |
 | Intérprete correcto | `venv\Scripts\python.exe` (el python global carece de `pydantic`) |
 | Comando | `venv\Scripts\python.exe -m pytest tests/ -q -p no:cacheprovider` |
 | CodeGraph | indexado: 40 archivos, 897 nodos, 2022 edges |
@@ -127,15 +127,7 @@ Para que el informe sea creíble, lo que **no** se encontró también cuenta:
 
 ## Plan de acción priorizado
 
-Ordenado por severidad técnica. La primera acción desbloquea la verificación de todas las demás.
-
-### Fase 0 — Desbloquear la verificación (antes de tocar nada)
-
-| # | Acción | Archivos | Depende | Esfuerzo |
-|---|---|---|---|---|
-| 0.1 | Fijar `pytest`/`pytest-asyncio` compatibles para que los 8 tests async se ejecuten | `pyproject.toml` (o lockfile) | — | S |
-
-**Por qué primero:** sin esto, cualquier corrección posterior se aplica sin red de seguridad. El README afirma "155+ tests en verde"; la realidad es que TTS y memoria de conversación **no están verificadas** por CI hoy.
+Ordenado por severidad técnica. La suite de tests está sana (258/258), así que cada corrección se puede verificar con red de seguridad.
 
 ### Fase 1 — CRÍTICO + ALTO de seguridad y despliegue (antes de volver a desplegar)
 
@@ -145,19 +137,19 @@ Ordenado por severidad técnica. La primera acción desbloquea la verificación 
 | 1.2 | Cerrar el backend a `127.0.0.1` (o documentar firewall OCI); `--proxy-headers` **con** `--forwarded-allow-ips=127.0.0.1` | `deployment/interviewtts.service` | 1.1 | S |
 | 1.3 | Corregir rate limit: `TrustedHostMiddleware`/`X-Forwarded-For` correcto, o IPO allowlist | `backend/main.py` | 1.2 | M |
 | 1.4 | Imponer `Content-Length` / streaming con corte temprano en el upload | `backend/main.py` | — | M |
-| 1.5 | Offload de `transcribe` en el endpoint de no-streaming (paridad con 710) | `backend/main.py:539` | 0.1 | S |
+| 1.5 | Offload de `transcribe` en el endpoint de no-streaming (paridad con 710) | `backend/main.py:539` | — | S |
 
 ### Fase 2 — ALTO de corrección de datos y flujo de voz (producto roto)
 
 | # | Acción | Archivos | Depende | Esfuerzo |
 |---|---|---|---|---|
-| 2.1 | `INSERT OR IGNORE` / `ON CONFLICT` en `record_turn`, y decidir semántica de duplicado | `backend/services/persistence.py:232` | 0.1 | S |
-| 2.2 | Unificar el evento de audio: el backend emite `audio_url`, el front maneja `audio_chunk` — decidir uno y cablear ambos lados | `backend/main.py`, `frontend/app.js` | 0.1 | M |
+| 2.1 | `INSERT OR IGNORE` / `ON CONFLICT` en `record_turn`, y decidir semántica de duplicado | `backend/services/persistence.py:232` | — | S |
+| 2.2 | Unificar el evento de audio: el backend emite `audio_url`, el front maneja `audio_chunk` — decidir uno y cablear ambos lados | `backend/main.py`, `frontend/app.js` | — | M |
 | 2.3 | Sintetizar TTS en la rama de despedida | `backend/main.py:777-805` | 2.2 | S |
 | 2.4 | Manejar `error` en el dispatcher; salida segura del stream truncado | `frontend/app.js` | 2.2 | S |
 | 2.5 | Estado de turno desde el servidor, no desde el DOM; limpiar transcript por entrevista | `frontend/app.js` | — | M |
-| 2.6 | No reemitir tokens en failover; hacer el reintento idempotente | `backend/services/llm.py` | 0.1 | M |
-| 2.7 | `return []` con warning cuando el filtro `doc_type` no matchea; alinear singular/plural | `backend/services/rag.py:33-45,437-447` | 0.1 | S |
+| 2.6 | No reemitir tokens en failover; hacer el reintento idempotente | `backend/services/llm.py` | — | M |
+| 2.7 | `return []` con warning cuando el filtro `doc_type` no matchea; alinear singular/plural | `backend/services/rag.py:33-45,437-447` | — | S |
 | 2.8 | Filtrar `[TODO` y marcadores de confianza en el chunker; o curar la wiki antes de compilar | `backend/services/rag.py:332` | — | M |
 
 ### Fase 3 — ALTO/alto de arquitectura y wiki (mantenimiento y contenido)
@@ -167,7 +159,7 @@ Ordenado por severidad técnica. La primera acción desbloquea la verificación 
 | 3.1 | Resolver los 16 `[TODO]` y promover las 12 páginas `medium` | `wiki/**` | — | M (humano) |
 | 3.2 | Introducir capa de orquestación; unificar el commit-turn (4 copias, 2 divergentes) | `backend/main.py` | 2.1 | L |
 | 3.3 | Dividir `app.js` (1218) y `main.py` (1035); **ojo**: el mount `/audio` depende del `mkdir` implícito de `TTSService.__init__` (`tts.py:19`) — hacer perezosos los servicios rompe el arranque | varios | 3.2 | L |
-| 3.4 | Tests de contrato de eventos (SSE) y de `getCurrentTurnNumber` — la red que habría atrapado U-1/U-2/U-3 | `tests/` | 0.1 | M |
+| 3.4 | Tests de contrato de eventos (SSE) y de `getCurrentTurnNumber` — la red que habría atrapado U-1/U-2/U-3 | `tests/` | — | M |
 
 ### Fase 4 — MEDIO (selección; el resto en los informes de capa)
 
