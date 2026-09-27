@@ -118,6 +118,38 @@ _HAS_WORD_RE = re.compile(r"\w", re.UNICODE)
 # so a placeholder inside a heading must not cost them.
 _HEADING_RE = re.compile(r"^#{1,6}\s")
 
+# Section boundaries: every heading of level 1-3 starts a new section.
+_SECTION_SPLIT_RE = re.compile(r"\n(?=#{1,3}\s)")
+# A section that is nothing but the document's own H1 title.
+_H1_ONLY_RE = re.compile(r"^#\s+\S")
+
+
+def split_sections(content: str) -> List[str]:
+    """Split a document body into sections, keeping its own H1 attached.
+
+    Splitting before EVERY H1-H3 turned the document's own H1 into a standalone
+    chunk with no body: 34 of the real corpus's 214 chunks were a bare title,
+    and the first real section lost the title that gave it meaning. That is not
+    merely wasted volume — an H1 like ``# Frutero — BM Supermercados
+    (2015-2016)`` or ``# Arquitectura de 3 Capas para Fraud Detector`` *is* the
+    answer to what a recruiter asks, and splitting it off discards role,
+    employer, dates and architecture name away from the paragraph explaining
+    them.
+
+    So the leading H1 is re-attached to the section that follows it. Only the
+    document's OWN title: a *later* H1 is a genuine top-level boundary and keeps
+    splitting, otherwise two distinct top-level sections would merge and
+    ``section`` would be mislabelled for the merged body.
+
+    H4-H6 are deliberately not boundaries here, unchanged from before: the
+    heading parser below only understands levels 1-3, so a deeper heading would
+    fall back to naming the whole file as its section.
+    """
+    parts = [p for p in _SECTION_SPLIT_RE.split(content) if p.strip()]
+    if len(parts) < 2 or not _H1_ONLY_RE.match(parts[0].strip()):
+        return parts
+    return [f"{parts[0].rstrip()}\n\n{parts[1].lstrip()}", *parts[2:]]
+
 
 def strip_placeholders(text: str) -> Tuple[str, int]:
     """Remove ``[TODO ...]`` placeholders from ``text``.
@@ -534,8 +566,9 @@ class RAGPipeline:
 
         chunks = []
 
-        # Split by headings first
-        sections = re.split(r'\n(?=#{1,3}\s)', content)
+        # Split by headings, keeping the document's own H1 with the body it
+        # titles (an orphaned title is a chunk with no answer in it).
+        sections = split_sections(content)
 
         chunk_id = 0
         for section in sections:

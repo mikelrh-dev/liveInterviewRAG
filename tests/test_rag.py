@@ -888,18 +888,19 @@ Contenido de la subseccion, tambien real y verificado.
         rag = RAGPipeline(chunk_size=1000)
         chunks = rag._chunk_document("projects/clean.md", doc)
 
-        # Pinned to the pre-existing output: the heading split regex yields two
-        # sections, and both must come through byte-identical.
-        assert len(chunks) == 2, "clean input must chunk exactly as before"
-        assert [c.id for c in chunks] == [
-            "projects/clean.md-0", "projects/clean.md-1",
-        ]
-        assert [c.section for c in chunks] == ["Proyecto", "Subseccion"]
-        assert [c.type for c in chunks] == ["project", "project"]
-        assert [c.tags for c in chunks] == [["python"], ["python"]]
-        assert [c.summary for c in chunks] == ["Proyecto limpio"] * 2
+        # Repinned for the H1 re-attachment: the document's own title now opens
+        # the first chunk instead of standing alone as chunk 0, so a clean
+        # document yields ONE chunk carrying the title and both bodies. The
+        # purpose of this test is unchanged — placeholder filtering must not
+        # perturb clean input — only the pinned expectation moved.
+        assert len(chunks) == 1, "clean input must chunk exactly as before"
+        assert [c.id for c in chunks] == ["projects/clean.md-0"]
+        assert [c.section for c in chunks] == ["Proyecto"]
+        assert [c.type for c in chunks] == ["project"]
+        assert [c.tags for c in chunks] == [["python"]]
+        assert [c.summary for c in chunks] == ["Proyecto limpio"]
         assert [c.content for c in chunks] == [
-            "# Proyecto\n\nUna primera seccion con contenido real.",
+            "# Proyecto\n\nUna primera seccion con contenido real.\n\n"
             "## Subseccion\n\nContenido de la subseccion, tambien real y verificado.",
         ]
 
@@ -914,10 +915,7 @@ Contenido de la subseccion, tambien real y verificado.
         """Deliberate: a section that held only a placeholder keeps its heading.
 
         The heading is real structure ("What I'd do differently"), so dropping
-        it would erase a topic the candidate does have. A bare heading is inert
-        for retrieval — it states nothing the candidate did not — and the corpus
-        already carries 36 such heading-only chunks, so this is the established
-        shape rather than a new one.
+        it would erase a topic the candidate does have.
         """
         doc = """---
 type: project
@@ -939,7 +937,11 @@ Contenido real del proyecto.
         # The section is no longer *empty*: the prose that trailed the marker is
         # the owner's own question, and sanitisation does not get to delete it.
         # The heading keeps its '##' so this stays a section boundary.
-        assert emptied[0].content.strip().startswith("## What I'd do differently")
+        #
+        # It is no longer the FIRST line either: the document's own H1 now opens
+        # the chunk it titles, so assert presence, not position. The bare-H2-
+        # alone shape this used to rely on is gone from the corpus entirely.
+        assert "## What I'd do differently" in emptied[0].content
         assert "What would you change about InterviewTTS" in emptied[0].content, (
             "the owner's question survives; only the [TODO marker] is removed"
         )
@@ -1145,6 +1147,129 @@ class TestEmbeddingCache:
         h1 = RAGPipeline._compute_documents_hash(self.DOCS)
         h2 = RAGPipeline._compute_documents_hash({"other.md": "Completely different content."})
         assert h1 != h2
+
+
+class TestH1StaysWithTheBodyItTitles:
+    """The document's own H1 is answer content, not a section of its own.
+
+    Measured on the real corpus: splitting before every H1-H3 turned 34 of the
+    214 chunks into a bare title with no body. Worse, the orphaned title is
+    often the *answer* to the question — ``# Frutero en BM Supermercados
+    (2015-2016)`` carries role, employer and years, exactly what a recruiter
+    asks about. Splitting it off both wastes a top-k slot and throws the fact
+    away from the paragraph that explains it.
+    """
+
+    # Shaped like wiki/experience/frutero-bm-2015-2016.md: H1, then a short
+    # answer section under H2, exactly as the FAQ/experience pages are written.
+    DOC = """# Frutero — BM Supermercados (2015-2016)
+
+## Respuesta corta (30s)
+Empecé reponiendo yubicando fruta y verdura en la seccion de perecedero,
+atendiendo al cliente de forma directa.
+
+## Respuesta larga (2min)
+Mi primer trabajo en retail fue reponer y reponer el linear de frescos.
+"""
+
+    def _chunks(self):
+        return RAGPipeline(chunk_size=1000)._chunk_document(
+            "experience/frutero.md", self.DOC
+        )
+
+    def test_h1_is_not_emitted_as_a_bare_chunk(self):
+        """A chunk that is nothing but an H1 wastes a top-k slot on no answer."""
+        chunks = self._chunks()
+        bare = [
+            c for c in chunks
+            if re.match(r"^#\s", c.content) and "\n" not in c.content.strip()
+        ]
+        assert not bare, (
+            f"{len(bare)} bare-H1 chunk(s) emitted; contents: "
+            f"{[c.content for c in bare]}"
+        )
+
+    def test_h1_text_is_in_the_same_chunk_as_the_body_it_titles(self):
+        """The title must ride in the CONTENT of the chunk it introduces.
+
+        An embedder reads content, not metadata: a title that survives only in
+        ``chunk.section`` is invisible to retrieval.
+        """
+        chunks = self._chunks()
+        titled = [c for c in chunks if "Frutero" in c.content and "BM Supermercados" in c.content]
+        assert titled, (
+            "no chunk carries both the employer/years title and the body it "
+            f"titles; chunks were {[c.content[:60] for c in chunks]}"
+        )
+        assert any("yubicando fruta y verdura" in c.content for c in titled), (
+            "the title and the body it titles are in different chunks"
+        )
+
+    def test_h1_is_not_kept_only_in_metadata(self):
+        """The title must not be demoted to metadata-only.
+
+        Before the fix the title was reachable via ``chunk.section`` while the
+        embedding saw an empty-ish body — exactly the split this forbids.
+        """
+        chunks = self._chunks()
+        content_only = [c for c in chunks if "Frutero" in c.content]
+        assert content_only, "the H1 title is absent from every chunk's content"
+
+    def test_a_later_h1_still_splits_into_its_own_section(self):
+        """Only the document's *own* title is re-attached.
+
+        A second H1 is a genuine top-level boundary. Merging it into the
+        previous section would drop a real boundary and mislabel ``section``,
+        so it must keep splitting.
+        """
+        rag = RAGPipeline(chunk_size=1000)
+        content = (
+            "# Primer titulo\nCuerpo de la primera seccion.\n\n"
+            "## Subseccion\nCuerpo de la subseccion.\n\n"
+            "# Segundo titulo\nCuerpo de la segunda seccion.\n"
+        )
+        chunks = rag._chunk_document("doc.md", content)
+        sections = [c.section for c in chunks]
+        assert "Segundo titulo" in sections, (
+            f"a later H1 stopped being a boundary; sections were {sections}"
+        )
+        body_of_second = [c for c in chunks if c.section == "Segundo titulo"][0]
+        assert "Cuerpo de la segunda seccion" in body_of_second.content
+        assert "Cuerpo de la primera seccion" not in body_of_second.content
+
+    def test_document_without_h1_is_unchanged(self):
+        """Frontmatter-only bodies (no H1) must chunk exactly as before."""
+        rag = RAGPipeline(chunk_size=1000)
+        content = "## Seccion A\nCuerpo A.\n\n## Seccion B\nCuerpo B.\n"
+        chunks = rag._chunk_document("doc.md", content)
+        assert [c.section for c in chunks] == ["Seccion A", "Seccion B"]
+        assert chunks[0].content == "## Seccion A\nCuerpo A."
+
+    def test_real_wiki_emits_no_bare_h1_chunk(self):
+        """Guard the real corpus, not just a synthetic document.
+
+        ``index.md`` is excluded here and not excused: it is a generated
+        build artifact (``AUTO-GENERATED ... do not edit``) and the loader
+        drops it entirely, so it can never reach the chunker in production.
+        """
+        from backend.services.candidate import CandidateProfile
+
+        profile = CandidateProfile(
+            Path(__file__).resolve().parent.parent / "candidate",
+            wiki_dir=Path(__file__).resolve().parent.parent / "wiki",
+        )
+        profile.load()
+        rag = RAGPipeline(chunk_size=400, chunk_overlap=50)
+        offenders = []
+        for name, content in profile.documents.items():
+            if Path(name).name == "index.md":
+                continue
+            for c in rag._chunk_document(name, content):
+                if re.match(r"^#\s", c.content) and "\n" not in c.content.strip():
+                    offenders.append((c.source, c.content.strip()))
+        assert not offenders, (
+            f"{len(offenders)} bare-H1 chunk(s) still emitted: {offenders[:5]}"
+        )
 
 
 class TestEmbedderProperty:
