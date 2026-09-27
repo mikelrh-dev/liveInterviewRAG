@@ -151,6 +151,61 @@ def split_sections(content: str) -> List[str]:
     return [f"{parts[0].rstrip()}\n\n{parts[1].lstrip()}", *parts[2:]]
 
 
+# Headings the wiki uses for a section that is nothing but links to other
+# pages. Every entry is justified by an occurrence in this repository, and the
+# set is pinned by ``test_reference_heading_set_is_exactly_what_the_corpus_
+# uses`` so a new spelling cannot slip through unnoticed:
+#
+#   "fuentes"      15 in live content  — Spanish "sources" (decisions/, faq/, ...)
+#   "ver tambien"  11 in live content  — unaccented Spanish (decisions/, faq/, ...)
+#   "ver también"   4 in live content  — accented Spanish (faq/)
+#   "see also"     12 in live content  — English, used by experience/, profile/,
+#                                     projects/, skills/, stories/
+#   "sources"       1, in wiki/templates/faq-template.md — the English spelling
+#                     the owner's own FAQ template produces, so it appears in
+#                     generated content even though no live page uses it yet.
+#
+# The corpus is bilingual in its scaffolding, so the table is bilingual too.
+REFERENCE_HEADINGS: frozenset = frozenset({
+    "fuentes", "see also", "sources", "ver tambien", "ver también",
+})
+
+# A body line that carries no prose: a list item made only of wikilinks.
+_WIKILINK_LINE_RE = re.compile(r"^\s*(?:[-*]\s+)?(?:\[\[[^\]]*\]\](?:[,;]\s*)?)+\s*$")
+_HEADING_LINE_RE = re.compile(r"^#{1,3}\s+(.+)")
+
+
+def is_wikilink_reference(section: str) -> bool:
+    """True when a section states no answer at all — only ``[[wikilinks]]``.
+
+    As chunk text these sections are actively harmful. The literal string
+    ``- [[profile/mikel]]`` carries no meaning for a sentence embedder, and
+    "Fuentes" / "Ver tambien" is generic Spanish that matches no question a
+    recruiter would ask. 42 of the real corpus's 214 chunks were exactly this.
+
+    Dropping them is lossless, and the loss is measured rather than asserted
+    (``test_dropping_reference_links_loses_no_answer_content``): every link in
+    the corpus either names no document at all — an unfilled ``[[faq/...]]``
+    template placeholder, which cannot state a relationship because it names
+    nothing — or names a document that is indexed on its own and therefore
+    answers that topic with its real content. A bare pointer is always a worse
+    representation of a document's content than the content itself.
+
+    The decisive test is the CONTENT, not the heading, so a source that
+    explains WHY it points somewhere keeps its prose. ``REFERENCE_HEADINGS`` is
+    needed for the degenerate case of a reference heading with an empty body,
+    and it documents intent.
+    """
+    lines = [l for l in section.split("\n") if l.strip()]
+    if not lines:
+        return False
+    heading_match = _HEADING_LINE_RE.match(lines[0])
+    body = lines[1:] if heading_match else lines
+    if not body:
+        return bool(heading_match) and heading_match.group(1).strip().lower() in REFERENCE_HEADINGS
+    return all(_WIKILINK_LINE_RE.match(line) for line in body)
+
+
 def strip_placeholders(text: str) -> Tuple[str, int]:
     """Remove ``[TODO ...]`` placeholders from ``text``.
 
@@ -570,8 +625,27 @@ class RAGPipeline:
         # titles (an orphaned title is a chunk with no answer in it).
         sections = split_sections(content)
 
-        chunk_id = 0
+        # Sections that are only lists of links to other pages are navigation,
+        # not answers. They are dropped rather than indexed (see
+        # ``is_wikilink_reference``): each one names a document that is indexed
+        # on its own, so nothing is lost and a top-k slot stops being spent on
+        # text that cannot answer anything.
+        kept_sections = []
+        dropped = 0
         for section in sections:
+            if is_wikilink_reference(section.strip()):
+                dropped += 1
+                continue
+            kept_sections.append(section)
+        if dropped:
+            logger.info(
+                "Dropped %d wikilink-only reference section(s) from %s — they "
+                "list links to other pages and hold no answer. Filter version %s.",
+                dropped, filename, CHUNK_FILTER_VERSION,
+            )
+
+        chunk_id = 0
+        for section in kept_sections:
             section = section.strip()
             if not section:
                 continue

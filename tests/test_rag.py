@@ -16,7 +16,26 @@ from backend.services.rag import (
     detect_doc_type,
     expand_query,
     parse_frontmatter,
+    split_sections,
 )
+
+# A body line that is nothing but wikilinks: ``- [[profile/mikel]]``.
+_WIKILINK_LINE = re.compile(r"^\s*(?:[-*]\s+)?(?:\[\[[^\]]*\]\](?:[,;]\s*)?)+\s*$")
+
+
+def _heading_and_body(section: str) -> tuple[str, list[str]]:
+    """Split a raw section into its heading text and its non-blank body lines."""
+    lines = [l for l in section.split("\n") if l.strip()]
+    if not lines:
+        return "", []
+    m = re.match(r"^#{1,3}\s+(.+)", lines[0])
+    return (m.group(1).strip() if m else ""), (lines[1:] if m else lines)
+
+
+def _wikilink_only(section: str) -> bool:
+    """True when a section states no prose at all — only ``[[wikilinks]]``."""
+    _, body = _heading_and_body(section)
+    return bool(body) and all(_WIKILINK_LINE.match(l) for l in body)
 
 
 class TestRAGPipeline:
@@ -1270,6 +1289,184 @@ Mi primer trabajo en retail fue reponer y reponer el linear de frescos.
         assert not offenders, (
             f"{len(offenders)} bare-H1 chunk(s) still emitted: {offenders[:5]}"
         )
+
+
+class TestWikilinkReferenceSectionsAreNotIndexed:
+    """A list of ``[[wikilinks]]`` is navigation, not an answer.
+
+    As chunk text these sections are actively harmful. The literal string
+    ``- [[profile/mikel]]`` means nothing to a sentence embedder; the headings
+    "Fuentes" and "Ver tambien" are generic Spanish that matches no recruiter
+    question; and 42 of the real corpus's 214 chunks were exactly this, so
+    roughly a seventh of the available top-k pool held no answer at all.
+
+    Dropping them is lossless: every real link resolves to a document that is
+    indexed on its own, and a question about that topic retrieves that
+    document's own content. See ``test_dropping_reference_links_loses_no_
+    answer_content`` for the measured proof.
+    """
+
+    DOC = """# InterviewTTS
+
+## Qué es
+
+Un gemelo digital de voz para entrevistas de trabajo.
+
+## Fuentes
+- [[profile/mikel]]
+- [[decisions/por-que-interviewtts]]
+
+## Ver tambien
+- [[skills/backend]]
+"""
+
+    def _chunks(self, doc=None, **kw):
+        return RAGPipeline(chunk_size=1000, **kw)._chunk_document(
+            "projects/interview-tts.md", doc or self.DOC
+        )
+
+    def test_no_chunk_is_a_wikilink_only_section(self):
+        """The defect itself: a chunk whose every line is a bare wikilink."""
+        offenders = [
+            c.content for c in self._chunks() if _wikilink_only(c.content)
+        ]
+        assert not offenders, f"{len(offenders)} wikilink-only chunk(s): {offenders}"
+
+    def test_the_prose_sections_around_them_survive(self):
+        """Only the link lists go — the answer beside them must be untouched."""
+        chunks = self._chunks()
+        # One chunk, not two: the document's own H1 re-attachment (see
+        # TestH1StaysWithTheBodyItTitles) means "## Qué es" opens the first
+        # chunk rather than standing as a section of its own.
+        assert [c.section for c in chunks] == ["InterviewTTS"]
+        assert "gemelo digital de voz" in chunks[0].content
+
+    def test_ellipsis_placeholder_links_are_also_dropped(self):
+        """``[[faq/...]]`` names no document, so it states no relationship.
+
+        Four of the corpus's reference links are unfilled ellipsis
+        placeholders. They cannot express a relationship because they name
+        nothing, so keeping them would cost a slot to say literally nothing.
+        """
+        doc = (
+            "# Faq\n\n## Fuentes\n- [[faq/...]]\n- [[opinions/...]]\n"
+        )
+        assert not [c for c in self._chunks(doc) if _wikilink_only(c.content)]
+
+    def test_a_section_mixing_prose_with_links_is_kept(self):
+        """The rule is "no prose at all", never "contains a wikilink".
+
+        A source that explains WHY it points somewhere carries real content
+        and must reach the LLM. This is the guard against over-filtering.
+        """
+        doc = (
+            "# Faq\n\n## Fuentes\n- [[profile/mikel]] para el nivel de ingles.\n"
+            "- Ver tambien [[faq/presentacion-30-segundos]] para el pitch.\n"
+        )
+        kept = [c for c in self._chunks(doc) if "nivel de ingles" in c.content]
+        assert kept, (
+            "a reference section that carries prose was dropped — that prose "
+            "is answer content"
+        )
+        assert "presentacion-30-segundos" in kept[0].content
+
+    def test_a_bare_related_heading_with_no_body_is_dropped(self):
+        """An empty reference heading states nothing either."""
+        doc = "# Faq\n\nRespuesta real con contenido.\n\n## Fuentes\n\n## Ver tambien\n"
+        chunks = self._chunks(doc)
+        assert not any(_wikilink_only(c.content) for c in chunks)
+        assert not any(
+            c.section.strip().lower() in {"fuentes", "see also", "sources"}
+            for c in chunks
+        ), f"empty reference headings survived as chunks: {[(c.section, c.content) for c in chunks]}"
+
+    def test_real_wiki_emits_no_wikilink_only_chunk(self):
+        """Guard the real corpus."""
+        chunks = self._real_corpus_chunks()
+        offenders = [(c.source, c.content[:70]) for c in chunks if _wikilink_only(c.content)]
+        assert not offenders, f"{len(offenders)} wikilink-only chunk(s): {offenders[:5]}"
+
+    def test_reference_heading_set_is_exactly_what_the_corpus_uses(self):
+        """Pin the header set, so a NEW spelling cannot slip through.
+
+        Each entry below is justified by an occurrence in the repository:
+        ``Fuentes`` (15 in live content), ``Ver tambien`` (11), ``Ver también``
+        (4), ``See also`` (12) and ``Sources`` (1, in wiki/templates/faq-template.md
+        — the template the owner writes the next FAQ from, so it is a spelling
+        the corpus will produce even though no live page uses it yet).
+        """
+        from backend.services.rag import REFERENCE_HEADINGS
+
+        used = set()
+        for name, content in self._real_corpus_documents().items():
+            if Path(name).name == "index.md":
+                continue
+            for sec in split_sections(content):
+                heading, _ = _heading_and_body(sec)
+                if heading.lower() in REFERENCE_HEADINGS:
+                    used.add(heading.lower())
+        assert used == REFERENCE_HEADINGS - {"sources"}, (
+            f"corpus reference headings drifted: found {sorted(used)}, "
+            f"table declares {sorted(REFERENCE_HEADINGS)}"
+        )
+        template = (self._wiki_root() / "templates" / "faq-template.md").read_text(
+            encoding="utf-8"
+        )
+        assert "## Sources" in template, (
+            "'sources' is in the table only because the FAQ template spells it "
+            "that way; if the template changed, re-justify or drop the entry"
+        )
+
+    def test_dropping_reference_links_loses_no_answer_content(self):
+        """The 'loss is zero' argument, measured rather than asserted.
+
+        Every link in every reference section of the real corpus either names
+        no document at all (an unfilled ``[[faq/...]]`` placeholder, which
+        cannot state a relationship) or names a document that is itself
+        indexed and therefore answers that topic on its own.
+        """
+        documents = self._real_corpus_documents()
+        indexed = {k.replace("\\", "/") for k in documents}
+        placeholders, resolved, dangling = 0, 0, []
+
+        for name, content in documents.items():
+            for sec in split_sections(content):
+                if not _wikilink_only(sec):
+                    continue
+                for target in re.findall(r"\[\[([^\]]+)\]\]", sec):
+                    # An unfilled template placeholder such as ``faq/...`` names
+                    # no document, so it cannot state a relationship.
+                    if target.endswith("...") or set(target) == {"."}:
+                        placeholders += 1
+                        continue
+                    resolved += 1
+                    path = target if target.endswith(".md") else f"{target}.md"
+                    if path not in indexed:
+                        dangling.append((name, target))
+
+        assert not dangling, f"reference links pointing at nothing: {dangling}"
+        assert resolved > 0 and placeholders > 0, (
+            f"corpus changed shape: {resolved} real links, {placeholders} placeholders"
+        )
+
+    def _wiki_root(self) -> Path:
+        return Path(__file__).resolve().parent.parent / "wiki"
+
+    def _real_corpus_documents(self) -> dict:
+        from backend.services.candidate import CandidateProfile
+
+        profile = CandidateProfile(
+            Path(__file__).resolve().parent.parent / "candidate",
+            wiki_dir=self._wiki_root(),
+        )
+        profile.load()
+        assert profile.documents, "the real wiki must still load"
+        return profile.documents
+
+    def _real_corpus_chunks(self):
+        rag = RAGPipeline(chunk_size=400, chunk_overlap=50)
+        for name, content in self._real_corpus_documents().items():
+            yield from rag._chunk_document(name, content)
 
 
 class TestEmbedderProperty:
