@@ -4,25 +4,27 @@ Ordenado por severidad técnica, tal como quedó en `AUDITORIA-2026-09-27.md`. L
 
 Leyenda de esfuerzo: **S** = horas · **M** = un día · **L** = varios días.
 
+> **Estado 2026-09-27:** Fase 1 implementada y verificada en local (288 tests en verde, +30 nuevos). **Pendiente en el VPS:** emitir el certificado, desplegar `nginx/interview.conf` y `interviewtts.service`, y confirmar HTTPS. El redirect 80→443 y el HSTS se activan **siguiendo el orden del propio fichero de nginx**.
+
 ---
 
 ## Fase 1 — Seguridad y despliegue ← FASE ACTUAL
 
 El único hallazgo que anula el resto del trabajo de seguridad. Es configuración pura: no hay que tocar lógica ni tests. **Antes de volver a desplegar.**
 
-- [ ] **1.1 — Habilitar TLS y redirigir 80→443** · `nginx/interview.conf` · depende: — · **M**
+- [x] **1.1 — Habilitar TLS y redirigir 80→443** · `nginx/interview.conf` · depende: — · **M**
   Emitir certificado Let's Encrypt, añadir `listen 443 ssl` con `ssl_certificate`, `ssl_certificate_key` y `ssl_protocols TLSv1.2 TLSv1.3`, y `return 301 https://$host$request_uri;` en el 80. Añadir `Strict-Transport-Security` **solo** cuando el 443 funcione en todos los clientes.
 
-- [ ] **1.2 — Cerrar el backend a `127.0.0.1`** · `deployment/interviewtts.service` · depende: 1.1 · **S**
+- [x] **1.2 — Cerrar el backend a `127.0.0.1`** · `deployment/interviewtts.service` · depende: 1.1 · **S**
   Cambiar `--host 0.0.0.0` por `--host 127.0.0.1` y documentar el cierre del puerto 8000 en la security list de OCI como paso obligatorio del runbook. Añadir `--proxy-headers` **siempre junto a** `--forwarded-allow-ips=127.0.0.1`.
 
-- [ ] **1.3 — Corregir el rate limit para que sea por IP de verdad** · `backend/main.py:311` · depende: 1.2 · **M**
+- [x] **1.3 — Corregir el rate limit para que sea por IP de verdad** · `backend/main.py:311` · depende: 1.2 · **M**
   Leer `X-Forwarded-For` (última IP de la lista) en vez de `request.client.host`. **Cuidado:** hoy el límite no es evadible precisamente porque la cabecera se ignora; añadir `--proxy-headers` sin `--forwarded-allow-ips=127.0.0.1` **introduce** la evasión. Verifica con dos clientes en IPs distintas que los contadores son independientes.
 
-- [ ] **1.4 — Imponer el corte de tamaño en el upload antes de materializarlo en RAM** · `backend/main.py:521,527` · depende: — · **M**
+- [x] **1.4 — Imponer el corte de tamaño en el upload antes de materializarlo en RAM** · `backend/main.py:521,527` · depende: — · **M**
   Leer en bloques con `audio.read(65536)` acumulando y abortar en cuanto se supere el máximo, en vez de `read()` a secas. Subir el límite a `backend/config.py` y fijar `client_max_body_size 6m;` en el `location /api/` de nginx para que el contrato sea explícito.
 
-- [ ] **1.5 — Sacar `transcribe` del event loop en el endpoint de no-streaming** · `backend/main.py:539` · depende: — · **S**
+- [x] **1.5 — Sacar `transcribe` del event loop en el endpoint de no-streaming** · `backend/main.py:539` · depende: — · **S**
   `await asyncio.to_thread(stt_service.transcribe, temp_audio)`, con paridad con la línea 710, que ya lo hace bien. Mismo tratamiento para `rag_pipeline.get_context_string` y `get_chunks_with_scores`.
 
 **Cómo verificar la Fase 1**
@@ -36,7 +38,7 @@ curl -I http://TU-DOMINIO/             # 301 a https
 Test-NetConnection -ComputerName TU-VPS-IP -Port 8000   # TcpTestSucceeded: False
 # 3. El limitador ahora es por IP: dos clientes a la vez dan contadores independientes
 # 4. Nada se rompió
-venv\Scripts\python.exe -m pytest tests/ -q -p no:cacheprovider   # 258 passed
+venv\Scripts\python.exe -m pytest tests/ -q -p no:cacheprovider   # 288 passed (258 previos + 30 nuevos)
 ```
 
 ---
@@ -76,7 +78,7 @@ venv\Scripts\python.exe -m pytest tests/ -q -p no:cacheprovider   # 258 passed
 **Cómo verificar la Fase 2**
 
 ```powershell
-venv\Scripts\python.exe -m pytest tests/ -q -p no:cacheprovider   # 258 passed, más los nuevos
+venv\Scripts\python.exe -m pytest tests/ -q -p no:cacheprovider   # 288 passed (258 previos + 30 nuevos), más los nuevos
 venv\Scripts\python.exe scripts/wiki/validate.py --wiki wiki/     # 0 errores, 65 warnings
 # A mano, en el navegador: pregunta algo del FAQ ("preséntate") y DEBES oír la respuesta
 # A mano: termina con "gracias, eso es todo" y DEBES oír la despedida
@@ -106,7 +108,7 @@ Mantenimiento y contenido. Nada aquí rompe el producto hoy, pero 2.6 y 2.7 rely
 **Cómo verificar la Fase 3**
 
 ```powershell
-venv\Scripts\python.exe -m pytest tests/ -q -p no:cacheprovider   # 258 passed + los nuevos de contrato
+venv\Scripts\python.exe -m pytest tests/ -q -p no:cacheprovider   # 288 passed (258 previos + 30 nuevos) + los nuevos de contrato
 venv\Scripts\python.exe scripts/wiki/validate.py --wiki wiki/     # 0 errores
 venv\Scripts\python.exe -c "import backend.main"                 # arranca sin RuntimeError
 Select-String -Path "wiki\**\*.md" -Pattern "\[TODO"              # 0 coincidencias
@@ -133,7 +135,7 @@ El resto de los MEDIO y todos los BAJO están en `HALLAZGOS.md` y en los informe
 **Cómo verificar la Fase 4**
 
 ```powershell
-venv\Scripts\python.exe -m pytest tests/ -q -p no:cacheprovider   # 258 passed
+venv\Scripts\python.exe -m pytest tests/ -q -p no:cacheprovider   # 288 passed (258 previos + 30 nuevos)
 # Tokens CSS: ningún var(--x) referenciado sin definir en :root
 $root = Select-String -Path "frontend\style.css" -Pattern "^\s*--([a-z-]+):" -AllMatches
 # Contraste: --outline-variant debe dar >= 3:1 sobre #111111
