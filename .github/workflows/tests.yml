@@ -11,49 +11,43 @@ name: tests
 # do before: tests/test_packaging.py fails the build if backend/ imports a
 # distribution that neither backend/requirements.txt nor pyproject.toml
 # declares, or if those two files disagree on any distribution or floor. That
-# test is why the "install the undeclared packages by hand" step below is gone,
-# and why it cannot be reintroduced quietly -- a hand-written pip line is not
-# a declaration, and adding one here is what hid this class of bug.
+# test is why the "install the undeclared packages by hand" step is gone, and
+# why it cannot be reintroduced quietly -- a hand-written pip line is not a
+# declaration, and adding one here is what hid this class of bug. The remaining
+# hand-written line was the dev extra itself, which is now installed from the
+# declaration instead; see that step for what was wrong with it.
 #
-# IT IS CURRENTLY RED, AND THAT IS THE POINT
-# ------------------------------------------
-# Measured on a real `git clone` of this repository (not a guess), pytest gives
-# 557 passed / 7 failed / 1 xfailed, versus 563 / 0 / 2 in the working tree.
-# Six of those seven failures have one root cause that is NOT a test bug and
-# NOT something this workflow can fix: four hand-authored wiki pages are
-# untracked because `.gitignore` line 77 says `/wiki/`, so they exist on the
-# author's machine and in no checkout anywhere else:
+# WHAT CI DOES NOT ESTABLISH
+# --------------------------
+# It does not check that the owner's personal content is correct, and it cannot.
+# The real `wiki/` is private, is not in this repository, and is not this
+# project's business. The retrieval corpus the suite measures is
+# `tests/fixtures/retrieval_corpus/` -- 42 entirely invented pages, committed in
+# full, `index.md` included. That substitution is what makes the suite
+# portable, and it is why this job no longer needs a wiki at all: on a checkout
+# with `wiki/` deleted, pytest gives 592 passed / 2 skipped / 2 xfailed, where
+# the 2 skips are the "nothing to compare against the real wiki" checks in
+# `tests/fixture_corpus.py`. A green run here therefore means the CODE is
+# sound against a corpus anyone can clone. It means nothing about whether the
+# owner's answers are good answers, and no result in this file should be read
+# as if it did.
 #
-#   wiki/faq/nivel-ingles.md
-#   wiki/faq/disponibilidad.md
-#   wiki/faq/hobbies-intereses.md
-#   wiki/faq/por-que-contratarte.md
+# THE ONE KNOWN FAILURE ON THIS PLATFORM
+# --------------------------------------
+# `tests/test_config.py::test_config_paths` asserts that the checkout directory
+# is named "InterviewTTS". It is not, and has not been for a while:
+# `actions/checkout` names the workspace after the REPOSITORY, and the remote
+# is `mikelrh-dev/liveInterviewRAG`, so `cfg.BASE_DIR.name` is "liveInterviewRAG"
+# and that assertion fails. This is reproduced here, not predicted: cloning this
+# repository to any other directory name fails it, which is how it was found.
 #
-# 46 wiki pages are tracked; these four were added after `/wiki/` was
-# gitignored, so git silently skipped them. The suite is calibrated against all
-# 50, and the retrieval floors (recall@3, the regression guard) are calibrated
-# against the 50-page corpus, not the 46-page one that ships. That is why:
-#
-#   - test_candidate: "expected the 37 typed wiki pages, got 33"
-#   - test_rag: 2 questions lose their own document (nivel-ingles, disponibilidad)
-#   - test_rag: the corpus reference-heading set no longer matches the table
-#   - test_rag_chunk_size_sweep: recall@3 is 0.551 on the shipped corpus,
-#     0.653 in the working tree
-#
-# The fix is one commit adding those four files (`git add -f`), or removing
-# `/wiki/` from `.gitignore` and committing them. It is deliberately NOT done
-# here: this workflow's job is to make the gap impossible to ignore, not to
-# paper over it. Do not add `continue-on-error`, a deselect, or a retry to
-# silence these — that would defeat the only reason this file exists.
-#
-# The seventh failure, test_config.py::test_config_paths, is an artifact of the
-# clone this was measured in (it asserts the checkout directory is named
-# "InterviewTTS"). GitHub Actions checks out into a directory of exactly that
-# name, so it passes there.
-#
-# `wiki/index.md` is AUTO-GENERATED (README: "never hand-edit it") and is not
-# committed, so the workflow generates it. That is a legitimate build step, not
-# hidden state: it is reproducible from the tracked pages alone.
+# It is reported rather than fixed, because the fix is an ownership decision,
+# not a CI change. Either the repository is renamed to InterviewTTS, or the
+# assertion is narrowed to what is actually a property of the code (that
+# BASE_DIR is the repository root, and that CANDIDATE_DIR / AUDIO_DIR /
+# FRONTEND_DIR sit inside it -- the other three assertions in the same test).
+# Whichever is chosen, do not silence it with a skip or an xfail: a test that
+# encodes a real constraint should be corrected, not muted.
 #
 # TWO ENVIRONMENT TRAPS THIS REPRODUCES ON PURPOSE
 # ------------------------------------------------
@@ -73,13 +67,20 @@ name: tests
 # HuggingFace on first use. It is NOT vendored, and this workflow does not
 # pretend otherwise. First run downloads it; later runs hit the cache. A
 # transient network failure must not be reported as a test failure, so the
-# download is retried once, in its own step, BEFORE any test runs. The tests
+# download is retried, in its own step, BEFORE any test runs. The tests
 # themselves still run exactly once, with no retry: retrying a download is
 # resilience, retrying a test is hiding a defect.
 #
 # No matrix across Python versions: the project declares `requires-python =
 # ">=3.10"` and 3.10 is what the venv runs. A version matrix here would triple
 # the runtime to re-test a range nobody claims to support.
+#
+# WHAT IS DELIBERATELY NOT HERE
+# -----------------------------
+# No `continue-on-error` on a real step, no deselect, no `|| true`, and no
+# retry on a test. A step that can fail must be allowed to. The one step that
+# cannot fail (the wiki index) has nothing in it that can, and says so in its
+# own output.
 
 on:
   push:
@@ -128,18 +129,16 @@ jobs:
           # installing the old set, and the environment the packaging guard was
           # exercised in stopped being the one the project describes.
           #
-          # It was also green by coincidence. `tomli` -- which
+          # It also happened to be green by coincidence. `tomli` -- which
           # tests/test_packaging.py needs on 3.10, where tomllib is not stdlib,
           # and which pyproject.toml therefore declares in this extra -- was
-          # not named by that hand-written line. It arrived only as a
-          # transitive of `pytest>=7.4.0` resolving to pytest 9.x, whose own
+          # NOT installed by that hand-written line. It arrived only as a
+          # transitive of pytest>=7.4.0 resolving to pytest 9.x, whose own
           # metadata says `tomli>=1; python_version < "3.11"`. That is exactly
           # the failure mode tests/test_packaging.py was written to stop
-          # trusting: a dependency present by accident, gone the day upstream
-          # re-extras it. Nothing pinned pytest to a major version, so nothing
-          # would have failed loudly first. Measured in a throwaway 3.10 venv:
-          # that hand-written line does install tomli 2.4.1 -- by luck, not by
-          # declaration.
+          # trusting: a dependency that is present by accident, and vanishes the
+          # day upstream re-extras it. Nothing here pins pytest to a major
+          # version, so nothing would have failed loudly first.
           #
           # -e, not a plain install: a plain install would copy `backend` into
           # site-packages, giving the suite a second copy of the code to import
