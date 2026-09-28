@@ -99,6 +99,9 @@ let nextChunkId = 0;
 let skippedChunkIds = new Set();
 let isAudioPlaying = false;
 let allChunksReceived = false;
+// The narrator driving the status line for the turn in flight. Defaults to a
+// no-op so the playback teardown can fire outside a turn without a guard.
+let turnNarrator = createTurnNarrator();
 
 // Typing animation
 const typingIntervals = [];
@@ -1036,7 +1039,10 @@ function tryPlayNextChunk() {
 
     const chunk = audioQueue.splice(idx, 1)[0];
     isAudioPlaying = true;
-    setStatus("Reproduciendo…");
+    // The answer is audible now. This is the same stage the `audio_url`
+    // branch reports, so the line does not flicker when playback starts
+    // before the next chunk has finished arriving.
+    turnNarrator.speaking();
     setState("speaking");
     addAudioIndicator();
 
@@ -1088,6 +1094,11 @@ function tryPlayNextChunk() {
 }
 
 function checkAllDone() {
+    // The one place that knows a turn is genuinely over: generation finished,
+    // the queue is empty and nothing is playing. The narrator is told from
+    // exactly this state, so "Escuchando…" can never arrive while the
+    // candidate is still being spoken to.
+    turnNarrator.audioState(audioQueue.length, isAudioPlaying);
     if (allChunksReceived && audioQueue.length === 0 && !isAudioPlaying) {
         if (isInterviewActive) startListening();
     }
@@ -1400,6 +1411,119 @@ function createTurnSettler(hooks) {
 }
 
 /**
+ * Turn narration: the single owner of the status line for one turn.
+ *
+ * The defect this replaces: a candidate's turn is speak -> "Enviando audio" ->
+ * 8-12 seconds -> audio, and that string was wrong for almost all of the wait,
+ * because the server spends that time transcribing, retrieving and generating.
+ * The dispatcher branched on all five SSE events while calling `setStatus` in
+ * none of them, so the line stayed frozen at the request. Two symptoms shared
+ * the root cause: the typing bubble appeared *before* the request was sent, so
+ * "the AI is writing" was on screen while Whisper was still working, and the
+ * settler wrote "Escuchando…" on `done` -- which says generation finished, not
+ * that playback did -- claiming the mic was back while chunks were still
+ * queued and playing.
+ *
+ * Two rules make this honest rather than merely busier:
+ *
+ *   1. A stage is only ever entered because something observed it. Nothing
+ *      here is scheduled, timed or guessed; there is no per-stage timing to
+ *      drive a progress figure, so there is no progress figure.
+ *   2. Stages only move forward. `speaking` survives `complete()` for exactly
+ *      as long as audio is outstanding, and the "mic is back" claim waits for
+ *      the state the client already tracks -- queue empty and nothing playing.
+ *
+ * Rendering goes through `hooks.onStatus`, so this stays pure and testable;
+ * see tests/frontend/turn_narration.test.mjs.
+ */
+function createTurnNarrator(hooks) {
+    const STAGE_TEXT = {
+        uploading: "Enviando audio…",
+        transcribing: "Transcribiendo tu respuesta…",
+        generating: "Redactando la respuesta…",
+        speaking: "Reproduciendo la respuesta…",
+        listening: "Escuchando…",
+        chunkSkipped: "Se ha omitido un fragmento de audio.",
+    };
+    const FAILURE_TEXT = "Error del servidor.";
+
+    let stage = null;
+    let generationComplete = false;
+    let audioOutstanding = false;
+    let terminated = false;
+
+    /**
+     * Move to a stage and render it. Returns whether the line changed, so a
+     * repeated signal for the stage already on screen costs nothing.
+     */
+    function move(next) {
+        if (terminated || next === stage) return false;
+        stage = next;
+        if (next === "failed") {
+            if (hooks && hooks.onStatus) hooks.onStatus(FAILURE_TEXT, "error");
+        } else if (hooks && hooks.onStatus) {
+            hooks.onStatus(STAGE_TEXT[next]);
+        }
+        return true;
+    }
+
+    return {
+        /** @returns {string|null} the current stage, or null before it starts. */
+        stage() {
+            return stage;
+        },
+        /** @returns {string|null} what the line currently says. */
+        text() {
+            if (stage === "failed") return FAILURE_TEXT;
+            return stage === null ? null : STAGE_TEXT[stage];
+        },
+        /** The request is in flight: the recording is being sent. */
+        begin() {
+            move("uploading");
+        },
+        /** `transcription` arrived: the answer is being understood. */
+        transcribing() {
+            move("transcribing");
+        },
+        /** The first `token` arrived: the answer is being written. */
+        generating() {
+            move("generating");
+        },
+        /** Audio is audible, or is about to be. */
+        speaking() {
+            audioOutstanding = true;
+            move("speaking");
+        },
+        /** A TTS chunk failed server-side and was skipped: the turn continues. */
+        chunkSkipped() {
+            move("chunkSkipped");
+        },
+        /** A fatal error: the turn is over and nothing later may claim otherwise. */
+        failed() {
+            // move() first, then freeze: setting the flag first would make
+            // move() reject the very transition that is being reported.
+            move("failed");
+            terminated = true;
+        },
+        /** `done`: generation finished. Playback is a separate question. */
+        complete() {
+            generationComplete = true;
+            if (!audioOutstanding) move("listening");
+        },
+        /**
+         * The audio queue's state, as the player already tracks it.
+         *
+         * @param {number} queued chunks waiting behind the current one.
+         * @param {boolean} playing whether a chunk is currently playing.
+         */
+        audioState(queued, playing) {
+            audioOutstanding = queued > 0 || playing;
+            if (generationComplete && !audioOutstanding) move("listening");
+        },
+    };
+}
+
+/**
  * Turn bookkeeping, driven by the server rather than by the DOM.
  *
  * The turn number used to be derived by counting `.message` elements. That is
@@ -1474,12 +1598,21 @@ async function processRecordingStream() {
     }
     isProcessing = true;
     btnMic.disabled = true;
-    setStatus("Enviando audio…");
+    // One narrator per turn, next to the one settler below: the status line
+    // has a single owner, so a stage cannot be reported by two call sites
+    // that drift apart.
+    const narrator = createTurnNarrator({
+        onStatus: (text, className) => setStatus(text, className),
+    });
+    turnNarrator = narrator;
+    // The only claim this file can make honestly before the server answers:
+    // the recording is on its way. Everything after that is reported by
+    // whoever actually observed it.
+    narrator.begin();
     setState("processing");
     resetAudioQueue();
     turnState.reset();
     currentCandidateDiv = null;
-    showTyping();
     // Arm the stopwatch before the request leaves, and clear any previous
     // turn's figure: the pill must never show turn N-1's latency as if it
     // were turn N's.
@@ -1512,9 +1645,11 @@ async function processRecordingStream() {
                 const contextTurn = turnState.contextTurn();
                 if (contextTurn !== null) fetchContext(contextTurn);
             }
-            if (reason === "done" || reason === "eof") {
-                setStatus("Escuchando…");
-            }
+            // The status line is NOT written here. `done` says generation
+            // finished, which is not the same as the answer having been
+            // heard; announcing the mic from this hook is what made the page
+            // claim the candidate could talk while it was still speaking.
+            // checkAllDone() announces it, from the queue and the player.
         },
     });
 
@@ -1556,11 +1691,19 @@ async function processRecordingStream() {
                 const type = event.event || "";
 
                 if (type === "transcription") {
+                    // Whisper finished: the wait is no longer an upload.
+                    narrator.transcribing();
                     addMessage("user", event.data.text);
                 } else if (type === "token") {
                     // First LLM token of this turn: the number the candidate
                     // actually perceives, measured rather than asserted.
                     latencyReadout.firstToken();
+                    // The answer really is being written now. Showing the
+                    // typing bubble any earlier -- it used to go up before
+                    // the request was even sent -- claims work that has not
+                    // started yet.
+                    narrator.generating();
+                    showTyping();
                     if (!currentCandidateDiv) {
                         currentCandidateDiv = addMessage("candidate", "");
                         hideTyping();
@@ -1569,6 +1712,8 @@ async function processRecordingStream() {
                     appendTypingText(currentCandidateDiv, event.data.text);
                     scrollToBottom();
                 } else if (type === "audio_url") {
+                    // The answer is audible from here on.
+                    narrator.speaking();
                     // Canonical audio event. Two shapes arrive under this name:
                     // the incremental per-sentence stream carries an explicit
                     // `id`, while the single-file cached/farewell answer does
@@ -1583,6 +1728,10 @@ async function processRecordingStream() {
                     // Before settling: `done` is the only event that names the
                     // committed turn, and the settler reads it on the way out.
                     turnState.commit(event.data);
+                    // Generation is complete. If audio is still outstanding
+                    // this keeps the line on "speaking"; if there was nothing
+                    // to play, the turn is genuinely over.
+                    narrator.complete();
                     turn.settle("done");
                     if (audioQueue.length === 0 && !isAudioPlaying) {
                         if (isInterviewActive) startListening();
@@ -1611,6 +1760,11 @@ async function processRecordingStream() {
                         // chunk instead of aborting the whole stream. The turn
                         // is NOT settled here — more audio and a later `done`
                         // are still expected.
+                        // Say so, though: the candidate just heard a gap, and
+                        // silence is not an explanation. The turn continues,
+                        // so this is a report and not a state change -- the
+                        // next audio event puts the line back.
+                        narrator.chunkSkipped();
                         console.warn(
                             `TTS chunk ${chunkId} failed server-side — skipping:`,
                             event.data.detail || "TTS synthesis failed",
@@ -1628,7 +1782,7 @@ async function processRecordingStream() {
                         const detail =
                             (event.data && event.data.detail) || "Error del servidor";
                         addMessage("error", detail);
-                        setStatus("Error", true);
+                        narrator.failed();
                         turn.settle("error");
                     }
                 }
@@ -1642,7 +1796,12 @@ async function processRecordingStream() {
     } catch (e) {
         console.error("SSE pipeline error:", e);
         addMessage("error", e.message || "Algo salió mal.");
-        setStatus("Error", true);
+        // Routed through the narrator for the same reason as the SSE error
+        // branch: one owner of the line, and a real class name. (It passed
+        // boolean `true` here, which setStatus concatenated into the class
+        // attribute as the literal class "true" -- so the error styling this
+        // call was reaching for never applied.)
+        narrator.failed();
         // The turn produced no measurable result, so the pill must not keep
         // showing one — including the partial stopwatch.
         latencyReadout.abandon();
