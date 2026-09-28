@@ -84,6 +84,10 @@ export const DOM_HANDLES = {
  */
 export function baseState(overrides = {}) {
     return {
+        // app.js's only module constant that lifted code reads. Same value it
+        // has in index.html: the API is served from the same origin, so every
+        // path is relative.
+        API_BASE: "",
         conversationId: null,
         mediaRecorder: null,
         audioChunks: [],
@@ -112,6 +116,9 @@ export function baseState(overrides = {}) {
         skippedChunkIds: new Set(),
         isAudioPlaying: false,
         allChunksReceived: false,
+        currentAudio: null,
+        turnAbortController: null,
+        turnAborted: false,
         sessionStartTime: null,
         vuBarsCache: null,
         ...overrides,
@@ -222,6 +229,7 @@ function installAudioFakes(window, recorder) {
             this.state = "inactive";
             this.ondataavailable = null;
             this.onstop = null;
+            recorder.recorders++;
         }
         start() {
             this.state = "recording";
@@ -255,8 +263,17 @@ function installAudioFakes(window, recorder) {
  */
 export function createDom(options = {}) {
     const { html = readIndexHtml(), visual = true } = options;
+    /** Anything jsdom reported as an error, for a test to assert on or read. */
+    const envErrors = [];
 
     const virtualConsole = new VirtualConsole();
+    // jsdom swallows console output and "not implemented" notices into the void
+    // unless a listener is attached. A swallowed error inside a lifted function
+    // reads as "the function returned early", which is how a broken setup gets
+    // mistaken for a passing assertion.
+    virtualConsole.on("jsdomError", (e) => {
+        envErrors.push(e);
+    });
     const dom = new JSDOM(html, {
         runScripts: "outside-only",
         pretendToBeVisual: visual,
@@ -273,6 +290,7 @@ export function createDom(options = {}) {
         tracksStopped: 0,
         getUserMediaCalls: 0,
         getUserMediaRejected: null,
+        recorders: 0,
     };
 
     // ── APIs jsdom does not implement ──────────────────────────────────────
@@ -389,6 +407,7 @@ export function createDom(options = {}) {
         fetches: calls,
         recorder,
         virtualConsole,
+        errors: envErrors,
         /** Route the next fetch(es). `respond` maps url -> response-ish object. */
         onFetch(fn) {
             handler = fn;
@@ -482,13 +501,16 @@ export function createDom(options = {}) {
 /**
  * Every top-level function declaration in app.js, by name.
  *
- * Only declarations count, not any nested function: a declaration has no side
- * effect at the moment it is created, so including one is free, whereas a
- * nested function is part of some other unit's body.
+ * Column 0 only. An indented `function` is nested inside some other unit, and
+ * lifting it to the global scope would be actively dangerous: app.js has nested
+ * `stop`, `check`, `paint`, `move` and `describe` declarations, and publishing
+ * those as globals lets a lifted body silently resolve a same-named call to
+ * somebody else's function. That is a test that passes for the wrong reason,
+ * which is the entire thing this harness exists to stop.
  */
 function topLevelFunctions(source = readAppJs()) {
     const names = new Set();
-    const pattern = /(?:^|\n)[ \t]*(?:async[ \t]+)?function[ \t]+([A-Za-z_$][\w$]*)[ \t]*\(/g;
+    const pattern = /(?:^|\n)(?:async[ \t]+)?function[ \t]+([A-Za-z_$][\w$]*)[ \t]*\(/g;
     let match;
     while ((match = pattern.exec(source)) !== null) names.add(match[1]);
     return names;

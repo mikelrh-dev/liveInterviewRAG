@@ -99,6 +99,14 @@ let nextChunkId = 0;
 let skippedChunkIds = new Set();
 let isAudioPlaying = false;
 let allChunksReceived = false;
+// The chunk currently making noise. Held because `tryPlayNextChunk` kept it in
+// a local, which is why nothing outside could stop it: END had no way to name
+// the element that was still talking.
+let currentAudio = null;
+// The turn's read loop, so END can cancel it. Paired with `turnAborted`, which
+// says the cancellation was deliberate -- see abortTurnStream().
+let turnAbortController = null;
+let turnAborted = false;
 // The narrator driving the status line for the turn in flight. Defaults to a
 // no-op so the playback teardown can fire outside a turn without a guard.
 let turnNarrator = createTurnNarrator();
@@ -882,8 +890,32 @@ async function startInterview() {
     startListening();
 }
 
+/**
+ * End the interview. Everything that can still be running gets stopped.
+ *
+ * This used to flip a flag, release the microphone and reset the button, and
+ * left the three things a turn is actually made of running: the audio that was
+ * playing, the chunks queued behind it, and the SSE read loop. So pressing END
+ * mid-answer did exactly what the user asked and nothing else -- the
+ * interviewer kept talking, tokens kept streaming, and the transcript kept
+ * growing behind a line that said the interview was over. The one control whose
+ * whole job is to stop the thing could not stop the thing.
+ *
+ * `streaming.py` notes that queued audio is dropped when the session tears
+ * down. On the client that was false in both directions: nothing dropped the
+ * queue and nothing cancelled the stream, so the server kept producing audio
+ * for a session the user had closed.
+ */
 function stopInterview() {
     isInterviewActive = false;
+
+    // Audio first. The queue is the only thing that makes noise, and leaving
+    // it running is the difference between END working and END being a lie.
+    stopAudioPlayback();
+
+    // Then the stream, so nothing new arrives to put back in the queue.
+    abortTurnStream();
+
     if (isRecording) stopRecording();
 
     if (mediaStream) {
@@ -898,6 +930,47 @@ function stopInterview() {
     setState("idle");
     setStatus("Entrevista finalizada");
     addMessage("system", "Entrevista finalizada.");
+}
+
+/**
+ * Make the page silent: the playing chunk stops, the queue is dropped.
+ *
+ * `resetAudioQueue()` is what stops the latch rather than just the noise --
+ * it clears `isAudioPlaying`, so the next interview's first chunk is not
+ * turned away at the `if (isAudioPlaying) return` guard by a player that is
+ * still busy with a turn the user ended five minutes ago.
+ */
+function stopAudioPlayback() {
+    if (currentAudio) {
+        try {
+            currentAudio.pause();
+        } catch (_) {
+            // Pausing an element whose source never loaded can throw; the point
+            // is that we are done with it either way.
+        }
+        currentAudio = null;
+    }
+    resetAudioQueue();
+    removeAudioIndicator();
+}
+
+/**
+ * Cancel the turn's read loop, and mark it as deliberate.
+ *
+ * The flag and the abort are both needed, and they answer different questions.
+ * `turnAborted` tells the read loop's catch that the stream was cut on purpose,
+ * so it can unwind without writing a failure into a transcript the user just
+ * closed. `abort()` is what actually stops the bytes arriving.
+ *
+ * A no-op when no turn is in flight, which is the common case: END is also the
+ * button that stops a session that was only ever listening.
+ */
+function abortTurnStream() {
+    turnAborted = true;
+    if (turnAbortController) {
+        turnAbortController.abort();
+        turnAbortController = null;
+    }
 }
 
 // ─── Recording + VAD ───────────────────────────────────
@@ -1087,6 +1160,7 @@ function tryPlayNextChunk() {
     addAudioIndicator();
 
     const audio = new Audio(chunk.url);
+    currentAudio = audio;
 
     // Connect to TTS analyser for fake-sync (only if audioContext is available)
     if (audioContext && ttsAnalyser) {
@@ -1158,6 +1232,7 @@ function tryPlayNextChunk() {
 function abandonCurrentChunk() {
     nextChunkId++;
     isAudioPlaying = false;
+    currentAudio = null;
     removeAudioIndicator();
     tryPlayNextChunk();
     checkAllDone();
@@ -1685,6 +1760,12 @@ async function processRecordingStream() {
     }
     isProcessing = true;
     btnMic.disabled = true;
+    // A turn starts knowing nothing about being cancelled. The controller is
+    // what END aborts, and it has to exist before the request leaves or there
+    // is a window in which the user can end an interview whose stream is
+    // already on the wire with nothing to cancel it.
+    turnAborted = false;
+    turnAbortController = new AbortController();
     // One narrator per turn, next to the one settler below: the status line
     // has a single owner, so a stage cannot be reported by two call sites
     // that drift apart.
@@ -1736,7 +1817,10 @@ async function processRecordingStream() {
             if (settledTurn !== null) {
                 updateTurnCount(settledTurn + 1);
                 const contextTurn = turnState.contextTurn();
-                if (contextTurn !== null) fetchContext(contextTurn);
+                // Not on a turn the user ended. Fetching here would be a
+                // request the candidate did not ask for, made into a panel they
+                // just dismissed, to fill a rail they no longer care about.
+                if (!turnAborted && contextTurn !== null) fetchContext(contextTurn);
             }
             // The status line is NOT written here. `done` says generation
             // finished, which is not the same as the answer having been
@@ -1753,7 +1837,7 @@ async function processRecordingStream() {
         // before the pipeline ran, so no turn was written.
         const res = await fetchWithBackoff(
             `${API_BASE}/api/conversation/${conversationId}/message/stream`,
-            { method: "POST", body: fd },
+            { method: "POST", body: fd, signal: turnAbortController.signal },
             writeOncePolicy,
         );
 
@@ -1887,6 +1971,15 @@ async function processRecordingStream() {
         // keeps the mic from being stranded.
         turn.settle("eof");
     } catch (e) {
+        // The turn was ended on purpose. The abort surfaces here as a rejected
+        // read, and reporting it would put the last line of a finished
+        // interview into its own transcript: an error the user did not cause,
+        // on a session they were told was over. `finally` still runs, so the
+        // processing state is released either way.
+        if (turnAborted) {
+            console.info("SSE stream cancelled: the interview was ended.");
+            return;
+        }
         console.error("SSE pipeline error:", e);
         addMessage("error", e.message || "Algo salió mal.");
         // Routed through the narrator for the same reason as the SSE error
@@ -1914,6 +2007,9 @@ async function processRecordingStream() {
         healthStatus.pause(false);
         isProcessing = false;
         btnMic.disabled = false;
+        // The controller has done its job either way, and holding it would abort
+        // the NEXT turn's stream the moment END was pressed again.
+        turnAbortController = null;
         checkAllDone();
     }
 }
