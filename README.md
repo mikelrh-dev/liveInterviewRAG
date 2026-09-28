@@ -46,7 +46,7 @@ It's not a demo. It's a deployable system with real tradeoffs, real constraints,
 - **Session management** — Multi-turn conversations with TTL-based cleanup
 - **Rate limiting** — 10 requests per minute per IP to prevent abuse
 - **Periodic audio cleanup** — Old TTS files are pruned automatically
-- **Tested** — 155+ tests covering config, RAG, LLM, STT, TTS, API endpoints, conversation memory, response cache, and embedding persistence
+- **Tested** — 690 Python tests plus 263 Node tests covering config, RAG, LLM, STT, TTS, API endpoints, conversation memory, response cache, embedding persistence, SSE framing, the nginx TLS procedure and the deploy path
 
 ---
 
@@ -191,7 +191,7 @@ Building this project end-to-end forced me to learn things that aren't taught in
 - **Multi-provider LLM orchestration** — Google AI as primary, OpenRouter as fallback, with graceful degradation. The pattern matters more than the providers.
 - **SSE (Server-Sent Events)** — For streaming tokens and audio URLs. Different from WebSockets in tradeoffs.
 - **Spec-driven development** — Every change goes through OpenSpec (proposal → spec → design → tasks → test → apply). Forces clarity before code.
-- **TDD discipline** — 155+ tests, all written before the production change. Strict mode means red → green, no shortcuts.
+- **TDD discipline** — 690 Python tests, all written before the production change. Strict mode means red → green, no shortcuts.
 - **MCP and agent orchestration** — Built tooling around Model Context Protocol for connecting the LLM to local resources.
 
 Beyond the tech, this project also taught me to make product decisions under constraints: prioritize what matters, defer what doesn't, document the tradeoffs.
@@ -483,18 +483,37 @@ InterviewTTS/
 
 ## Testing
 
-155+ tests covering config, RAG, LLM, STT, TTS, API endpoints, conversation memory, response cache, and embedding persistence. Strict TDD mode: every change is red → green → refactor.
+690 Python tests covering config, RAG, LLM, STT, TTS, API endpoints, conversation
+memory, response cache, embedding persistence, SSE framing, the nginx TLS
+procedure and the deploy path — plus 263 Node tests over the SSE contract, turn
+state, tokens and motion. Strict TDD mode: every change is red → green →
+refactor.
 
 ```bash
-# Run all tests
-python -m pytest tests/ -v
+# Run all Python tests. Use the venv interpreter: the global Python has no
+# pydantic.
+venv\Scripts\python.exe -m pytest tests/ -q --no-header -p no:cacheprovider
+# -> 690 passed, 2 xfailed
 
-# Run specific test file
-python -m pytest tests/test_rag.py -v
+# Run a specific test file, or a single test
+venv\Scripts\python.exe -m pytest tests/test_rag.py -q -p no:cacheprovider
+venv\Scripts\python.exe -m pytest tests/test_stt.py::TestSTTService::test_init_defaults -v
 
-# Run specific test
-python -m pytest tests/test_stt.py::TestSTTService::test_init_defaults -v
+# Frontend tests (Node, no build step)
+node --test "tests/frontend/*.test.mjs"
+# -> 263 pass
 ```
+
+> **Environment trap.** If an earlier terminal exported
+> `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`, the `pytest-asyncio` plugin stops loading
+> and a batch of async tests fail spuriously. Clear it first:
+>
+> ```powershell
+> Remove-Item Env:PYTEST_DISABLE_PLUGIN_AUTOLOAD -ErrorAction SilentlyContinue
+> ```
+
+See [RUNBOOK.md](RUNBOOK.md) for the day-to-day local workflow.
+
 
 ---
 
