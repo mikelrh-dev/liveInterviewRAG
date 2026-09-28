@@ -46,7 +46,7 @@ No es una demo. Es un sistema desplegable con tradeoffs reales, restricciones re
 - **Gestión de sesiones** — Conversaciones multi-turno con limpieza basada en TTL
 - **Rate limiting** — 10 solicitudes por minuto por IP para prevenir abuso
 - **Limpieza periódica de audio** — Archivos TTS antiguos se eliminan automáticamente
-- **Testeado** — 155+ tests cubriendo config, RAG, LLM, STT, TTS, endpoints de API, memoria de conversación, caché de respuestas y persistencia de embeddings
+- **Testeado** — 695 tests de Python más 263 tests de Node cubriendo config, RAG, LLM, STT, TTS, endpoints de API, memoria de conversación, caché de respuestas, persistencia de embeddings, framing SSE, el procedimiento TLS de nginx y la ruta de despliegue
 
 ---
 
@@ -191,7 +191,7 @@ Construir este proyecto de extremo a extremo me obligó a aprender cosas que no 
 - **Orquestación multi-proveedor LLM** — Google AI como principal, OpenRouter como fallback, con degradación graceful. El patrón importa más que los proveedores.
 - **SSE (Server-Sent Events)** — Para streaming de tokens y URLs de audio. Diferente a WebSockets en tradeoffs.
 - **Desarrollo dirigido por spec** — Cada cambio pasa por OpenSpec (propuesta → spec → design → tasks → test → apply). Obliga a claridad antes de código.
-- **Disciplina TDD** — 155+ tests, todos escritos antes del cambio en producción. Modo estricto significa rojo → verde, sin atajos.
+- **Disciplina TDD** — 695 tests de Python, todos escritos antes del cambio en producción. Modo estricto significa rojo → verde, sin atajos.
 - **MCP y orquestación de agentes** — Construí herramientas alrededor de Model Context Protocol para conectar el LLM a recursos locales.
 
 Más allá de la técnica, este proyecto también me enseñó a tomar decisiones de producto bajo restricciones: priorizar lo que importa, diferir lo que no, documentar los tradeoffs.
@@ -334,7 +334,7 @@ InterviewTTS/
 │   ├── app.js               # Lógica de chat por voz
 │   ├── avatar.js            # Controlador del avatar 3D
 │   └── assets/              # Archivos de video del avatar
-├── tests/                   # 155+ tests, TDD estricto
+├── tests/                   # 695 tests de Python + 263 de Node, TDD estricto
 ├── docs/                    # Docs internos (planes de optimización, specs de superpowers)
 ├── openspec/                # Artefactos de gestión de cambios
 │   ├── specs/               # Specs de capacidades actuales
@@ -352,18 +352,36 @@ InterviewTTS/
 
 ## Testing
 
-155+ tests cubriendo config, RAG, LLM, STT, TTS, endpoints de API, memoria de conversación, caché de respuestas y persistencia de embeddings. Modo TDD estricto: cada cambio es rojo → verde → refactor.
+695 tests de Python cubriendo config, RAG, LLM, STT, TTS, endpoints de API, memoria
+de conversación, caché de respuestas, persistencia de embeddings, framing SSE, el
+procedimiento TLS de nginx y la ruta de despliegue — más 263 tests de Node sobre el
+contrato SSE, el estado de turno, los tokens y el motion. Modo TDD estricto: cada
+cambio es rojo → verde → refactor.
 
 ```bash
-# Ejecutar todos los tests
-python -m pytest tests/ -v
+# Ejecutar todos los tests de Python. Usa el intérprete del venv: el Python
+# global no tiene pydantic.
+venv\Scripts\python.exe -m pytest tests/ -q --no-header -p no:cacheprovider
+# -> 695 passed, 2 xfailed
 
-# Ejecutar archivo de tests específico
-python -m pytest tests/test_rag.py -v
+# Ejecutar un archivo de tests concreto, o un solo test
+venv\Scripts\python.exe -m pytest tests/test_rag.py -q -p no:cacheprovider
+venv\Scripts\python.exe -m pytest tests/test_stt.py::TestSTTService::test_init_defaults -v
 
-# Ejecutar test específico
-python -m pytest tests/test_stt.py::TestSTTService::test_init_defaults -v
+# Tests de frontend (Node, sin paso de build)
+node --test "tests/frontend/*.test.mjs"
+# -> 263 pass
 ```
+
+> **Trampa del entorno.** Si en una terminal anterior se exportó
+> `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`, el plugin `pytest-asyncio` deja de cargarse y
+> los 25 tests async fallan de forma falsa. Límpialo antes:
+>
+> ```powershell
+> Remove-Item Env:PYTEST_DISABLE_PLUGIN_AUTOLOAD -ErrorAction SilentlyContinue
+> ```
+
+Ver [RUNBOOK.md](RUNBOOK.md) para el flujo local del día a día.
 
 ---
 
