@@ -136,7 +136,6 @@ sequenceDiagram
 | Frontend | Vanilla HTML/CSS/JS | No framework overhead, faster cold start on the free tier |
 | Reverse proxy | Nginx | Standard, well-documented, handles static files + WSGI proxy |
 | Process manager | systemd | Auto-restart on failure, journal logging |
-| Container | Docker (optional) | Reproducible builds |
 | Hosting | Oracle Cloud Free Tier (ARM64) | $0/month, 4 cores, 24 GB RAM — enough for a single-conversation workload |
 | Workflow | OpenSpec + strict TDD | Every change goes through spec → design → tasks → test-first → apply |
 
@@ -186,7 +185,7 @@ The approach: measure first, optimize the bottleneck, verify with tests, documen
 Building this project end-to-end forced me to learn things that aren't taught in the FP DAM curriculum:
 
 - **FastAPI async patterns** — The bootcamp taught Flask; I needed async for streaming responses. Picked it up from the docs in a weekend.
-- **Docker** — Barely mentioned in the FP. Built the Dockerfile and compose file by trial and error.
+- **Deployment** — Barely mentioned in the FP. Setting up systemd, a TLS-terminating reverse proxy, and the filesystem permissions `ProtectSystem=strict` demands, by trial and error.
 - **asyncio** — Streaming STT/RAG/LLM/TTS in sequence without async would be unbearable. Iterated from copying patterns to understanding them.
 - **RAG architectures** — Designed the chunking, embedding, and retrieval strategy. Not taught in any course I took.
 - **Multi-provider LLM orchestration** — Google AI as primary, OpenRouter as fallback, with graceful degradation. The pattern matters more than the providers.
