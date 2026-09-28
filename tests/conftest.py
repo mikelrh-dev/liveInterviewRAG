@@ -119,3 +119,45 @@ def isolated_write_targets(tmp_path, monkeypatch):
     return SimpleNamespace(
         root=tmp_path, audio=audio, reports=reports, data=data, db=database
     )
+
+
+@pytest.fixture
+def fixture_corpus_targets(tmp_path, monkeypatch):
+    """Point every corpus-shaped config at this test's ``tmp_path``.
+
+    Layered on the autouse ``isolated_write_targets``, which already moves
+    ``AUDIO_DIR`` / ``REPORTS_DIR`` / ``DB_PATH``. What is left are the three
+    paths that name the candidate's own data, and they are the ones that let
+    a test silently fall back to the developer's real checkout:
+
+    ``WIKI_DIR``
+        read by ``CandidateProfile`` and by the RAG retrieval tests. Left
+        pointing at the repository, a test passes only on the machine whose
+        owner happens to have the gitignored ``wiki/`` present — which is
+        exactly the failure this fixture exists to remove.
+    ``CANDIDATE_DIR``
+        the compiled profile written by ``scripts/wiki/compile.py``, also
+        gitignored.
+    ``RAG_CACHE_DIR``
+        the embedding cache. The pipeline's own default is ``cache_dir=None``,
+        so nothing here writes it, but patching it means a future test that
+        DOES pass a cache dir cannot reach the real one by omission.
+
+    Returns the tmp root, so a test that needs a writable copy of the corpus
+    says ``fixture_corpus_targets / "wiki"`` rather than reaching for
+    ``config.WIKI_DIR``, which reads the same and stops being isolated the
+    moment this fixture is removed.
+    """
+    from backend.config import config
+
+    root = tmp_path / "fixture_corpus"
+    candidate = root / "candidate"
+    cache = root / "rag_cache"
+    for directory in (root, candidate, cache):
+        directory.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(config, "WIKI_DIR", root / "wiki")
+    monkeypatch.setattr(config, "CANDIDATE_DIR", candidate)
+    monkeypatch.setattr(config, "RAG_CACHE_DIR", cache)
+
+    return root
