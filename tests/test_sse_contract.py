@@ -19,6 +19,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from backend.config import config
+
 # ─── Source extraction ────────────────────────────────────────────────────
 
 BACKEND_DIR = Path(__file__).resolve().parents[1] / "backend"
@@ -173,7 +175,7 @@ class TestSseContract:
 
 
 @pytest.fixture
-def mock_services():
+def mock_services(isolated_write_targets):
     """Mock external services for streaming tests."""
     with patch("backend.main.stt_service") as mock_stt, \
          patch("backend.main.llm_service") as mock_llm, \
@@ -192,7 +194,7 @@ def mock_services():
         mock_llm.generate_stream_with_context.return_value = (iter(["Hi."]), [])
 
         async def mock_synthesize(text, output_path=None):
-            path = output_path or Path("audio/test.mp3")
+            path = output_path or isolated_write_targets.audio / "test.mp3"
             path.parent.mkdir(parents=True, exist_ok=True)
             path.touch()
             return path
@@ -243,7 +245,7 @@ class TestCachedAnswerAudioContract:
         return parse_events(text)
 
     def test_cache_hit_emits_playable_audio_event(
-        self, client, mock_services
+        self, client, mock_services, isolated_write_targets
     ):
         """A FAQ cache hit emits an audio event carrying a real, servable URL.
 
@@ -280,14 +282,21 @@ class TestCachedAnswerAudioContract:
             f"audio event URL {url!r} is not servable (HTTP {served.status_code})"
         )
 
-        # …and it must resolve to a file TTS actually wrote. (Byte count is
-        # not asserted: the test double writes a 0-byte placeholder.)
-        from backend.config import config
-
+        # …and it must resolve to a file TTS actually wrote. Asserted against
+        # this test's isolated audio directory rather than ``config.AUDIO_DIR``:
+        # the two read identically, but only one of them is a path the suite is
+        # allowed to write to, and a 200 above is otherwise indistinguishable
+        # between "the mount serves the directory TTS wrote into" and "the
+        # /audio mount was never re-pointed and found a stale file in the real
+        # tree". (Byte count is not asserted: the double writes a 0-byte
+        # placeholder.)
         relative = url[len("/audio/") :]
-        written = config.AUDIO_DIR / relative
+        written = isolated_write_targets.audio / relative
         assert written.exists(), (
             f"audio event points at a file TTS never wrote: {written}"
+        )
+        assert not written.is_relative_to(config.BASE_DIR), (
+            f"the emitted URL escaped the isolated audio directory: {written}"
         )
 
     def test_cache_hit_stream_ends_with_exactly_one_terminal_event(
