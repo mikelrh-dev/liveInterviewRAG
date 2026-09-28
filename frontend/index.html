@@ -45,7 +45,7 @@
     <!-- Three.js for 3D orb -->
     <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js" defer></script>
 </head>
-<body>
+<body class="context-open">
     <!-- Grid background (coordinate grid SVG overlay) -->
     <div class="grid-bg"></div>
 
@@ -116,8 +116,15 @@
                      literal number back: the honest value is a dash until a
                      turn has actually been timed. -->
                 <span id="latency" class="latency">TTFT —</span>
-                <!-- Contexto toggle button -->
-                <button id="context-toggle">
+                <!-- Contexto toggle button. A disclosure, so it says what it
+                     controls and whether it is currently expanded.
+                     aria-expanded ships "true" to match <body class="context-open">:
+                     the rail is part of the desktop grid, so it is showing
+                     before app.js runs. On a phone app.js closes it — the panel
+                     is a full-height overlay there — and the two move together,
+                     because applyContextPanelState() in app.js is the only
+                     writer of the class, the body class and this attribute. -->
+                <button id="context-toggle" aria-expanded="true" aria-controls="context-panel">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <circle cx="11" cy="11" r="8"/>
                         <line x1="21" y1="21" x2="16.65" y2="16.65"/>
@@ -278,6 +285,7 @@
                             <line x1="18" y1="6" x2="6" y2="18"/>
                             <line x1="6" y1="6" x2="18" y2="18"/>
                         </svg>
+                        <span>Cerrar</span>
                     </button>
                 </div>
                 <div id="context-content" class="context-content">

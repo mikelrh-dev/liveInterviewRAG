@@ -990,6 +990,11 @@ body[data-state="speaking"] #btn-mic.active {
     letter-spacing: 0.05em;
 }
 
+/* Labelled, not a bare glyph. On a phone this is the only visible dismissal on
+   a full-height overlay, and a 14px cross in the corner is not something a
+   first-time visitor reads as "close". The label is shown at every width: a
+   control that only names itself where it is hardest to reach is still a
+   control half the users have to guess at. */
 #context-close {
     background: transparent;
     border: 1px solid var(--outline-variant);
@@ -998,6 +1003,12 @@ body[data-state="speaking"] #btn-mic.active {
     cursor: pointer;
     display: flex;
     align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
     transition:
         border-color var(--dur-fast) var(--ease-out),
         color var(--dur-fast) var(--ease-out),
@@ -1126,10 +1137,29 @@ header {
     animation: fadeUp var(--dur-slow) var(--ease-out) 180ms backwards;
 }
 
-/* ─── Context panel slide-in (for mobile, kept for app.js compatibility) ── */
+/* ─── Context panel: the rail above, the overlay below ──────
+   The header toggle used to add a class that styled nothing at desktop
+   widths: `.context-panel.open` was an empty placeholder and
+   `body.context-open` had rules only inside the <=768px block, so the button
+   worked on a phone and was a no-op everywhere else.
 
-.context-panel.open {
-    /* PR #2 will implement mobile slide-in */
+   Above the breakpoint the panel stays a COLUMN of `.main-grid`. Closing it
+   therefore has to give the 320px back, and the track with it — hiding a grid
+   item on its own leaves an empty third column, which is a toggle that looks
+   like it does nothing, i.e. the original bug. It is deliberately not a drawer:
+   the rail is 23% of a 1366px viewport and is the clearest expression of the
+   instrumented-system identity, so it reflows the grid instead of floating over
+   it. `isOverlayLayout()` in app.js reads the same query to pick the initial
+   state and to decide whether a click outside dismisses. */
+
+@media (min-width: 769px) {
+    body:not(.context-open) .main-grid {
+        grid-template-columns: var(--sidebar-w) 1fr;
+    }
+
+    body:not(.context-open) #context-panel {
+        display: none;
+    }
 }
 
 #mobile-end-btn { display: none; }

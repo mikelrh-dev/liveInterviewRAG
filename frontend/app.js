@@ -543,23 +543,31 @@ function init() {
         }, 250);
     });
 
-    // Context panel toggle
+    // Context panel: every path into the state goes through the controller,
+    // which is the only thing that can move it.
     contextToggle.addEventListener("click", toggleContextPanel);
-    contextClose.addEventListener("click", () => {
-        contextPanel.classList.remove("open");
-        document.body.classList.remove("context-open");
-    });
+    contextClose.addEventListener("click", closeContextPanel);
 
-    // Close context panel on outside click
+    // Clicking away dismisses the OVERLAY. It does not dismiss the rail: on a
+    // desktop the panel is a column of the page, and a click in the transcript
+    // deleting it would be the same class of surprise as the auto-close was.
     document.addEventListener("click", (e) => {
         if (
-            contextPanel.classList.contains("open") &&
+            isOverlayLayout() &&
+            contextPanelState.isOpen() &&
             !contextPanel.contains(e.target) &&
             e.target !== contextToggle &&
             !contextToggle.contains(e.target)
         ) {
-            contextPanel.classList.remove("open");
-            document.body.classList.remove("context-open");
+            closeContextPanel();
+        }
+    });
+
+    // Escape is the dismissal a keyboard user reaches for. On a phone the panel
+    // is a full-height overlay, and the close control is a glyph in the corner.
+    document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape" && contextPanelState.isOpen()) {
+            closeContextPanel();
         }
     });
 
@@ -1850,9 +1858,107 @@ function appendTypingText(messageDiv, text) {
 
 // ─── Context panel ─────────────────────────────────────
 
-function toggleContextPanel() {
-    const isOpen = contextPanel.classList.toggle("open");
+/**
+ * Which layout the panel is in right now.
+ *
+ * One breakpoint, read in one place. Above 768px the panel is a column of the
+ * grid; at or below it, it is a fixed overlay covering the whole screen. The
+ * stylesheet draws that line in its own `@media` block, so this reads the same
+ * query -- otherwise the script and the cascade can disagree about where the
+ * panel is, and "does an outside click dismiss it" has no honest answer.
+ */
+function isOverlayLayout() {
+    return window.matchMedia("(max-width: 768px)").matches;
+}
+
+/**
+ * The panel's open/closed state, with one owner.
+ *
+ * This used to be four `classList.remove("open")` call sites -- the toggle, the
+ * close button, the outside click and a timer -- with nothing holding the state,
+ * so the sites could disagree and a pending timer could slam a panel the user
+ * had opened by hand. Here the state lives in one boolean and only `open`,
+ * `close` and `toggle` may move it.
+ *
+ * Every transition is idempotent: a redundant call reports `false` and writes
+ * nothing, so a document-level click handler firing on every click cannot
+ * re-apply the DOM state forty times a second.
+ *
+ * `initialOpen` is a parameter, not a constant, because the honest answer
+ * differs by layout -- the rail is visible on a desktop, the overlay is not.
+ *
+ * Rendering goes through `hooks.onChange`, so this stays pure and testable;
+ * see tests/frontend/context_panel.test.mjs.
+ */
+function createContextPanel(hooks, initialOpen) {
+    let isOpen = Boolean(initialOpen);
+
+    function apply(next) {
+        if (next === isOpen) return false;
+        isOpen = next;
+        if (hooks && hooks.onChange) hooks.onChange(isOpen);
+        return true;
+    }
+
+    // Published at construction so the classes and aria-expanded are correct
+    // before anyone has clicked anything.
+    if (hooks && hooks.onChange) hooks.onChange(isOpen);
+
+    return {
+        /** @returns {boolean} whether the panel is showing. */
+        isOpen() {
+            return isOpen;
+        },
+        /** @returns {boolean} whether this call changed anything. */
+        open() {
+            return apply(true);
+        },
+        /** @returns {boolean} whether this call changed anything. */
+        close() {
+            return apply(false);
+        },
+        /** @returns {boolean} whether this call changed anything. */
+        toggle() {
+            return apply(!isOpen);
+        },
+    };
+}
+
+/**
+ * The single writer of the panel's DOM state.
+ *
+ * The class, the body class and `aria-expanded` move together, in one place, on
+ * purpose: `aria-expanded` is the only thing that tells a screen-reader user
+ * whether the panel is showing, and an attribute written anywhere other than
+ * beside the class it describes is one edit away from lying.
+ */
+function applyContextPanelState(isOpen) {
+    contextPanel.classList.toggle("open", isOpen);
     document.body.classList.toggle("context-open", isOpen);
+    contextToggle.setAttribute("aria-expanded", isOpen ? "true" : "false");
+}
+
+const contextPanelState = createContextPanel(
+    { onChange: applyContextPanelState },
+    !isOverlayLayout(),
+);
+
+function toggleContextPanel() {
+    // Focus deliberately stays on the toggle. This is the ARIA disclosure
+    // pattern: the panel is simply the next thing in the tab order, and moving
+    // focus out from under the control the user just pressed makes a two-click
+    // round trip out of it.
+    contextPanelState.toggle();
+}
+
+function closeContextPanel() {
+    // Hand focus back before the panel leaves, or a keyboard user who just
+    // dismissed the overlay is dropped at the top of the document with nothing
+    // to say where they went.
+    if (contextPanel.contains(document.activeElement)) {
+        contextToggle.focus();
+    }
+    contextPanelState.close();
 }
 
 async function fetchContext(turnNumber) {
@@ -1870,11 +1976,16 @@ async function fetchContext(turnNumber) {
         const chunks = await res.json();
         renderContext(chunks);
 
-        // Auto-close after 5s
-        setTimeout(() => {
-            contextPanel.classList.remove("open");
-            document.body.classList.remove("context-open");
-        }, 5000);
+        // Deliberately no timer here.
+        //
+        // This used to `setTimeout(..., 5000)` and then remove the `open` class,
+        // which made the panel a toast: a recruiter could not re-read turn 2's
+        // evidence once turn 3 landed, and the pending handle was never stored,
+        // so it could also slam a panel the user had opened by hand. No interval
+        // is long enough to stop that -- the failure is not the length, it is
+        // the panel moving without the user. Evidence is replaced in place in a
+        // rail that stays exactly where they put it; on a phone the overlay is
+        // opened by the user, when they want it.
     } catch (e) {
         // Silently fail — interview unaffected
         console.warn("Context fetch failed:", e.message);
