@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from backend.services.candidate import CandidateProfile
+from tests.fixture_corpus import FIXTURE_ROOT, load_documents
 
 
 @pytest.fixture
@@ -122,14 +123,23 @@ class TestCandidateProfile:
 
 
 class TestGeneratedIndexIsNotACandidateDocument:
-    """``wiki/index.md`` is a build artifact, not answer content.
+    """``index.md`` is a build artifact, not answer content.
 
     ``scripts/wiki/generate_index.py`` rewrites it on demand and its own header
     says "AUTO-GENERATED ... do not edit". It is a table of links whose text is
     every other document's ``summary_1line``, so it reads as keyword-dense
-    across skills, tests, Mercadona, DAM, backend, frontend, data, DevOps,
-    Python, Java, SQL, AI and RAG while containing no answer at all. Loaded as a
-    candidate document it contributed 10 chunks to the default retrieval pool.
+    across every topic in the corpus while containing no answer at all. Loaded
+    as a candidate document it contributed 10 chunks to the default retrieval
+    pool on the real wiki.
+
+    CORPUS: the two end-to-end tests below run against
+    ``tests/fixtures/retrieval_corpus/``, not the owner's ``wiki/``. The real
+    wiki is gitignored and private, so a test that reads it is green only on
+    the machine that has it; and the count it asserted (37) was a property of
+    one person's page set, not of the loader. The fixture count below is
+    FIXTURE-DERIVED, and the loader behaviour it pins — index, README and
+    CONVENCIONES skipped, templates skipped, everything else loaded — is the
+    part that is not corpus-specific.
     """
 
     def _wiki_with_index(self, tmp_path):
@@ -164,21 +174,32 @@ class TestGeneratedIndexIsNotACandidateDocument:
         loaded = {k.replace("\\", "/") for k in profile.documents}
         assert "faq/nivel-ingles.md" in loaded
 
-    def test_the_real_wiki_index_is_generated_not_authored(self):
+    def test_the_fixture_index_is_generated_not_authored(self):
         """Prove the file is a build artifact, from the repo itself."""
-        index = Path(__file__).resolve().parent.parent / "wiki" / "index.md"
-        head = index.read_text(encoding="utf-8")[:400]
+        head = (FIXTURE_ROOT / "index.md").read_text(encoding="utf-8")[:400]
         assert "AUTO-GENERATED" in head and "do not edit" in head.lower(), (
-            "wiki/index.md no longer declares itself generated — re-check "
-            "whether it is still safe to skip"
+            "the fixture's index.md no longer declares itself generated — "
+            "re-check whether it is still safe to skip"
         )
 
-    def test_the_real_wiki_index_contributes_no_documents(self):
-        """End-to-end on the actual repository, through the real loader."""
-        root = Path(__file__).resolve().parent.parent
-        profile = CandidateProfile(root / "candidate", wiki_dir=root / "wiki")
-        profile.load()
-        assert "index.md" not in profile.documents
-        assert len(profile.documents) == 37, (
-            f"expected the 37 typed wiki pages, got {len(profile.documents)}"
+    def test_the_fixture_index_contributes_no_documents(self, fixture_corpus_targets):
+        """End-to-end through the real loader, on the committed corpus."""
+        documents = load_documents()
+
+        assert "index.md" not in documents
+        assert "CONVENCIONES.md" not in documents, (
+            "the conventions sheet is documentation for the author, not an "
+            "answer; loading it makes the model recite house style"
+        )
+        assert not [k for k in documents if "README" in k], (
+            "folder READMEs explain the folder; they are not interview answers"
+        )
+        assert not [k for k in documents if k.replace("\\", "/").startswith("templates/")], (
+            "a template page is a blank form, not an answer: "
+            f"{sorted(k for k in documents if 'templates' in k)}"
+        )
+        assert len(documents) == 42, (
+            f"expected the fixture's 42 typed pages, got {len(documents)}. "
+            "The loader is not skipping build artifacts, or a page was added "
+            "without updating this floor."
         )
