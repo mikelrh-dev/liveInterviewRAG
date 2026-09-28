@@ -178,3 +178,45 @@ test("a successful result still renders", async () => {
     assert.doesNotMatch(content.textContent, /EVIDENCIA DE LA PREGUNTA ANTERIOR/);
     env.close();
 });
+
+test("an ended interview is not asked for more evidence", async () => {
+    // END fires the turn's settler on the way out, and the settler asks for the
+    // turn's evidence. A request the candidate did not ask for, into a rail they
+    // just dismissed, to fill a panel they no longer care about.
+    const { env, fn } = panelEnv();
+    env.resetFetch();
+    env.fetches.length = 0;
+    fn.state.turnAborted = true;
+
+    await fn.fetchContext(2);
+    await settle();
+
+    assert.deepEqual(
+        env.fetches.map((c) => c.url),
+        [],
+        `an ended interview still requested evidence: ${JSON.stringify(
+            env.fetches.map((c) => c.url),
+        )}`,
+    );
+    env.close();
+});
+
+test("a live interview is still asked for evidence", async () => {
+    // The control for the guard above: it has to be a guard on the abort and not
+    // on fetching.
+    const { env, fn } = panelEnv();
+    env.onFetch(() => ({ ok: true, status: 200, json: async () => [] }));
+    env.fetches.length = 0;
+    fn.state.turnAborted = false;
+
+    await fn.fetchContext(2);
+    await settle();
+
+    assert.equal(
+        env.fetches.length,
+        1,
+        `a live interview made ${env.fetches.length} requests for evidence; the ` +
+            "abort guard is suppressing fetches it should not",
+    );
+    env.close();
+});

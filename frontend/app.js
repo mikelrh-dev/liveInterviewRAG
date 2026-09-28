@@ -2053,10 +2053,7 @@ async function processRecordingStream() {
             if (settledTurn !== null) {
                 updateTurnCount(settledTurn + 1);
                 const contextTurn = turnState.contextTurn();
-                // Not on a turn the user ended. Fetching here would be a
-                // request the candidate did not ask for, made into a panel they
-                // just dismissed, to fill a rail they no longer care about.
-                if (!turnAborted && contextTurn !== null) fetchContext(contextTurn);
+                if (contextTurn !== null) fetchContext(contextTurn);
             }
             // The status line is NOT written here. `done` says generation
             // finished, which is not the same as the answer having been
@@ -2421,6 +2418,12 @@ function closeContextPanel() {
 
 async function fetchContext(turnNumber) {
     if (!conversationId || turnNumber < 0) return;
+    // Not for a turn the user ended. Fetching would be a request the candidate
+    // did not ask for, into a rail they just dismissed, to fill a panel they no
+    // longer care about. Checked here rather than at the call site because this
+    // is the same kind of precondition as the two above it: is there a turn to
+    // ask about, and should we be asking?
+    if (turnAborted) return;
 
     let chunks;
     try {

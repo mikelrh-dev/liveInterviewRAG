@@ -32,22 +32,26 @@ name: tests
 # owner's answers are good answers, and no result in this file should be read
 # as if it did.
 #
-# THE ONE KNOWN FAILURE ON THIS PLATFORM
-# --------------------------------------
-# `tests/test_config.py::test_config_paths` asserts that the checkout directory
-# is named "InterviewTTS". It is not, and has not been for a while:
-# `actions/checkout` names the workspace after the REPOSITORY, and the remote
-# is `mikelrh-dev/liveInterviewRAG`, so `cfg.BASE_DIR.name` is "liveInterviewRAG"
-# and that assertion fails. This is reproduced here, not predicted: cloning this
-# repository to any other directory name fails it, which is how it was found.
+# THERE IS NO KNOWN FAILURE ON THIS PLATFORM
+# -------------------------------------------
+# There used to be one, and this file used to say so. `test_config_paths`
+# asserted that the checkout directory is named "InterviewTTS". It is not, and
+# has not been for a while: `actions/checkout` names the workspace after the
+# REPOSITORY, and the remote is `mikelrh-dev/liveInterviewRAG`, so that
+# assertion failed here and passed only on the author's machine.
 #
-# It is reported rather than fixed, because the fix is an ownership decision,
-# not a CI change. Either the repository is renamed to InterviewTTS, or the
-# assertion is narrowed to what is actually a property of the code (that
-# BASE_DIR is the repository root, and that CANDIDATE_DIR / AUDIO_DIR /
-# FRONTEND_DIR sit inside it -- the other three assertions in the same test).
-# Whichever is chosen, do not silence it with a skip or an xfail: a test that
-# encodes a real constraint should be corrected, not muted.
+# The test now asserts what is actually a property of the code -- that BASE_DIR
+# is the repository root and that CANDIDATE_DIR / AUDIO_DIR / FRONTEND_DIR are
+# fixed names directly inside it -- and it asserts it by construction, so it
+# holds in a directory called InterviewTTS, one called liveInterviewRAG, and one
+# called anything else. That was verified, not assumed: the suite was run in a
+# copy of this repository at a path ending in `liveInterviewRAG` and at one
+# ending in `InterviewTTS`, and both are green; and both real misconfigurations
+# (CANDIDATE_DIR renamed, BASE_DIR anchored one level too low) were introduced
+# in that copy to confirm the test still fails when the code is actually wrong.
+#
+# Nothing here is skipped or xfailed to get a green build. A test that encoded a
+# real constraint was corrected, not muted.
 #
 # TWO ENVIRONMENT TRAPS THIS REPRODUCES ON PURPOSE
 # ------------------------------------------------
@@ -111,6 +115,24 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: npm
+
+      - name: Install Node dependencies
+        run: npm ci
+        # The frontend suites need a DOM. tests/frontend/dom.mjs parses the
+        # shipped index.html with jsdom and evaluates the real app.js functions
+        # inside it, which is what let the XSS suite load the real escapeHtml
+        # instead of a stub it wrote itself -- replacing the shipped
+        # escapeHtml with `return String(text)` used to leave the suite green.
+        #
+        # This step is not optional. Without it every suite that touches the DOM
+        # fails on `Cannot find package 'jsdom'`, and the failure reads as a
+        # harness problem rather than a missing install.
+        #
+        # jsdom is pinned exactly, and 26.x is the newest line whose Node floor
+        # covers BOTH ends: `engines: {node: ">=18"}`. jsdom 28+ requires
+        # ^20.19 || ^22.12 || >=24 and jsdom 30 requires ^22.22.2, neither of
+        # which the Node 20 pinned above satisfies.
 
       - name: Install Python dependencies
         run: |
