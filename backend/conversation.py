@@ -18,7 +18,6 @@ from datetime import datetime
 from fastapi import HTTPException
 
 from backend import container
-from backend.config import config
 
 logger = logging.getLogger(__name__)
 
@@ -164,19 +163,33 @@ def touch_activity(conversation_id: str) -> None:
 def store_is_configured() -> bool:
     """Whether the installed store is meant to receive writes at all.
 
-    Read from the service rather than from ``config.PERSISTENCE_ENABLED``:
-    ``persistence`` is a swappable module global, and the config flag only
-    describes the instance built at import time. They agree in production and
-    disagree the moment the store is replaced, which is exactly when guessing
-    wrong would silently drop turns. Falls back to "configured" so an
-    unfamiliar store implementation is treated as live.
+    Asked of the service through its public ``is_enabled()`` accessor rather
+    than read out of ``config.PERSISTENCE_ENABLED``: ``persistence`` is a
+    swappable module global, and the config flag only describes the instance
+    built at import time. They agree in production and disagree the moment the
+    store is replaced, which is exactly when guessing wrong would silently
+    drop turns.
 
-    ``_enabled`` has no public accessor; that reach is the price of not
-    touching ``persistence.py`` in this phase, and it is isolated here.
+    A store that does not answer the question -- one predating the accessor --
+    is treated as **live**, and that is the deliberate reading of "unfamiliar
+    store is configured", not a side effect of a default argument. The two
+    directions of error are not symmetric: answering "disabled" for a store
+    that is really live leaves memory claiming a turn that never reached disk,
+    a divergence that stays invisible until a restart forgets the exchange.
+    Answering "live" only costs a turn in the one corner case no real
+    implementation occupies -- a store that is simultaneously unfamiliar and
+    genuinely switched off.
+
+    Previously this fell back to ``config.PERSISTENCE_ENABLED``, which
+    contradicted the docstring above it: with persistence off in the
+    environment the code took the "switched off" branch the prose said it
+    would not.
     """
-    return bool(
-        getattr(container.persistence(), "_enabled", config.PERSISTENCE_ENABLED)
-    )
+    store = container.persistence()
+    is_enabled = getattr(store, "is_enabled", None)
+    if not callable(is_enabled):
+        return True
+    return bool(is_enabled())
 
 
 def turn_done_payload(committed_turn: dict | None) -> dict:

@@ -327,6 +327,157 @@ def test_last_activity_at_updated_on_message():
         assert conversations[conv_id]["last_activity_at"] != original
 
 
+# ─── store_is_configured: ask the store, don't reach into it ───
+
+
+def _install_store(monkeypatch, store):
+    """Point the composition root at ``store`` for the duration of a test."""
+    import backend.main as main_mod
+
+    monkeypatch.setattr(main_mod, "persistence", store)
+
+
+class TestStoreIsConfigured:
+    """``store_is_configured`` asks a public question about a service it does
+    not own.
+
+    It used to answer that question with ``getattr(store, "_enabled",
+    config.PERSISTENCE_ENABLED)``. Two things were wrong with that:
+
+    * the private attribute was the store's business, and renaming it inside
+      ``persistence.py`` would have silently changed the caller's semantics
+      while every test stayed green (the ``getattr`` default just starts
+      answering instead);
+    * the ``getattr`` default contradicted the docstring above it. The
+      docstring said an unfamiliar store is treated as *live*; the default was
+      ``config.PERSISTENCE_ENABLED``, which is a claim about the instance built
+      at import time, not about the object actually installed. With
+      ``PERSISTENCE_ENABLED=false`` in the environment the two disagree and the
+      code took the branch its own docstring did not describe.
+
+    The fallback is now stated once, in code, and matches the prose.
+    """
+
+    def test_answers_false_for_a_genuinely_disabled_store(self, monkeypatch):
+        from pathlib import Path
+
+        from backend.conversation import store_is_configured
+        from backend.services.persistence import PersistenceService
+
+        _install_store(monkeypatch, PersistenceService(Path("off.db"), enabled=False))
+
+        assert store_is_configured() is False
+
+    def test_answers_true_for_a_live_store(self, monkeypatch, tmp_path):
+        from backend.conversation import store_is_configured
+        from backend.services.persistence import PersistenceService
+
+        _install_store(monkeypatch, PersistenceService(tmp_path / "live.db"))
+
+        assert store_is_configured() is True
+
+    def test_the_store_outranks_the_import_time_config_flag(self, monkeypatch, tmp_path):
+        """A disabled store is disabled even when the flag says persistence is on.
+
+        The flag describes the instance ``backend.main`` built at import time.
+        ``persistence`` is a swappable module global, so the two agree in
+        production and disagree the moment the store is replaced -- which is
+        exactly when guessing wrong silently eats turns.
+        """
+        from pathlib import Path
+
+        from backend.config import config
+        from backend.conversation import store_is_configured
+        from backend.services.persistence import PersistenceService
+
+        monkeypatch.setattr(config, "PERSISTENCE_ENABLED", True, raising=False)
+        _install_store(monkeypatch, PersistenceService(Path("off.db"), enabled=False))
+
+        assert store_is_configured() is False, (
+            "the config flag is describing a different instance; the store that "
+            "is actually installed is the only thing that can answer"
+        )
+
+    def test_a_store_that_cannot_answer_counts_as_configured(self, monkeypatch):
+        """The deliberate fallback: an unfamiliar store is treated as live.
+
+        Not an accident, and not ``config.PERSISTENCE_ENABLED`` -- the flag is
+        forced to ``False`` here, which is precisely the case the old
+        ``getattr`` default got wrong. It took the "switched off" branch and
+        so contradicted the docstring sitting directly above it.
+
+        The two error directions are not symmetric. Guessing "disabled" for a
+        store that really is live makes memory claim a turn that is not on
+        disk, and the divergence stays invisible until a restart forgets the
+        exchange. Guessing "configured" is the conservative branch -- it only
+        costs a turn in the corner case of a store that is *both* unfamiliar
+        and genuinely switched off, which no real implementation is.
+        """
+        from backend.config import config
+        from backend.conversation import store_is_configured
+
+        monkeypatch.setattr(config, "PERSISTENCE_ENABLED", False, raising=False)
+
+        class UnfamiliarStore:
+            """A store from before the accessor existed. It answers nothing."""
+
+            def record_turn(self, cid, turn, message):
+                return None
+
+        _install_store(monkeypatch, UnfamiliarStore())
+
+        assert store_is_configured() is True, (
+            "an unfamiliar store must read as live; the config flag describes "
+            "the instance built at import time and says nothing about this one"
+        )
+
+    def test_a_mock_store_counts_as_configured(self, monkeypatch):
+        """A test double answers the accessor, and its answer wins.
+
+        ``MagicMock`` returns a truthy mock for every attribute, so this pins
+        that the accessor's value goes through ``bool`` rather than being
+        returned raw: the store's own answer is never a bool, and the caller
+        should not have to know that. The flag is forced to ``False`` so a
+        pass cannot be an accident of the import-time default.
+        """
+        from unittest.mock import MagicMock
+
+        from backend.config import config
+        from backend.conversation import store_is_configured
+
+        monkeypatch.setattr(config, "PERSISTENCE_ENABLED", False, raising=False)
+        _install_store(monkeypatch, MagicMock())
+
+        assert store_is_configured() is True
+
+    def test_conversation_never_names_a_private_store_attribute(self):
+        """STRUCTURAL, not behavioural: a source assertion, and honestly so.
+
+        A rename of ``_enabled`` cannot be observed from outside the class, so
+        there is no behavioural test for "still works after a rename". What
+        *is* observable is the coupling itself, and this is the test that keeps
+        it out: if ``conversation.py`` names a private attribute of another
+        object's, the two are coupled again and the next rename is a silent
+        behaviour change. It is a text check on purpose, and the only kind that
+        can catch this class of defect.
+        """
+        from pathlib import Path
+
+        import backend.conversation as conversation_mod
+
+        source = Path(conversation_mod.__file__).read_text(encoding="utf-8")
+
+        assert '"_enabled"' not in source and "'_enabled'" not in source, (
+            "conversation.py reaches into PersistenceService._enabled; ask the "
+            "public is_enabled() accessor instead so a rename cannot change "
+            "this function's meaning"
+        )
+        assert "is_enabled" in source, (
+            "store_is_configured must go through the public accessor; the "
+            "config flag only describes the instance built at import time"
+        )
+
+
 # ─── periodic_cleanup eviction + rate-limit pruning ─────
 
 

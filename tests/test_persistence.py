@@ -520,6 +520,54 @@ class TestDisabledFlag:
         assert not db_path.exists(), "disabled store must never touch disk"
 
 
+class TestIsEnabledAccessor:
+    """``is_enabled()`` is the public answer to "does this store take writes?".
+
+    ``store_is_configured`` in ``backend/conversation.py`` used to read the
+    private ``_enabled`` attribute through ``getattr``. That reach had two
+    costs: renaming the flag inside this module silently changed what the
+    caller believed, and the flag's meaning had no owner — the question the
+    caller actually asks is about writes, not about a field. A public accessor
+    makes the rename a non-event and puts the semantics next to the flag.
+    """
+
+    def test_reports_true_for_a_live_store(self, tmp_path):
+        assert _make_service(tmp_path, "live.db").is_enabled() is True
+
+    def test_reports_false_for_a_disabled_store(self, tmp_path):
+        svc = PersistenceService(tmp_path / "off.db", enabled=False)
+        assert svc.is_enabled() is False
+
+    def test_reports_a_real_bool_not_the_constructor_argument(self, tmp_path):
+        """``bool`` is the contract, whatever truthy value was passed in.
+
+        The caller branches on this value, so an ``enabled=1`` that leaked
+        through as ``1`` would work by accident and break the moment anything
+        compared it to ``False``.
+        """
+        svc = PersistenceService(tmp_path / "truthy.db", enabled=1)
+        assert svc.is_enabled() is True
+
+    def test_the_accessor_is_public_and_callable(self, tmp_path):
+        """A method named without an underscore, reachable from outside.
+
+        This is the part of the rename defence that *is* observable from
+        outside the class: the caller can only stay decoupled from ``_enabled``
+        while a public method exists. The complementary half — that
+        ``conversation.py`` actually uses it and names nothing private — is
+        asserted in tests/test_conversation_memory.py, because that is the
+        file that used to break.
+        """
+        svc = _make_service(tmp_path, "public.db")
+
+        assert callable(getattr(svc, "is_enabled", None)), (
+            "PersistenceService must expose is_enabled(); without it the "
+            "caller has to reach into _enabled and a rename lands as a "
+            "silent behaviour change"
+        )
+        assert svc.is_enabled() is True
+
+
 class TestHydrationWiring:
     """_get_conversation_or_hydrate rebuilds memory from the DB on miss."""
 

@@ -94,6 +94,22 @@ class PersistenceService:
         self._enabled = bool(enabled)
         self._schema_ready = False
 
+    # ── Public state ─────────────────────────────────────
+
+    def is_enabled(self) -> bool:
+        """Whether this store is meant to receive writes at all.
+
+        The public answer to the question callers actually have, which is
+        about writes rather than about the flag behind them. It exists so no
+        caller has to reach for ``_enabled``: that reach made a rename inside
+        this module a silent behaviour change on the other side of the
+        ``getattr`` default, with every test still green.
+
+        A store that cannot answer this (one predating the accessor) is the
+        caller's decision to make, not this class's.
+        """
+        return self._enabled
+
     # ── Connection / schema plumbing ─────────────────────────
 
     def _connect(self) -> sqlite3.Connection:
