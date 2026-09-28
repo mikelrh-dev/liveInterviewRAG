@@ -31,6 +31,7 @@ from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
+from tests.conftest import stub_rag_context_shapes
 from fastapi.testclient import TestClient
 
 #: Shaped like the real thing: a model cache path and a key fragment.
@@ -113,6 +114,7 @@ def mock_services(isolated_write_targets):
 
         mock_rag.get_context_string.return_value = ""
         mock_rag.get_chunks_with_scores.return_value = []
+        stub_rag_context_shapes(mock_rag)
         mock_rag.chunks = [MagicMock()]
 
         mock_llm.generate.return_value = "Una respuesta."

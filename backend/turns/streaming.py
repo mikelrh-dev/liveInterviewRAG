@@ -276,10 +276,14 @@ def build_stream(
                 return
 
             # ── Step 3: RAG ──────────────────────────────────────
-            context_chunks = container.rag_pipeline().get_chunks_with_scores(
-                user_text, top_k=config.RAG_TOP_K
-            )
-            context = container.rag_pipeline().get_context_string(
+            # One retrieval, both shapes. These used to be two separate calls
+            # that each ran `retrieve()` and therefore each embedded the query:
+            # the same question, the same embedding, the same result, twice per
+            # turn. `retrieve_with_context` is a single `retrieve()` behind two
+            # formatters -- no cache, no per-turn state, nothing to go stale.
+            # Read through the container on every call, so the test suite's
+            # rebinding of `backend.main.rag_pipeline` still applies.
+            context, context_chunks = container.rag_pipeline().retrieve_with_context(
                 user_text, top_k=config.RAG_TOP_K
             )
             _t_rag = time.time()

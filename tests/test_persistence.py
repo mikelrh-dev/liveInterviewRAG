@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tests.conftest import stub_rag_context_shapes
 from backend.services.persistence import PersistenceService
 
 
@@ -596,6 +597,7 @@ class TestHydrationWiring:
             mock_stt.transcribe.return_value = "Second question?"
             mock_rag.get_context_string.return_value = "Built InterviewTTS with Python."
             mock_rag.get_chunks_with_scores.return_value = []
+            stub_rag_context_shapes(mock_rag)
             mock_rag.chunks = [MagicMock()]
 
 

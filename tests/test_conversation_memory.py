@@ -8,6 +8,7 @@ The conversation memory system keeps the LLM aware of prior turns:
 
 import pytest
 
+from tests.conftest import stub_rag_context_shapes
 from fastapi.testclient import TestClient
 
 from backend.main import (
@@ -302,6 +303,7 @@ def test_last_activity_at_updated_on_message():
         mock_stt.transcribe.return_value = "Hello"
         mock_llm.generate.return_value = "Hi there!"
         mock_rag.get_context_string.return_value = ""
+        stub_rag_context_shapes(mock_rag)
         mock_rag.chunks = []
         mock_profile.profile_data = {"name": "Mikel"}
         mock_profile.documents = {}

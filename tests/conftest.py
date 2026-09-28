@@ -29,6 +29,38 @@ import pytest
 from backend.config import config
 
 
+def stub_rag_context_shapes(mock_rag) -> None:
+    """Teach a pipeline double to answer the one-retrieval/two-shapes call.
+
+    The streaming turn asks the pipeline for both context shapes at once
+    (``retrieve_with_context``) because asking twice embedded the same query
+    twice. A bare ``MagicMock`` cannot answer that: it returns a mock that
+    unpacks as an empty sequence, so the turn dies with a confusing
+    "not enough values to unpack".
+
+    Wiring ``retrieve_with_context`` to delegate to the two methods a fixture
+    already stubs keeps every existing test meaningful without restating its
+    expectations. ``side_effect`` rather than ``return_value`` on purpose:
+
+    * a test that later sets ``get_context_string.side_effect = RuntimeError``
+      still gets a raising retrieval, which is what the error-disclosure tests
+      are actually about; and
+    * ``assert_called_with`` / ``assert_not_called`` on the two underlying
+      methods still see the call, because the delegation *is* the call.
+
+    So the double ends up modelling the real pipeline more faithfully than a
+    bare mock did -- one retrieval, two renderings -- instead of less.
+    """
+
+    def _one_retrieval(query, top_k=3):
+        return (
+            mock_rag.get_context_string(query, top_k=top_k),
+            mock_rag.get_chunks_with_scores(query, top_k=top_k),
+        )
+
+    mock_rag.retrieve_with_context.side_effect = _one_retrieval
+
+
 def _redirect_audio_mount(app, directory, monkeypatch) -> None:
     """Point the ``/audio`` ``StaticFiles`` mount at ``directory``, in place.
 

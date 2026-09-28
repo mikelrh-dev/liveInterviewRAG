@@ -836,17 +836,16 @@ class RAGPipeline:
         scores.sort(key=lambda x: x[1], reverse=True)
         return scores[:top_k]
 
-    def get_context_string(self, query: str, top_k: int = 3) -> str:
-        """Retrieve and format context for the LLM.
+    def _retrieve_for_context(self, query: str, top_k: int) -> List[Tuple[Chunk, float]]:
+        """The retrieval both context shapes are built from.
 
-        Args:
-            query: User's question.
-            top_k: Number of chunks to retrieve.
-
-        Returns:
-            Formatted context string, or empty string if no relevant chunks.
+        One definition of "what does this query retrieve", so the two public
+        formatters cannot drift into asking the pipeline different questions.
         """
-        results = self.retrieve(query, top_k=top_k, doc_type=detect_doc_type(query))
+        return self.retrieve(query, top_k=top_k, doc_type=detect_doc_type(query))
+
+    def _format_context_string(self, results: List[Tuple[Chunk, float]]) -> str:
+        """Render retrieved chunks as the LLM's context block."""
         if not results:
             return ""
 
@@ -866,6 +865,25 @@ class RAGPipeline:
 
         return "\n\n".join(parts)
 
+    def _format_chunks_with_scores(self, results: List[Tuple[Chunk, float]]) -> List[dict]:
+        """Render retrieved chunks as serializable dicts for the context panel."""
+        return [
+            {"text": chunk.content, "score": round(score, 3), "source": chunk.source}
+            for chunk, score in results
+        ]
+
+    def get_context_string(self, query: str, top_k: int = 3) -> str:
+        """Retrieve and format context for the LLM.
+
+        Args:
+            query: User's question.
+            top_k: Number of chunks to retrieve.
+
+        Returns:
+            Formatted context string, or empty string if no relevant chunks.
+        """
+        return self._format_context_string(self._retrieve_for_context(query, top_k))
+
     def get_chunks_with_scores(self, query: str, top_k: int = 3) -> List[dict]:
         """Retrieve chunks with similarity scores as serializable dicts.
 
@@ -876,9 +894,33 @@ class RAGPipeline:
         Returns:
             List of dicts: [{"text": "...", "score": 0.82, "source": "cv.md"}, ...]
         """
-        results = self.retrieve(query, top_k=top_k, doc_type=detect_doc_type(query))
-        return [
-            {"text": chunk.content, "score": round(score, 3), "source": chunk.source}
-            for chunk, score in results
-        ]
+        return self._format_chunks_with_scores(self._retrieve_for_context(query, top_k))
+
+    def retrieve_with_context(
+        self, query: str, top_k: int = 3
+    ) -> tuple[str, List[dict]]:
+        """Both context shapes for one query, from ONE retrieval.
+
+        The streaming turn needs the LLM's context string AND the context
+        panel's scored chunks. Asking for them separately meant calling
+        ``retrieve()`` twice, and ``retrieve()`` embeds the query -- so the same
+        question was embedded twice per turn, identically, for the same answer.
+
+        This is the deduplication, not a cache. ``retrieve()`` is a pure
+        function of ``(query, top_k, doc_type)``: it reads ``self.chunks`` and
+        ``self._embedder``, calls ``expand_query``, and sorts on score with a
+        stable sort -- it mutates nothing. One call therefore yields exactly
+        what two calls yielded, and both formatters are pure functions of the
+        result. Nothing is memoised, so there is no cache to go stale, no key
+        to be wrong, and no per-turn state to leak between requests.
+
+        Returns:
+            ``(context_string, chunks_with_scores)`` -- in that order, matching
+            the order the streaming pipeline uses them in.
+        """
+        results = self._retrieve_for_context(query, top_k)
+        return (
+            self._format_context_string(results),
+            self._format_chunks_with_scores(results),
+        )
 

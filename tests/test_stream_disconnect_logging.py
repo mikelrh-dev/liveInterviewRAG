@@ -24,6 +24,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tests.conftest import stub_rag_context_shapes
 from backend.turns import streaming
 
 
@@ -51,6 +52,7 @@ def _container():
 
     rag = MagicMock()
     rag.get_chunks_with_scores.return_value = []
+    stub_rag_context_shapes(rag)
 
     tts = MagicMock()
     tts.synthesize = _fake_synth

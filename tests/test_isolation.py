@@ -27,6 +27,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.conftest import stub_rag_context_shapes
 from backend.config import config
 
 #: Trips ``detect_farewell`` and is not a cached question, so the turn takes the
@@ -147,6 +148,7 @@ def streaming_doubles():
         mock_stt.transcribe.return_value = FAREWELL_INPUT
         mock_rag.get_context_string.return_value = ""
         mock_rag.get_chunks_with_scores.return_value = []
+        stub_rag_context_shapes(mock_rag)
         mock_rag.chunks = [MagicMock()]
         mock_llm.generate.return_value = "I built InterviewTTS using Python."
         mock_llm.generate_stream_with_context.return_value = (iter(["Hi."]), [])

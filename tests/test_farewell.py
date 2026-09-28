@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.conftest import stub_rag_context_shapes
 from backend.services.response_cache import get_cached_response
 
 # A phrase that trips detect_farewell() and is not a cached question.
@@ -33,6 +34,7 @@ def mock_services(isolated_write_targets):
 
         mock_rag.get_context_string.return_value = ""
         mock_rag.get_chunks_with_scores.return_value = []
+        stub_rag_context_shapes(mock_rag)
         mock_rag.chunks = [MagicMock()]
 
         mock_llm.generate.return_value = "I built InterviewTTS using Python."

@@ -7,6 +7,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 # Import rate limit store so we can reset it between tests
+from tests.conftest import stub_rag_context_shapes
 from backend.main import _rate_limit_store
 
 
@@ -25,6 +26,7 @@ def mock_services(isolated_write_targets):
 
         # RAG mock
         mock_rag.get_context_string.return_value = "Built InterviewTTS with Python and FastAPI."
+        stub_rag_context_shapes(mock_rag)
         mock_rag.chunks = [MagicMock()]  # Non-empty
 
         # LLM mock
