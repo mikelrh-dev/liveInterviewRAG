@@ -197,10 +197,25 @@ _CACHED_QUESTIONS = [
             "trabajas con docker",
         ],
         "keywords": [],
+        # This answer used to claim "He usado Docker con docker-compose para
+        # desplegar InterviewTTS en un VPS". There is no Dockerfile and no
+        # compose file anywhere in this repository, so that was a fabricated
+        # credential delivered to a recruiter as the candidate's own
+        # professional experience -- and because it is a cache entry it never
+        # reaches RAG, so the grounding work cannot catch it.
+        #
+        # What replaces it asserts only what the deploy path proves: a
+        # systemd unit (deployment/interviewtts.service) running uvicorn from a
+        # venv bound to 127.0.0.1, behind nginx terminating TLS
+        # (nginx/interview.conf:69,73-74,108). It claims nothing about the
+        # candidate's history with Docker, because that is a biographical
+        # claim this repository cannot support either way, and a plausible
+        # lie is worse than saying what the project really does.
         "answer": (
-            "He usado Docker con docker-compose para desplegar InterviewTTS en un VPS. "
-            "Lo configuré con Nginx como reverse proxy. Aún estoy aprendiendo, pero "
-            "entiendo los conceptos básicos de contenedores y orquestación."
+            "En InterviewTTS no hay contenedores. Lo despliego en un VPS: un servicio "
+            "systemd arranca uvicorn desde un venv de Python escuchando solo en localhost, "
+            "y nginx delante termina el TLS y hace de proxy inverso. Docker no lo uso "
+            "en este proyecto."
         ),
     },
     {

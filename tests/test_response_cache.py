@@ -1,5 +1,7 @@
 """Tests for the response cache service (backend/services/response_cache.py)."""
 
+import fnmatch
+import os
 import re
 from pathlib import Path
 
@@ -126,10 +128,31 @@ def test_python_question():
 
 
 def test_docker_question():
-    """'¿Qué experiencia tienes con Docker?' returns the Docker answer."""
+    """'¿Qué experiencia tienes con Docker?' returns a true answer.
+
+    Asserting only that the word "docker" is present was the shape of the
+    defect: it passed while the answer fabricated a docker-compose deployment
+    this repository does not have. It now asserts the substance — that the
+    answer describes the deployment that ships and denies the one that does
+    not.
+    """
     answer = get_cached_response("¿Qué experiencia tienes con Docker?")
     assert answer is not None
-    assert "docker" in answer.lower()
+    lowered = answer.lower()
+    assert "docker" in lowered
+    assert "no lo uso" in lowered, (
+        f"the answer no longer declines the Docker credential it cannot "
+        f"support: {answer!r}"
+    )
+    for mechanism in ("systemd", "nginx"):
+        assert mechanism in lowered, (
+            f"the answer no longer describes the deployment that actually "
+            f"ships ({mechanism}): {answer!r}"
+        )
+    assert "docker-compose" not in lowered, (
+        f"the answer credits a compose deployment this repository does not "
+        f"have: {answer!r}"
+    )
 
 
 def test_donde_te_ves_question():
@@ -320,7 +343,7 @@ def test_misroute_more_about_interviewtts_still_hits_kept_keyword():
             "¿Qué experiencia tienes con Python?", "FastAPI", id="phrase-python"
         ),
         pytest.param(
-            "¿Qué experiencia tienes con Docker?", "docker-compose", id="phrase-docker"
+            "¿Qué experiencia tienes con Docker?", "systemd", id="phrase-docker"
         ),
         pytest.param("¿Qué sabes de SQL?", "Hibernate", id="phrase-sql"),
         pytest.param("¿Qué sabes de APIs REST?", "SSE", id="phrase-rest"),
@@ -480,6 +503,12 @@ def test_negation_interposed_in_a_phrase_breaks_the_substring():
 WIKI_DIR = Path(__file__).resolve().parents[1] / "wiki"
 FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "retrieval_corpus"
 
+#: The repository root, for the deploy-mechanism evidence globs below. Separate
+#: from WIKI_DIR on purpose: the candidate's real wiki is gitignored and absent
+#: from a clean clone, but the DEPLOYMENT ARTIFACTS ARE COMMITTED, which is
+#: what makes the mechanism scan runnable in CI at all.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
 # ── The vocabularies a cached answer may not outrun the wiki on ──────────────
 #
 # Each entry is a SCANNER, not an allowlist of approved claims: a term the
@@ -531,14 +560,22 @@ def _cached_answers() -> list[str]:
     return [entry["answer"] for entry in response_cache._CACHED_QUESTIONS]
 
 
-def _normalised_tokens(text: str) -> set[str]:
+def _normalised_text(text: str) -> str:
+    """Lowercased and de-accented, with punctuation left in place.
+
+    Kept separate from :func:`_normalised_tokens` because the two consumers
+    need different things: the vocabulary scans want a SET of words, while the
+    deploy-mechanism scan splits on sentence punctuation before matching. A
+    single tokenising helper would force one of the two to be wrong.
+    """
     import unicodedata
 
     decomposed = unicodedata.normalize("NFD", text.lower())
-    without_accents = "".join(
-        char for char in decomposed if not unicodedata.combining(char)
-    )
-    return set(re.findall(r"[a-z]+", without_accents))
+    return "".join(char for char in decomposed if not unicodedata.combining(char))
+
+
+def _normalised_tokens(text: str) -> set[str]:
+    return set(re.findall(r"[a-z]+", _normalised_text(text)))
 
 
 def _terms_in(answer: str, vocabulary) -> set[str]:
@@ -865,6 +902,258 @@ def test_the_scan_reaches_the_answer_that_shipped_the_unsupported_claim():
     assert "backend" in claimed, (
         "the preferred-area answer no longer names an area at all, so this "
         f"test is no longer looking at the answer it was written for: {answer!r}"
+    )
+
+
+# ─── The class: an answer may not claim a deploy mechanism this repo lacks ────
+#
+# THE DEFECT, AND WHY A CHECK BESIDE ONE ANSWER CANNOT CATCH IT
+# ----------------------------------------------------------
+# This file has already caught one unsupported cached claim (a1ddb08 removed
+# "integración de la inteligencia artificial" from the preferred-area answer).
+# The same defect then shipped a second time, in the Docker answer, with the
+# same shape: a pre-generated answer asserted an infrastructure mechanism that
+# no file in this repository supports.
+#
+# Two properties of that shape defeat the check that existed:
+#
+#   1. THE CACHE IS CONSULTED BEFORE RETRIEVAL. A cached answer is returned
+#      verbatim and never reaches RAG, so no amount of grounding work can see
+#      it. The wiki-consistency scans above run against the table, but only for
+#      the `databases` and `areas` vocabularies -- and both are hand-registered.
+#   2. NOBODY ADDS A TEST WHEN THEY ADD A CACHE ENTRY. Every check here is
+#      written after the fact, by hand, for one named answer. An entry added
+#      tomorrow is invisible by construction.
+#
+# So the invariant is a property of the WHOLE TABLE, checked against the
+# repository itself rather than against the candidate's wiki: a deploy
+# mechanism named by a cached answer must either be demonstrable in this
+# repository, or be disclaimed in the same sentence.
+#
+# WHY THE SENTENCE, AND WHY A DISCLAIMER IS ALLOWED
+# -------------------------------------------------
+# "I do not use Docker" and "I deploy with Docker" share a vocabulary, so a
+# vocabulary scan cannot tell them apart -- and the truthful answer to a
+# Docker question has to be allowed to say the word. Hence the sentence scope
+# and the disclaimer: the mechanism term must be present in a sentence that
+# also disclaims it, and the disclaimed case is the one the shipped answer
+# takes ("En InterviewTTS no hay contenedores", "Docker no lo uso en este
+# proyecto").
+#
+# KNOWN LIMITS OF A LEXICAL CHECK, RECORDED RATHER THAN HIDDEN
+# ------------------------------------------------------------
+#   * An answer that denies and asserts in the SAME sentence passes, e.g. "no
+#     uso Docker en local, en producción docker-compose". Sentence granularity
+#     is the price of not needing a parser, and the cache has no dependencies.
+#   * The disclaimer vocabulary is hand-declared. It is short and each entry
+#     earns its place; a form of refusal it does not list reads as an
+#     assertion, which fails toward red, not toward a silent pass.
+#   * This adjudicates REPOSITORY contradictions only. Whether the candidate
+#     has used a tool elsewhere is biography, which no file here can settle --
+#     the `needs_real_wiki` checks above are the instrument for that, and they
+#     cannot run in CI. What this catches is the category that actually
+#     shipped: a claim about how THIS project is deployed.
+
+#: File-name patterns that would demonstrate a container build exists anywhere
+#: in the repository. Matched against bare file names by ``_repo_has_artifact``,
+#: which prunes as it walks.
+_CONTAINER_ARTIFACTS = (
+    "Dockerfile",
+    "Dockerfile.*",
+    "*.dockerfile",
+    "docker-compose.yml",
+    "docker-compose.yaml",
+    "compose.yml",
+    "compose.yaml",
+)
+
+#: File-name patterns that would demonstrate an orchestrator manifest exists.
+_ORCHESTRATOR_ARTIFACTS = (
+    "kustomization.yaml",
+    "kustomization.yml",
+    "Chart.yaml",
+    "*-deployment.yaml",
+    "*-deployment.yml",
+    "deployment.yaml",
+    "deployment.yml",
+)
+
+_SKIP_DIRS = frozenset({"venv", "node_modules", ".git", ".codegraph", "candidate", "data"})
+
+#: The mechanisms a cached answer may name, each with the pattern that detects
+#: it and the artifacts that would prove this repository actually ships it.
+#: A scanner, not an allowlist of approved answers: adding an artifact makes
+#: the mechanism shippable, and adding an entry that names a mechanism the
+#: repository lacks is what turns the suite red.
+_MECHANISM_CLAIMS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    ("docker", r"\bdockers?\b", _CONTAINER_ARTIFACTS),
+    ("contenedores", r"\bcontenedores?\b", _CONTAINER_ARTIFACTS),
+    ("compose", r"\bcompose\b", _CONTAINER_ARTIFACTS),
+    ("podman", r"\bpodman\b", _CONTAINER_ARTIFACTS),
+    ("kubernetes", r"\bkubernetes\b|\bk8s\b", _ORCHESTRATOR_ARTIFACTS),
+)
+
+#: A sentence matching this disclaims the mechanism it names.
+#:
+#: A regex rather than a list of literal substrings because Spanish inserts a
+#: clitic between the negation and the verb: the shipped answer says "Docker
+#: NO LO USO", not "no uso". A literal list missed that, which the positive
+#: control below caught on its first run. The optional group absorbs the
+#: clitic without widening the rule to any sentence containing "no".
+_DISCLAIMER_RE = re.compile(
+    r"\bno\s+(?:lo\s+|la\s+|le\s+|los\s+|las\s+)?"
+    r"(hay|uso|utilizo|tengo|manejo|empleo|llevo)\b"
+    r"|\bsin\s+contenedores\b"
+)
+
+_SENTENCE_SPLIT_RE = re.compile(r"[.:;!?]+")
+
+
+def _repo_has_artifact(globs: tuple[str, ...]) -> bool:
+    """Whether the repository contains a file matching any of ``globs``.
+
+    An ``os.walk`` with in-place pruning rather than ``Path.glob("**/...")``.
+    Two reasons, and the second is the important one: a recursive glob walks
+    ``venv/`` and ``node_modules/`` in full before the caller can filter them
+    out, which is minutes of I/O on this repository; and pruning at the
+    directory level is what actually makes ``_SKIP_DIRS`` mean anything.
+    """
+    patterns = [re.compile(fnmatch.translate(glob)) for glob in globs]
+    for dirpath, dirnames, filenames in os.walk(REPO_ROOT):
+        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
+        for filename in filenames:
+            if any(p.match(filename) for p in patterns):
+                return True
+    return False
+
+
+def _is_disclaimed(sentence: str) -> bool:
+    return _DISCLAIMER_RE.search(sentence) is not None
+
+
+def _mechanism_offenders(answer: str) -> dict[str, list[str]]:
+    """Mechanisms this answer claims that the repository does not ship.
+
+    Generic over the whole table and over the vocabulary, so an entry nobody
+    registered is still checked. Keys are mechanism names, values the
+    sentences that make the claim.
+    """
+    offenders: dict[str, list[str]] = {}
+    for name, pattern, artifacts in _MECHANISM_CLAIMS:
+        if _repo_has_artifact(artifacts):
+            continue  # the repository ships it, so naming it is not a defect
+        claims = [
+            sentence.strip()
+            for sentence in _SENTENCE_SPLIT_RE.split(_normalised_text(answer))
+            if re.search(pattern, sentence) and not _is_disclaimed(sentence)
+        ]
+        if claims:
+            offenders[name] = claims
+    return offenders
+
+
+def test_no_cached_answer_claims_a_deploy_mechanism_the_repository_lacks():
+    """The shipped defect, as a property of every entry rather than one of them.
+
+    A cached answer is spoken verbatim to an interviewer and never reaches
+    RAG, so an infrastructure claim nothing in this repository supports is the
+    candidate being asked to defend something that does not exist. The Docker
+    answer did exactly that; this fails if any answer -- present or future, and
+    named or not -- does it again.
+    """
+    offenders = {
+        answer: found
+        for answer in _cached_answers()
+        if (found := _mechanism_offenders(answer))
+    }
+    assert not offenders, (
+        f"cached answers claiming a deploy mechanism this repository does not "
+        f"ship: {offenders}. Either the answer describes a deployment that does "
+        "not exist here, or the answer disclaims the mechanism in the same "
+        "sentence -- which is how the Docker answer says it."
+    )
+
+
+def test_the_mechanism_scan_detects_the_shipped_docker_claim(monkeypatch):
+    """The negative control, on the exact string that shipped.
+
+    A guard that has never been seen to reject the thing it was written for is
+    a guard nobody can trust, and this one is a lexical scan that could quietly
+    stop matching -- a renamed vocabulary entry, a stripped disclaimer list.
+    So the real sentence is injected and must be rejected by the real scan.
+    """
+    shipped = (
+        "He usado Docker con docker-compose para desplegar InterviewTTS en un "
+        "VPS. Lo configuré con Nginx como reverse proxy. Aún estoy aprendiendo, "
+        "pero entiendo los conceptos básicos de contenedores y orquestación."
+    )
+    monkeypatch.setattr(
+        "backend.services.response_cache._CACHED_QUESTIONS",
+        [{"answer": shipped, "phrases": ["x"], "keywords": []}],
+    )
+    offenders = _mechanism_offenders(_cached_answers()[0])
+    assert offenders, (
+        "the scan no longer rejects the claim that shipped, so it is not "
+        "pointed at the defect it was written for"
+    )
+    for mechanism in ("docker", "contenedores"):
+        assert mechanism in offenders, (
+            f"the scan missed {mechanism!r} in the shipped claim; it now "
+            f"reports {sorted(offenders)}"
+        )
+
+
+def test_the_mechanism_scan_accepts_a_disclaimed_mechanism():
+    """The positive control: denying a mechanism the repo lacks is the fix.
+
+    Without this the guard would be "never say the word Docker", which would
+    make the honest answer to "¿Qué experiencia tienes con Docker?" impossible
+    to give — the recruiter asked, and silence is its own failure.
+    """
+    assert _mechanism_offenders("En este proyecto no hay contenedores.") == {}
+    assert _mechanism_offenders("Docker no lo uso en este proyecto.") == {}
+    assert _mechanism_offenders("En InterviewTTS no hay contenedores.") == {}
+
+
+def test_the_mechanism_scan_accepts_a_mechanism_the_repository_ships():
+    """Naming a mechanism this repository really ships is not a defect.
+
+    The scan is evidence-bound in both directions. This asserts the other
+    direction explicitly, and asserts the evidence exists — so if the systemd
+    unit were ever deleted, this fails and says the evidence moved, rather than
+    the guard quietly becoming narrower.
+    """
+    for artifacts in (("*.service",), ("*.conf",)):
+        assert _repo_has_artifact(artifacts), f"no artifact matches {artifacts}"
+    assert _repo_has_artifact(_CONTAINER_ARTIFACTS) is False, (
+        "this repository ships a container artifact, so a Docker claim would "
+        "no longer be a fabrication; recalibrate rather than let the "
+        "evidence-bound branch of the scan go untested"
+    )
+    offenders = _mechanism_offenders(
+        "Lo despliego con systemd y nginx delante haciendo de proxy inverso."
+    )
+    assert offenders == {}, f"a shipped mechanism was reported as ungrounded: {offenders}"
+
+
+def test_the_mechanism_scan_is_not_pointed_at_nothing():
+    """Guard the guard: the vocabulary must be able to fire.
+
+    A scanner whose patterns match no shipped answer, and whose evidence
+    globs match no file, would pass every test above while checking nothing.
+    This is the "does the scan reach" question from the section above, asked
+    of the deployment vocabulary.
+    """
+    offenders = _mechanism_offenders("Despliego con Kubernetes en el VPS.")
+    assert "kubernetes" in offenders, (
+        f"the vocabulary cannot detect a claim it names: {offenders}"
+    )
+    # The container globs must currently match NOTHING, or the docker control
+    # above is passing for the wrong reason (this repository has no Dockerfile).
+    assert not _repo_has_artifact(_CONTAINER_ARTIFACTS), (
+        "this repository now ships a container artifact; the docker claim is "
+        "no longer a fabrication, so recalibrate the guard rather than "
+        "letting it pass for the wrong reason"
     )
 
 
