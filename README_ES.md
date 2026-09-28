@@ -234,9 +234,17 @@ padre del paquete `backend`, no a un nombre de directorio fijo.
 ```bash
 cp .env.example .env
 
-# Editar .env con tus API keys:
-# Requerido: OPENROUTER_API_KEY (fallback LLM)
-# Opcional: GOOGLE_API_KEY (habilita Google AI como LLM principal)
+# Editar .env. Necesitas al menos una key de LLM para que el gemelo digital
+# conteste:
+#   GOOGLE_API_KEY      habilita Google AI (Gemini), que se intenta PRIMERO
+#   OPENROUTER_API_KEY  el proveedor de fallback, usado cuando Google AI
+#                       no está o lanza
+# Ninguna se valida al arrancar (ambas por defecto vacías, backend/config.py:55-56),
+# así que una key que falte o sea incorrecta aparece como un turno fallido,
+# no como un error de arranque.
+#
+# TTS_VOICE selecciona la voz de Edge TTS; por defecto es-ES-AlvaroNeural.
+# Deliberadamente no hay clave HOST -- ver "Ejecutar" más abajo.
 ```
 
 ### Ejecutar
