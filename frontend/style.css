@@ -1039,9 +1039,25 @@ body[data-state="speaking"] #btn-mic.active {
     margin-top: 40px;
 }
 
-/* ─── Chunk Pills ───────────────────────────────────────── */
+/* ─── Chunk Pills ───────────────────────────────────────────
+   These are the evidence chips: the passages an answer was actually built
+   from, and the reason a recruiter trusts it. They are native <button>s, so
+   Tab, Enter, Space, the focus ring, the button role and the expanded state
+   are the platform's job. What is left here is making a button look like the
+   chip this design already described, which it does not by default: buttons
+   take `font: 400 13.333px Arial` and `color: ButtonText` from the UA
+   stylesheet, and ButtonText on a dark panel is black. */
 
 .chunk-pill {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    appearance: none;
+    -webkit-appearance: none;
+    width: 100%;
+    font: inherit;
+    color: inherit;
+    text-align: left;
     background: rgba(51, 65, 85, 0.4);
     border: 1px solid var(--outline-variant);
     border-radius: 8px;
@@ -1060,11 +1076,20 @@ body[data-state="speaking"] #btn-mic.active {
     transform: translateY(-1px);
 }
 
+/* Focusability is only half of it. Without a ring the chip is reachable and
+   still unusable, so the ring is declared rather than left to the UA -- which
+   draws nothing at all once `appearance: none` is in play. */
+.chunk-pill:focus-visible {
+    outline: 2px solid var(--cyan-accent);
+    outline-offset: 2px;
+}
+
 .chunk-pill.expanded {
     background: rgba(255, 255, 255, 0.08);
 }
 
 .chunk-score {
+    flex: none;
     font-family: var(--font-mono);
     font-size: 0.7rem;
     color: var(--cyan-accent);
@@ -1074,7 +1099,15 @@ body[data-state="speaking"] #btn-mic.active {
     margin-right: 8px;
 }
 
+/* `text-overflow: ellipsis` is defined for a BLOCK CONTAINER. This was a
+   <span> -- inline -- so the declaration was inert and the 100-character
+   preview wrapped onto a second line. Being a flex item now blockifies it,
+   which is the other half of the fix: `min-width: auto` on a flex item
+   resolves to its min-content width, so without `min-width: 0` below it would
+   overflow the chip rather than truncate. */
 .chunk-preview {
+    flex: 1 1 auto;
+    min-width: 0;
     font-size: 0.75rem;
     color: var(--text-secondary);
     white-space: nowrap;
@@ -1084,6 +1117,9 @@ body[data-state="speaking"] #btn-mic.active {
 
 .chunk-full {
     display: none;
+    /* A row of its own: without this the revealed passage runs on beside the
+       score instead of under the chip. */
+    flex: 1 0 100%;
     margin-top: 8px;
     font-size: 0.8rem;
     color: var(--text-primary);
@@ -1093,6 +1129,13 @@ body[data-state="speaking"] #btn-mic.active {
 }
 
 .chunk-pill.expanded .chunk-full {
+    display: block;
+}
+
+/* A <button> may hold only phrasing content, so the revealed text and the
+   source line are <span>s; this puts each on its own line, which is what the
+   <p>s used to do. */
+.chunk-full > span {
     display: block;
 }
 

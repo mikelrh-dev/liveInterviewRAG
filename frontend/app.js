@@ -571,6 +571,15 @@ function init() {
         }
     });
 
+    // One delegated listener for the evidence chips, on the container rather
+    // than on each chip: renderContext() replaces this panel's innerHTML on
+    // every turn, so a per-chip listener would be discarded with its node and
+    // the next turn's chips would be dead. The container survives.
+    contextContent.addEventListener("click", (e) => {
+        const pill = e.target.closest(".chunk-pill");
+        if (pill) toggleChunk(pill);
+    });
+
     // Audio blocked overlay — resume on click
     audioOverlay.addEventListener("click", resumeAudioContext);
 
@@ -1999,27 +2008,51 @@ function renderContext(chunks) {
         return;
     }
 
+    // A native <button>, not a div with role="button".
+    //
+    // The chip used to be `<div onclick="toggleChunk(this)">`, which gives a
+    // mouse user a target and everyone else nothing: a div is not focusable,
+    // cannot be reached with Tab, cannot be activated with Enter or Space, and
+    // draws no focus ring. These chips are the credibility argument of the
+    // whole panel -- the passages the answer was actually built from -- so
+    // re-declaring `role="button"` would be the fix that looks right and is
+    // not: it changes what is announced and leaves the focusability, the key
+    // handling and the ring still missing. The platform provides all of it for
+    // free, so the platform provides all of it.
+    //
+    // Every descendant is a <span> because a <button> may contain only
+    // phrasing content, and the revealed passage this used to wrap in a
+    // <div><p> is flow content. `display: block` in the stylesheet puts it back
+    // on its own row.
     contextContent.innerHTML = chunks
         .map(
             (chunk, i) => `
-        <div class="chunk-pill" data-index="${i}" onclick="toggleChunk(this)">
+        <button type="button" class="chunk-pill" data-index="${i}"
+                aria-expanded="false" aria-controls="chunk-detail-${i}">
             <span class="chunk-score">${chunk.score.toFixed(2)}</span>
             <span class="chunk-preview">${escapeHtml(chunk.text.substring(0, 100))}${chunk.text.length > 100 ? "…" : ""}</span>
-            <div class="chunk-full">
-                <p>${escapeHtml(chunk.text)}</p>
-                <p class="chunk-source">Fuente: ${escapeHtml(chunk.source)}</p>
-            </div>
-        </div>
+            <span class="chunk-full" id="chunk-detail-${i}">
+                <span>${escapeHtml(chunk.text)}</span>
+                <span class="chunk-source">Fuente: ${escapeHtml(chunk.source)}</span>
+            </span>
+        </button>
     `,
         )
         .join("");
 }
 
+/**
+ * Expand or collapse one evidence chip.
+ *
+ * The class drives the visual and `aria-expanded` drives the announcement, so
+ * both are written from the same decision on every call: a control that flips
+ * only one of them lies to half its users.
+ */
 function toggleChunk(el) {
-    el.classList.toggle("expanded");
+    const expanded = !el.classList.contains("expanded");
+    el.classList.toggle("expanded", expanded);
+    el.setAttribute("aria-expanded", expanded ? "true" : "false");
 }
-// Make it global for onclick
-window.toggleChunk = toggleChunk;
 
 // ─── Helpers ───────────────────────────────────────────
 
