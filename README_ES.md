@@ -145,7 +145,7 @@ sequenceDiagram
 
 Este proyecto corre en un VPS gratuito sin GPU, así que cada decisión es un tradeoff. Los documento explícitamente porque muestran cómo pienso bajo restricciones:
 
-- **Tamaño del modelo STT** — Whisper `small` es el punto dulce para precisión en español en CPU. `tiny` es más rápido pero falla con palabras técnicas. `medium` es demasiado lento. El valor por defecto ahora es `small`, verificado por tests.
+- **Tamaño del modelo STT** — Whisper `small` es el punto dulce para precisión en español en CPU. `tiny` es más rápido pero falla con palabras técnicas. `medium` es demasiado lento. El valor por defecto ahora es `small`, verificado por tests. Lo que se envía es `WHISPER_MODEL=small`, `WHISPER_DEVICE=cpu`, `WHISPER_COMPUTE_TYPE=int8` (`backend/config.py:60-62`); el primero y el tercero son sobrescribibles por despliegue, y la combinación enviada es la con la que se midieron las cifras de latencia de más abajo.
 - **Voz TTS** — Edge TTS no necesita key ni GPU, pero es un servicio *en la nube*: el texto sale del VPS y lo sintetiza Microsoft. Las voces son genéricas de Microsoft, no un clon mío. Los modelos de clonación como Piper o ElevenLabs dan mejor calidad, pero necesitan GPU o cuestan dinero. Edge TTS con streaming y caché es el mejor balance.
 - **Proveedor LLM** — Google AI (Gemini Flash Lite) es rápido y barato pero con rate limiting. OpenRouter es el fallback cuando el principal no está disponible.
 - **Recursos del VPS** — 4 cores y 24 GB RAM compartidos con el sistema. Solo Whisper consume ~1.4 GB, así que no hay margen para un modelo de voz pesado. La arquitectura es de conversación única a la vez.
@@ -166,7 +166,6 @@ Cada optimización apunta a latencia real en el pipeline de voz. Esto es lo que 
 | Caché + enriquecimiento RAG | 0s + contexto rico | Respuesta instantánea enriquecida con detalles del wiki | Bajo |
 | RAG con metadata de wiki | Mejor precisión | Parsing de frontmatter, filtrado por tipo, enriquecimiento de queries | Bajo |
 | Persistencia de embeddings | -2-3s al arrancar | Embeddings pre-computados guardados en disco, validados al cargar | Medio |
-| Whisper medium + float16 | +20-30% precisión | Modelo más grande en ARM64, sin GPU necesaria | Bajo |
 | Streaming SSE | 0s percibido | Tokens llegan antes de la respuesta completa, avatar empieza a hablar | Ninguno |
 
 **Antes de las optimizaciones:** ~15-25s por respuesta
