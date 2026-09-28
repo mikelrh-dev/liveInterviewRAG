@@ -136,7 +136,6 @@ sequenceDiagram
 | Frontend | HTML/CSS/JS vanilla | Sin sobrecarga de framework, arranque más rápido en free tier |
 | Reverse proxy | Nginx | Estándar, bien documentado, maneja archivos estáticos + proxy WSGI |
 | Process manager | systemd | Auto-reinicio en fallo, logs en journal |
-| Contenedor | Docker (opcional) | Builds reproducibles |
 | Hosting | Oracle Cloud Free Tier (ARM64) | $0/mes, 4 cores, 24 GB RAM — suficiente para carga de conversación única |
 | Workflow | OpenSpec + TDD estricto | Cada cambio pasa por spec → design → tasks → test-first → apply |
 
@@ -186,7 +185,7 @@ El enfoque: medir primero, optimizar el cuello de botella, verificar con tests, 
 Construir este proyecto de extremo a extremo me obligó a aprender cosas que no se enseñan en el FP de DAM:
 
 - **Patrones async en FastAPI** — El bootcamp enseñaba Flask; necesitaba async para respuestas streaming. Lo aprendí de la documentación en un fin de semana.
-- **Docker** — Apenas mencionado en el FP. Construí el Dockerfile y compose por prueba y error.
+- **Despliegue** — Apenas mencionado en el FP. Configurar systemd, un reverse proxy que termina el TLS y los permisos de filesystem que `ProtectSystem=strict` exige, a base de prueba y error.
 - **asyncio** — Hacer streaming de STT/RAG/LLM/TTS en secuencia sin async sería insoportable. Iteré desde copiar patrones hasta entenderlos.
 - **Arquitecturas RAG** — Diseñé la estrategia de chunking, embedding y recuperación. No se enseña en ningún curso que tomé.
 - **Orquestación multi-proveedor LLM** — Google AI como principal, OpenRouter como fallback, con degradación graceful. El patrón importa más que los proveedores.
@@ -286,18 +285,18 @@ El sistema wiki es la fuente de verdad para los datos del candidato, con un scri
 
 ## Despliegue
 
-### Docker (opcional)
-
-```bash
-docker compose up -d
-```
+El destino es un VPS ARM64 de Oracle Free Tier. Este proyecto no tiene imagen de
+contenedor ni archivo compose, así que todos los pasos corren en el host.
 
 ### Manual (Oracle Free Tier)
 
-1. Instalar dependencias del sistema (Python 3.10, ffmpeg, nginx)
+1. Instalar dependencias del sistema (`python3-venv nginx certbot`)
 2. Configurar Nginx con `nginx/interview.conf`
 3. Configurar servicio systemd con `deployment/interviewtts.service`
 4. Configurar `.env` con valores de producción
+
+Los pasos completos, en el orden en que se ejecutan, están en
+[RUNBOOK.md](RUNBOOK.md).
 
 ---
 
