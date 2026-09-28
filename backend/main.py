@@ -236,11 +236,18 @@ app.add_middleware(RateLimitMiddleware, max_requests=config.RATE_LIMIT_PER_MINUT
 # route parses a body.
 app.add_middleware(MaxBodySizeMiddleware, max_size=MAX_AUDIO_SIZE)
 
-# CORS — restricted in production, configurable via env var
-cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:8000")
+# CORS — restricted in production, configurable via env var.
+#
+# The origins come from config, which parses and strips them. This used to be
+# os.getenv("CORS_ORIGINS").split(",") here, which meant the padding around each
+# comma-separated value survived into CORSMiddleware: an origin declared as
+# " https://site " never matches the Origin header a browser sends, so the
+# request fails CORS and the failure looks like a policy problem rather than a
+# stray space. Routing it through Config also means the value can be defaulted,
+# validated and constructed in a test without mutating the environment.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=cors_origins.split(","),
+    allow_origins=config.CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
