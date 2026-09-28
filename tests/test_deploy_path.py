@@ -44,7 +44,61 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 NGINX_CONF = REPO_ROOT / "nginx" / "interview.conf"
 DEPLOY_SH = REPO_ROOT / "scripts" / "deploy.sh"
 UNIT_FILE = REPO_ROOT / "deployment" / "interviewtts.service"
-README = REPO_ROOT / "README.md"
+
+#: EVERY user-facing README. Not "the" README.
+#:
+#: This suite used to read ``README.md`` and nothing else, which is the whole
+#: mechanical cause of the documentation-drift class: ``README_ES.md`` had zero
+#: coverage and therefore accumulated every falsehood the English file had
+#: already been fixed for -- Piper TTS, ``0.0.0.0``, ``docker compose up``,
+#: ``<repo-url>``, ``155+ tests``, WSGI, float16, ``cd InterviewTTS`` and the
+#: install command. A document nobody checks is a document nobody keeps true.
+#:
+#: Every doc assertion below is parametrized over this tuple, so a claim that
+#: drifts in one language goes red in both directions of the check.
+READMES = (REPO_ROOT / "README.md", REPO_ROOT / "README_ES.md")
+
+#: The command that anchors the deployment section, in place of its heading.
+#: ``## Deployment`` and ``## Despliegue`` are wording; ``useradd`` is content,
+#: and only the deployment section contains it.
+_DEPLOYMENT_ANCHOR = "useradd"
+
+
+def _level2_sections(text: str) -> list[str]:
+    """Split a document into its ``## ``-level sections, heading included."""
+    sections: list[str] = []
+    current: list[str] = []
+    for line in text.splitlines():
+        if line.startswith("## ") and not line.startswith("### "):
+            if current:
+                sections.append("\n".join(current))
+            current = [line]
+        elif current:
+            current.append(line)
+    if current:
+        sections.append("\n".join(current))
+    return sections
+
+
+def _deployment_section(readme: str) -> str:
+    """The one ``## `` section that documents provisioning the service user.
+
+    Found by content rather than by heading, because the heading is the word
+    that differs between the two languages and the content is what the
+    assertions are about. Raises rather than defaulting when the anchor is
+    missing or ambiguous: a locator that silently returned the whole document
+    would turn "the Deployment section must create audio/" into "somewhere in
+    the README there is a mkdir", which is the weaker assertion this suite
+    deliberately makes.
+    """
+    sections = [s for s in _level2_sections(readme) if _DEPLOYMENT_ANCHOR in s]
+    if len(sections) != 1:
+        raise AssertionError(
+            f"expected exactly one ## section containing {_DEPLOYMENT_ANCHOR!r}, "
+            f"found {len(sections)}; the deployment section cannot be located "
+            "and every assertion scoped to it would be vacuous"
+        )
+    return sections[0]
 
 #: The default the deploy script pushes to, and the root nginx serves from.
 #: Hard-coded once here so a mismatch is reported as a mismatch rather than
@@ -185,17 +239,50 @@ class TestTheUnitCanActuallyStart:
         )
 
 
+@pytest.fixture(params=READMES, ids=lambda path: path.name, scope="module")
+def readme(request: pytest.FixtureRequest) -> str:
+    """Each user-facing README in turn, so both are held to the same claims.
+
+    Module-scoped so the file is read once per document rather than once per
+    assertion, and parametrised rather than looped so a failure names the
+    file it came from instead of an opaque index.
+    """
+    path: Path = request.param
+    return path.read_text(encoding="utf-8")
+
+
+def test_every_user_facing_readme_is_covered():
+    """Guard the guard: the coverage tuple cannot shrink.
+
+    ``READMES`` is the whole mechanism by which ``README_ES.md`` stopped being
+    unverified. Deleting an entry from it would not fail a single assertion --
+    it would silently return the suite to checking one language while the
+    green output looked identical. So the list is pinned.
+    """
+    assert READMES == (REPO_ROOT / "README.md", REPO_ROOT / "README_ES.md"), (
+        f"the covered-document list changed: {READMES}. Every user-facing "
+        "README must stay in it, or the assertions below stop being a claim "
+        "about 'the documentation' and become a claim about one language."
+    )
+    for path in READMES:
+        assert path.is_file(), f"{path} is in READMES but does not exist"
+
+
 class TestTheDocumentedSetupIsNotOneLine:
     """README.md:319 used to be the entire setup for the unit.
 
     Each of these is something the unit file names and something the reader has
     to run. Named explicitly so the list cannot shrink back to a reference to
     the unit file.
-    """
 
-    @pytest.fixture(scope="class")
-    def readme(self) -> str:
-        return README.read_text(encoding="utf-8")
+    Parametrised over both READMEs. Three of the five assertions read a
+    command -- ``useradd``, ``python3 -m venv``, ``mkdir`` -- and are
+    language-agnostic as written. The one that was not is
+    ``test_it_creates_every_writable_directory``, which scoped its search with
+    ``readme.split("## Deployment", 1)[-1]``; it now locates the section by
+    content, because the heading is the only genuinely language-specific token
+    in this class.
+    """
 
     def test_it_creates_the_service_user(self, readme):
         assert re.search(r"useradd[^\n]*interviewtts", readme), (
@@ -226,9 +313,9 @@ class TestTheDocumentedSetupIsNotOneLine:
 
     @pytest.mark.parametrize("name", sorted(_unit_required_subdirs()))
     def test_it_creates_every_writable_directory(self, readme, name):
-        block = readme.split("## Deployment", 1)[-1]
+        block = _deployment_section(readme)
         assert re.search(rf"mkdir[^\n]*{re.escape(name)}", block), (
-            f"the Deployment section must create {name}/ -- the unit lists it in "
+            f"the deployment section must create {name}/ -- the unit lists it in "
             "ReadWritePaths and systemd will not start without it"
         )
 

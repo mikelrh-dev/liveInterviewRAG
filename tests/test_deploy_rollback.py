@@ -45,6 +45,11 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEPLOY_SH = REPO_ROOT / "scripts" / "deploy.sh"
 
+#: Every user-facing README, because the rollback the operator is told to run
+#: must be the guarded one in whichever language they are reading. See
+#: ``tests/test_deploy_path.py`` for the same tuple and the reason it exists.
+READMES = (REPO_ROOT / "README.md", REPO_ROOT / "README_ES.md")
+
 #: What a ``sudo systemctl restart interviewtts.service`` line is rewritten to.
 #: The restart is not what is under test, and a test machine has no such unit.
 RESTART_TO_NOOP = ("sudo systemctl restart interviewtts.service", ":")
@@ -217,30 +222,38 @@ class TestTheHappyPathStillWorks:
             "candidate.broken/, not deleted: it is the only way back"
         )
 
-    def test_the_documented_rollback_is_the_tested_one(self):
-        """The script and the README must not offer two different rollbacks.
+    @pytest.mark.parametrize("readme", READMES, ids=lambda path: path.name)
+    def test_the_documented_rollback_is_the_tested_one(self, readme):
+        """The script and every README must not offer two different rollbacks.
 
         A guard that only the script has is a guard the operator does not get,
         because the README is where they will look. Only fenced code blocks are
         scanned: the README explains WHY the two-``mv`` form is destructive, and
         quoting it in prose is the opposite of removing it.
-        """
-        readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
 
-        assert "deploy.sh rollback" in readme, (
-            "README.md must document the rollback the script actually ships. A "
-            "hand-written `mv candidate candidate.broken && mv candidate.prev "
-            "candidate` pasted into the README is the unguarded version, and it "
-            "is the one a reader will copy."
+        Parametrised over both READMEs. Doing so is what exposed the drift:
+        this assertion had only ever read ``README.md``, and ``README_ES.md``
+        documented no rollback at all -- a Spanish-reading operator had no
+        documented way back from a bad deploy, and no test could say so.
+        """
+        text = readme.read_text(encoding="utf-8")
+
+        assert "deploy.sh rollback" in text, (
+            f"{readme.name} must document the rollback the script actually "
+            "ships. A hand-written `mv candidate candidate.broken && mv "
+            "candidate.prev candidate` pasted into the README is the unguarded "
+            "version, and it is the one a reader will copy. An absent rollback "
+            "is the same defect wearing a different hat: the operator has no "
+            "path back at all."
         )
 
-        blocks = re.findall(r"```[a-z]*\n(.*?)```", readme, re.DOTALL)
-        assert blocks, "no fenced code block found in README.md; the scan is blind"
+        blocks = re.findall(r"```[a-z]*\n(.*?)```", text, re.DOTALL)
+        assert blocks, f"no fenced code block found in {readme.name}; the scan is blind"
         for block in blocks:
             assert not re.search(
                 r"mv\s+\S*candidate\S*\s+\S*candidate\.broken", block
             ), (
-                "README.md still shows the unguarded two-`mv` rollback in a "
+                f"{readme.name} still shows the unguarded two-`mv` rollback in a "
                 f"code block a reader can copy:\n{block}"
             )
 

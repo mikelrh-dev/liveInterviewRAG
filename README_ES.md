@@ -297,6 +297,62 @@ El gemelo digital se alimenta de un perfil estructurado del candidato que se inc
 
 El sistema wiki es la fuente de verdad para los datos del candidato, con un script de compilación que regenera estos archivos planos. Ver `wiki/CONVENCIONES.md` para las convenciones del wiki.
 
+### Editar el wiki (flujo de contenido)
+
+`wiki/` es la fuente de verdad escrita a mano. El ciclo completo edición → despliegue:
+
+```bash
+# 1. Editar páginas bajo wiki/ (convenciones en wiki/CONVENCIONES.md)
+
+# 2. Validar frontmatter, enlaces, fechas (solo lectura; sale con 0/1/2)
+python scripts/wiki/validate.py --wiki wiki/
+
+# 3. Compilar wiki/ -> candidate/ (intercambio atómico; aborta ante cualquier
+#    error de validación)
+python scripts/wiki/compile.py --wiki wiki/ --out candidate/
+
+# 4. Desplegar en el VPS (bash/systemd; ejecutar en el VPS o por SSH desde
+#    WSL/Git-Bash):
+#    validar -> compilar -> rsync -> systemctl restart interviewtts.service
+VPS_HOST=tu-host VPS_USER=deploy ./scripts/deploy.sh
+```
+
+Notas:
+
+- `wiki/index.md` lo genera automáticamente `scripts/wiki/generate_index.py` — nunca lo
+  edites a mano.
+- `deploy.sh` mantiene una copia de rollback en el VPS, en `candidate.prev/`. Para
+  revertir:
+
+  ```bash
+  VPS_HOST=tu-host VPS_USER=deploy ./scripts/deploy.sh rollback
+  ```
+
+  Esto es un subcomando y no un one-liner pegado a mano porque el one-liner evidente
+  es destructivo. `mv candidate candidate.broken && mv candidate.prev candidate`
+  parece protegido y no lo es: si `candidate.prev` no existe, el primer `mv` aun así
+  tiene éxito y el segundo falla, así que el comando ha renombrado el contenido vivo
+  fuera de su sitio y después ha reportado fallo. El subcomando comprueba que ambos
+  directorios existen — en su propia ida y vuelta, antes de mover nada — y vuelve a
+  poner el árbol vivo en su sitio si el intercambio falla a medias. El árbol que
+  estaba vivo antes del rollback se conserva en `candidate.broken/`.
+- Otras anclas de rollback: la etiqueta de git `pre/wiki-pipeline` (el último commit
+  previo al cambio) y un zip de `candidate/` guardado fuera del repositorio antes del
+  cambio.
+
+#### Hacer backup de `wiki/` (manual, repositorio privado)
+
+`wiki/` contiene datos personales y está en el `.gitignore` de este repositorio. Tras
+editarlo, súbelo a mano a un repositorio PRIVADO de GitHub:
+
+```bash
+cd wiki/
+git add -A && git commit -m "docs: update wiki content" && git push
+```
+
+Este backup es un flujo manual documentado — no hay ningún hook de automatización
+conectado.
+
 ---
 
 ## Despliegue
