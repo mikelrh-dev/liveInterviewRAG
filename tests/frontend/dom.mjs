@@ -42,6 +42,34 @@ import { JSDOM, VirtualConsole } from "jsdom";
 import { extractFunction, readAppJs, readIndexHtml } from "./harness.mjs";
 
 /**
+ * The module-level DOM handles of app.js, by element id.
+ *
+ * app.js resolves these once at load: `const statusEl = document.getElementById("status")`.
+ * A lifted function therefore needs them as globals, and the honest value for
+ * each is the real element out of the real index.html — not a stand-in. Handing
+ * a function a fabricated element is the same mistake as injecting a
+ * hand-written `escapeHtml`, only smaller.
+ */
+export const DOM_HANDLES = {
+    btnMic: "#btn-mic",
+    statusEl: "#status",
+    conversation: "#conversation",
+    micIcon: "#btn-mic .mic-icon",
+    stopIconEl: "#btn-mic .stop-icon",
+    orbitalRing: "#orbital-ring",
+    waveformSvg: "#waveform",
+    contextToggle: "#context-toggle",
+    contextPanel: "#context-panel",
+    contextClose: "#context-close",
+    contextContent: "#context-content",
+    audioOverlay: "#audio-blocked-overlay",
+    disclaimerOverlay: "#disclaimer-overlay",
+    disclaimerAccept: "#disclaimer-accept",
+    avatarNeutralVideo: "#avatar-neutral-video",
+    avatarTalkingVideo: "#avatar-talking-video",
+};
+
+/**
  * The module-level `let` state of app.js, at its initial values.
  *
  * A lifted function resolves its free variables against the window, so anything
@@ -89,15 +117,32 @@ export function baseState(overrides = {}) {
     };
 }
 
+/**
+ * A state value the window must build for itself.
+ *
+ * A class instance cannot be re-created from source — its methods live on the
+ * prototype, so any serialisation loses them and the lifted code then calls
+ * `audioContext.resume is not a function`. Wrapping a factory says "evaluate
+ * this inside the page" instead of "copy this shape".
+ */
+export function producedBy(factory) {
+    return { __producedBy: factory };
+}
+
+function isProducedBy(value) {
+    return Boolean(value) && typeof value === "object" && typeof value.__producedBy === "function";
+}
+
 /** Serialise a state value into source that can be assigned with `var x = ...`. */
-function toSource(value, nodeIndex) {
+function toSource(value, index) {
     if (value === undefined) return "undefined";
     if (value === null) return "null";
+    if (isProducedBy(value)) return `window.__factories[${index}]()`;
     // A DOM node cannot be re-created from source, so it is published on the
     // window and referenced by index. This is how a test hands the real
     // `#context-content` / `#status` / `#btn-mic` to the lifted function, which
     // is the whole point of having a DOM.
-    if (isNode(value)) return `window.__domRefs[${nodeIndex}]`;
+    if (isNode(value)) return `window.__domRefs[${index}]`;
     if (value instanceof Set) {
         return `new Set(${JSON.stringify([...value])})`;
     }
@@ -367,21 +412,39 @@ export function createDom(options = {}) {
          * @param {object}   [state] module state overrides on top of baseState()
          */
         loadApp(names, state = {}) {
-            const merged = baseState(state);
-            // DOM nodes go out on the window first; the declarations below
-            // reference them by index.
+            // The real elements first, then whatever the test said. A test can
+            // override a handle only by naming it, and a handle it does not
+            // override is the shipped element.
+            const handles = {};
+            for (const [name, selector] of Object.entries(DOM_HANDLES)) {
+                const el = document.querySelector(selector);
+                if (el) handles[name] = el;
+            }
+            const merged = baseState({ ...handles, ...state });
+            // DOM nodes and factories go out on the window first; the
+            // declarations below reference them by index.
             const nodes = [];
-            const indexOfNode = (value) => {
-                if (!isNode(value)) return -1;
-                const at = nodes.indexOf(value);
+            const factories = [];
+            const slot = (list, keep) => (value) => {
+                if (!keep(value)) return -1;
+                const at = list.indexOf(value);
                 if (at !== -1) return at;
-                return nodes.push(value) - 1;
+                return list.push(value) - 1;
             };
-            for (const value of Object.values(merged)) indexOfNode(value);
+            const indexOfNode = slot(nodes, isNode);
+            const indexOfFactory = slot(factories, isProducedBy);
+            for (const value of Object.values(merged)) {
+                indexOfNode(value);
+                indexOfFactory(value);
+            }
             window.__domRefs = nodes;
+            window.__factories = factories.map((box) => box.__producedBy);
 
             const preamble = Object.entries(merged)
-                .map(([key, value]) => `var ${key} = ${toSource(value, indexOfNode(value))};`)
+                .map(([key, value]) => {
+                    const idx = isProducedBy(value) ? indexOfFactory(value) : indexOfNode(value);
+                    return `var ${key} = ${toSource(value, idx)};`;
+                })
                 .join("\n");
             const bodies = names.map((name) => extractFunction(name)).join("\n\n");
             window.eval(`${preamble}\n${bodies}\n`);

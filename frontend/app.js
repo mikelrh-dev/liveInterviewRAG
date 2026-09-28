@@ -1098,39 +1098,86 @@ function tryPlayNextChunk() {
         }
     }
 
-    audio.addEventListener(
-        "ended",
-        () => {
-            nextChunkId++;
-            isAudioPlaying = false;
-            removeAudioIndicator();
-            tryPlayNextChunk();
-            checkAllDone();
-        },
-        { once: true },
-    );
+    audio.addEventListener("ended", () => abandonCurrentChunk(), { once: true });
     audio.addEventListener(
         "error",
         () => {
             console.error("Audio playback error for chunk", chunk.id);
-            nextChunkId++;
-            isAudioPlaying = false;
-            removeAudioIndicator();
-            tryPlayNextChunk();
-            checkAllDone();
+            abandonCurrentChunk();
         },
         { once: true },
     );
-    ensureAudioContext().then(() =>
-        audio.play().catch((e) => {
-            console.error("Audio play() failed:", e);
-            nextChunkId++;
-            isAudioPlaying = false;
-            removeAudioIndicator();
-            tryPlayNextChunk();
-            checkAllDone();
-        }),
-    );
+
+    // ONE handler for the whole chain, and that is the fix.
+    //
+    // This was `ensureAudioContext().then(() => audio.play().catch(...))`. The
+    // inner `.catch` covered play() and nothing covered the promise the `.then`
+    // was attached to, so a rejected `AudioContext.resume()` escaped unhandled.
+    // It escaped at the worst possible moment: `isAudioPlaying` was already true
+    // when the chain was armed, and the `ended`/`error` handlers that would have
+    // cleared it never ran. So every later chunk returned at the
+    // `if (isAudioPlaying) return` guard, checkAllDone() never ran, and
+    // checkAllDone() is the ONLY caller of startListening(). The candidate
+    // heard nothing, the mic never came back and the spinner spun forever, with
+    // no message and no way out but a reload.
+    //
+    // `resume()` rejects routinely — the page lost the user gesture, or the tab
+    // was backgrounded mid-turn. This is not a rare race, and a turn is not
+    // recoverable from it by hand because the user is never told.
+    ensureAudioContext()
+        .then(() => audio.play())
+        .catch((e) => {
+            console.error("Audio playback could not start:", e);
+            // To the candidate these are the same event: no sound, and nothing
+            // on the page to say why. A context the browser will not run is the
+            // case the audio-blocked overlay exists for, and clicking it resumes
+            // -- so showing it is the difference between a recoverable turn and
+            // a dead one. A one-off play() refusal with the context running is
+            // not a block, and must not raise the overlay for nothing.
+            if (!audioContext || audioContext.state !== "running") {
+                reportAudioBlocked();
+            }
+            abandonCurrentChunk();
+        });
+}
+
+/**
+ * A chunk will not be heard. Release the player and let the turn move on.
+ *
+ * One function, because this bookkeeping is a latch rather than a tidy-up.
+ * `isAudioPlaying` left true makes every later chunk return at the guard in
+ * tryPlayNextChunk, so checkAllDone() never runs, and checkAllDone() is the
+ * only caller of startListening(): the mic never comes back and the turn never
+ * ends. Every path that finishes a chunk without audio -- `ended`, a decode
+ * `error`, a refused `play()`, and a context that could not be resumed -- must
+ * come through here, or any one of them can end the interview on its own.
+ *
+ * `nextChunkId++` is what moves the cursor past a chunk that will never be
+ * heard, so the queue does not stall on it either.
+ */
+function abandonCurrentChunk() {
+    nextChunkId++;
+    isAudioPlaying = false;
+    removeAudioIndicator();
+    tryPlayNextChunk();
+    checkAllDone();
+}
+
+/**
+ * Say that the audio is blocked, through the control that can unblock it.
+ *
+ * `audioBlocked` was written in two places and read in none, so the flag was a
+ * note to self that nothing could act on. It is read here, and cleared again
+ * by `resumeAudioContext` -- the overlay's own click handler -- which is what
+ * makes the flag a statement about the page rather than a comment about it.
+ *
+ * Showing the overlay is the whole point: a candidate told nothing has no way to
+ * recover except a reload, and the one recovery the platform offers is sitting
+ * right there in the markup.
+ */
+function reportAudioBlocked() {
+    audioBlocked = true;
+    if (audioOverlay) audioOverlay.classList.remove("hidden");
 }
 
 function checkAllDone() {

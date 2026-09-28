@@ -33,8 +33,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { loadWithGlobals, readAppJs } from "./harness.mjs";
+import { createDom, producedBy } from "./dom.mjs";
 
 const appJs = readAppJs();
+
+/** Drain the microtask queue so an awaited chain has fully settled. */
+const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 // ─── helpers ───────────────────────────────────────────────────────────────
 
@@ -612,19 +616,93 @@ test("the queue drain the narrator is told about is the one the client tracks", 
     );
 });
 
-test("the player's own ended handler is what clears the speaking state", () => {
-    // Anchored on the listener, not on the bare word: `readyState === "ended"`
-    // appears much earlier in the file and is a different thing entirely.
-    const listener = /addEventListener\(\s*"ended"/g;
-    listener.exec(appJs);
-    const start = listener.lastIndex;
-    assert.notEqual(start, 0, "the player must keep its ended handler");
-    const handler = appJs.slice(start, start + 400);
+test("the player's own ended handler is what clears the speaking state", async () => {
+    // This used to be a regex over 400 characters of app.js anchored on
+    // `addEventListener("ended"`, asserting that `isAudioPlaying = false` and
+    // `checkAllDone()` appeared nearby. It passed while the work lived in the
+    // listener and failed the moment the work moved into a named function it
+    // called — which is what a test that reads the source is: a test of the
+    // spelling, not of the behaviour. The claim underneath it is real and worth
+    // keeping, so it is made against the real player instead.
+    //
+    // A chunk is played, the narrator is told, and then the audio element fires
+    // `ended`. The turn must be declared over: the player idle, the narrator
+    // back on "listening", and the mic entitled to restart.
+    const env = createDom();
+    const { document } = env;
+    // A browser that can record, so startListening() takes its real path rather
+    // than reporting an unsupported codec.
+    env.recorder.fakes.FakeMediaRecorder.supported = ["audio/webm;codecs=opus"];
 
-    assert.match(handler, /isAudioPlaying = false/, "playback really finished");
-    assert.match(
-        handler,
-        /checkAllDone\(\)/,
-        "which is what lets the turn be declared over",
+    const candidate = document.createElement("div");
+    candidate.className = "message candidate";
+    const bubble = document.createElement("div");
+    bubble.className = "bubble";
+    candidate.appendChild(bubble);
+    document.getElementById("conversation").appendChild(candidate);
+
+    const fn = env.loadApp(
+        [
+            "ensureAudioContext",
+            "tryPlayNextChunk",
+            "checkAllDone",
+            "abandonCurrentChunk",
+            "addAudioIndicator",
+            "removeAudioIndicator",
+            "advancePastSkippedChunks",
+            "setStatus",
+            "setState",
+            "createTurnNarrator",
+            "startListening",
+            "startRecording",
+            "startVad",
+            "stopVad",
+            "chooseMimeType",
+        ],
+        {
+            audioContext: producedBy(() => new env.recorder.fakes.FakeAudioContext()),
+            currentCandidateDiv: candidate,
+            isInterviewActive: true,
+            allChunksReceived: true,
+            audioQueue: [{ id: 0, url: "/audio/chunk-0.mp3" }],
+            nextChunkId: 0,
+        },
     );
+
+    const narrator = fn.createTurnNarrator({
+        onStatus: (text, className) => fn.setStatus(text, className),
+    });
+    fn.state.turnNarrator = narrator;
+    narrator.complete();
+    narrator.speaking();
+
+    fn.tryPlayNextChunk();
+    await settle();
+
+    assert.equal(narrator.stage(), "speaking", "the chunk never started playing");
+    assert.equal(fn.state.isAudioPlaying, true, "the player is not busy");
+    assert.equal(env.audios.length, 1, "no Audio element was constructed");
+
+    // The real event, on the real element the shipped code created.
+    env.audios[0].finish();
+    await settle();
+
+    assert.equal(
+        fn.state.isAudioPlaying,
+        false,
+        "the ended handler did not release the player, so the queue stays latched",
+    );
+    assert.equal(
+        narrator.stage(),
+        "listening",
+        `the turn is still on "${narrator.stage()}" after the audio finished, so ` +
+            "the mic is never told to come back",
+    );
+    assert.equal(
+        fn.state.isRecording,
+        true,
+        "checkAllDone() ran but the mic did not come back, so the interview " +
+            "cannot continue even though the turn was declared over",
+    );
+    env.close();
 });
