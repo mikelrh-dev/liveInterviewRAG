@@ -134,7 +134,7 @@ sequenceDiagram
 | LLM | Google AI (Gemini) + OpenRouter | Google AI como principal (rápido, barato), OpenRouter como fallback con flexibilidad de modelo |
 | TTS | Edge TTS (`edge-tts`) | Sin API key que configurar, sin GPU, sin modelo local que desplegar. Es un servicio *en la nube* — el texto se envía a Microsoft — así que no hay síntesis offline |
 | Frontend | HTML/CSS/JS vanilla | Sin sobrecarga de framework, arranque más rápido en free tier |
-| Reverse proxy | Nginx | Estándar, bien documentado, maneja archivos estáticos + proxy WSGI |
+| Reverse proxy | Nginx | Estándar, bien documentado: sirve el frontend estático y hace proxy a la app ASGI |
 | Process manager | systemd | Auto-reinicio en fallo, logs en journal |
 | Hosting | Oracle Cloud Free Tier (ARM64) | $0/mes, 4 cores, 24 GB RAM — suficiente para carga de conversación única |
 | Workflow | OpenSpec + TDD estricto | Cada cambio pasa por spec → design → tasks → test-first → apply |
