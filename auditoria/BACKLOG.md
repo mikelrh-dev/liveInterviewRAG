@@ -1,6 +1,6 @@
 # Backlog de trabajo — InterviewTTS
 
-**Estado 2026-09-28:** **555 pytest + 2 xfailed, 90 node, 0 fallos.** (Sesión anterior cerró en 485 + 89.)
+**Estado 2026-09-28:** **559 pytest + 2 xfailed, 89 node, 0 fallos.**
 
 Regla del loop: **correcciones primero, mejoras después, visual al final.**
 En cada ciclo: spec → build → test → juez.
@@ -102,23 +102,28 @@ Ordenadas por impacto sobre lo que el reclutador percibe.
 
 ---
 
-## 5. Cambio de contrato pendiente de ratificar
+## 5. Cambio de contrato — RESUELTO
 
-`a26c900` introdujo el evento `turn_recorded` para que el contador recoja el turno de
-despedida. **Consecuencia: "el último evento es el terminal" ya no es cierto.**
+`a26c900` había introducido `turn_recorded` para contar el turno de despedida, con el
+argumento de que *"el goodbye no debe hacer cola detrás de un disco lento"*. **Ese
+argumento nunca se midió, y es falso.**
 
-El número llega *después* del evento terminal, porque el `n` confirmado es el valor
-de retorno de `record_turn` y en el momento de emitir `interview_end` solo existe la
-*predicción*. Las alternativas eran:
+| Operación | Mediana | p95 |
+|---|---|---|
+| `tts_service.synthesize()` del goodbye | **~1300 ms** | — |
+| `persistence.record_turn()` vía `to_thread` | **~5.8 ms** | ~8.9 ms |
 
-- meter el número en `interview_end` → imposible, es una predicción;
-- derivarlo del payload → igual;
-- escribir en disco *antes* de `interview_end` → retrasa la despedida, que es justo
-  lo que el diseño actual evita.
+La despedida **ya esperaba 1,3 s al TTS** antes de sonar. La escritura es el **0,4%**
+de un flujo que ya supera el segundo. El disco nunca fue el cuello de botella.
 
-Se eligió la única que no retrasa ni predice. Los dos tests que afirmaban
-`events[-1] == "interview_end"` se ajustaron a "el último *evento terminal*, y nada
-salvo `turn_recorded` después de la despedida" — siguen fallando ante un segundo
-terminal, un error post-despedida o un stream truncado.
+Y el evento posterior tenía un coste real: un cliente que cierra el stream al ver
+`interview_end` —que es lo lógico, si lo lee como terminal— **pierde `turn_recorded`**,
+y el contador vuelve a quedar corto. Es el mismo bug arreglado desde el otro lado.
 
-**Ratifica o rechazo pendiente.** El owner puede preferir el orden inverso.
+**Resuelto en `1c99ec0`:** la escritura va **antes** de `interview_end`, el número
+confirmado viaja en el propio `interview_end`, y `turn_recorded` desaparece.
+*"El último evento es terminal"* vuelve a ser cierto sin excepciones, y los cinco
+asserts que `a26c900` tuvo que debilitar están restaurados en su forma original.
+
+**Coste real:** 5,8 ms. **Beneficio:** contrato intacto, un solo camino de código para
+ambos eventos terminales, y desaparece un evento que el cliente podía no recibir.
