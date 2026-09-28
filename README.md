@@ -241,11 +241,27 @@ cp .env.example .env
 ### Running
 
 ```bash
-uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
+uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000
 
 # Open in browser
 # http://localhost:8000
 ```
+
+**The bind address is a command-line argument, and deliberately not an
+environment variable.** `backend/config.py` does not read it (see the comment at
+`backend/config.py:111-129`) and `.env.example` declares no `HOST` key: a
+`HOST=0.0.0.0` line used to sit there as a silent no-op, so an operator reading
+the example could believe they had configured an exposure the process never had.
+To change the bind, change the command line.
+
+Bind `127.0.0.1`, which is what the deployed service does
+(`deployment/interviewtts.service:24`). The API should only be reachable through
+the local reverse proxy: nginx terminates TLS, adds the security headers, and is
+where the per-IP rate limit is applied. Binding `0.0.0.0` exposes the API
+directly and skips all three. To reach the API from another machine while
+developing, use an SSH tunnel instead of opening the bind. See
+[RUNBOOK.md](RUNBOOK.md) for the `--proxy-headers` flags required when another
+proxy sits in front.
 
 ---
 
