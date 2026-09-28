@@ -29,8 +29,20 @@ That is a deployment invariant, not a preference. It holds only while
 ``--proxy-headers`` and a loopback-restricted ``--forwarded-allow-ips`` are both
 present (see ``deployment/interviewtts.service``). Without ``--proxy-headers``
 every visitor shares the proxy's bucket again; without the allowlist anyone can
-forge their own source address. The health check below is what makes that
-silent failure visible instead of merely theoretical.
+forge their own source address.
+
+There is deliberately NO runtime check for it here, and the reason is worth
+stating rather than leaving to be discovered. A check existed --
+``proxy_headers_configured()``, reading uvicorn's own middleware configuration --
+and no production code ever called it. Its docstring claimed it "makes that
+silent failure visible", which was false by construction: a check nothing
+invokes makes nothing visible. It was removed rather than kept, because a
+helper whose whole value is being run somewhere is a promise the code does not
+keep.
+
+The invariant is enforced where it is actually decided: the systemd unit's
+command line. A check in the application can only ever report the flags uvicorn
+already has, so it cannot fail in any way the unit file could not.
 """
 
 from fastapi import Request
@@ -44,18 +56,3 @@ def resolve_client_ip(request: Request) -> str:
     a trusted proxy. The raw header is deliberately never read here.
     """
     return request.client.host if request.client else "unknown"
-
-
-def proxy_headers_configured() -> bool:
-    """True when uvicorn was started with proxy-headers and a trusted-peer list.
-
-    This reads uvicorn's own middleware configuration rather than re-deriving it,
-    so it stays correct whatever the command line says.
-    """
-    from uvicorn.middleware import proxy_headers
-
-    middleware = proxy_headers.ProxyHeadersMiddleware
-    return bool(
-        getattr(middleware, "_always_trust", None)
-        or getattr(middleware, "_trusted_hosts", None)
-    )

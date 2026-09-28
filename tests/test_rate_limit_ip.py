@@ -17,9 +17,10 @@ infrastructure. Both are regression nets for that exact defect.
 """
 
 import pytest
+from pathlib import Path
 from starlette.requests import Request
 
-from backend.client_ip import proxy_headers_configured, resolve_client_ip
+from backend.client_ip import resolve_client_ip
 from backend.main import _rate_limit_store
 
 # Real global addresses (is_global=True), chosen because Python's ipaddress
@@ -142,24 +143,164 @@ class TestRateLimiterIsolation:
 
         assert list(_rate_limit_store) == []  # nothing written by a bare call
 
+    @staticmethod
+    def _client_with_limiter(max_requests: int):
+        """A real app with the real middleware and a route the limiter protects."""
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        from backend.middleware import RateLimitMiddleware
+
+        app = FastAPI()
+        app.add_middleware(RateLimitMiddleware, max_requests=max_requests)
+
+        @app.get("/api/health")
+        def health():
+            return {"ok": True}
+
+        return TestClient(app), resolve_client_ip(
+            make_request(PRIVATE_CLIENT)
+        )
+
     def test_resolved_peer_is_the_key_written_to_the_store(self):
-        """Sanity on the store's key space: it only ever holds resolved peers."""
-        assert _rate_limit_store == {}
+        """The store's key space, observed through the middleware that fills it.
+
+        The previous version of this test asserted ``_rate_limit_store == {}``
+        after doing nothing, which is a tautology: it passes while the limiter
+        buckets on ``X-Forwarded-For`` and while it does not key on anything at
+        all. So the middleware is driven for real here and the store is read
+        afterwards.
+        """
+        client, _ = self._client_with_limiter(max_requests=100)
+
+        for value in ("9.9.9.1", "9.9.9.2", "9.9.9.3"):
+            response = client.get(
+                "/api/health",
+                headers={"X-Forwarded-For": f"{value}, {PRIVATE_CLIENT}"},
+            )
+            assert response.status_code == 200, (
+                f"the request was rejected before the key could be observed: "
+                f"{response.status_code} {response.text}"
+            )
+
+        assert len(_rate_limit_store) == 1, (
+            f"three clients' worth of forged headers produced "
+            f"{len(_rate_limit_store)} buckets: {sorted(_rate_limit_store)}"
+        )
+        (only_key,) = _rate_limit_store
+        assert not any(part.startswith("9.9.9.") for part in only_key), (
+            f"a forged header value became the bucket key: {only_key!r}"
+        )
+        assert len(_rate_limit_store[only_key]) == 3, (
+            "three requests from one client must share one bucket, not three: "
+            f"{_rate_limit_store}"
+        )
+
+    def test_a_client_that_forges_headers_cannot_buy_itself_headroom(self):
+        """The limiter's own limit, exercised end to end.
+
+        Ten forged header values must not be ten buckets. If any code path
+        keyed on the header, the eleventh request would be served -- and the
+        bypass, not the keying, is what matters.
+        """
+        client, _ = self._client_with_limiter(max_requests=10)
+
+        statuses = [
+            client.get(
+                "/api/health",
+                headers={"X-Forwarded-For": f"9.9.9.{index}, {PRIVATE_CLIENT}"},
+            ).status_code
+            for index in range(12)
+        ]
+
+        assert statuses[:10] == [200] * 10, (
+            f"the first ten requests were not all served: {statuses}"
+        )
+        assert statuses[10:] == [429, 429], (
+            "forging a new header per request bought more than the configured "
+            f"limit of 10: {statuses}"
+        )
+        assert len(_rate_limit_store) == 1, (
+            f"the forged values became separate buckets: {sorted(_rate_limit_store)}"
+        )
 
 
 class TestDeploymentInvariant:
-    """The trust decision belongs to uvicorn, and must actually be configured."""
+    """The trust decision belongs to uvicorn's command line, not to this app.
 
-    def test_helper_exists_and_returns_bool(self):
+    There is no runtime check here and that is the decision, not an omission.
+    ``proxy_headers_configured()`` existed and no production code ever called
+    it, while its docstring claimed it "makes that silent failure visible" --
+    a check nothing invokes makes nothing visible. Two tests here used to stand
+    in for it:
+
         assert isinstance(proxy_headers_configured(), bool)
+        assert "uvicorn" in proxy_headers_configured.__doc__
 
-    def test_does_not_depend_on_this_modules_opinion(self):
-        """The helper reads uvicorn's config, not a re-derived guess.
+    The first passes for ``return True``. The second asserts that a string
+    contains a word, which is the one thing a test cannot do about the claim it
+    names. Between them they gave the appearance of coverage over a function
+    that was never wired to anything.
 
-        It is a visibility check for the deployment invariant, not the
-        enforcement: enforcement is `--forwarded-allow-ips` in the unit file.
+    So the invariant is pinned where it can actually be observed: the unit file
+    that sets the flags. Everything the resolver does with the result is pinned
+    above, behaviourally.
+    """
+
+    UNIT_FILE = Path(__file__).resolve().parents[1] / "deployment" / "interviewtts.service"
+
+    def test_the_unit_file_still_configures_proxy_headers_and_its_allowlist(self):
+        unit = self.UNIT_FILE.read_text(encoding="utf-8")
+        assert "--proxy-headers" in unit, (
+            "the deployment no longer sets --proxy-headers, so every visitor "
+            "behind the reverse proxy shares one rate-limit bucket again"
+        )
+        assert "--forwarded-allow-ips" in unit, (
+            "the deployment no longer restricts --forwarded-allow-ips, so any "
+            "client can forge its own source address"
+        )
+
+    def test_the_allowlist_is_not_a_wildcard(self):
+        """``--forwarded-allow-ips '*'`` would make the header forgeable.
+
+        This is the whole reason the resolver refuses to parse the header: if
+        every peer is trusted, a client's own entry is taken at face value. A
+        missing flag or a wildcard here is the exact configuration that turns
+        the rule above into a suggestion.
+        """
+        unit = self.UNIT_FILE.read_text(encoding="utf-8")
+        allowlist = [
+            line for line in unit.splitlines()
+            if "--forwarded-allow-ips" in line
+        ]
+        assert allowlist, "no --forwarded-allow-ips line to check"
+        for line in allowlist:
+            value = line.split("--forwarded-allow-ips", 1)[1].strip().strip("'\"")
+            assert value not in ("*", ""), (
+                f"--forwarded-allow-ips is set to {value!r}; the forwarded "
+                "chain is then attacker-controlled"
+            )
+
+    def test_the_backend_exposes_no_proxy_headers_health_check(self):
+        """Pin the removal, so it cannot come back unwired and unclaimed.
+
+        An interface assertion rather than a grep: the name must not be
+        reachable, which is the property that matters. Whether any file happens
+        to spell it inside a comment is not the contract, and asserting that
+        would be the same mistake the tests it replaces made.
         """
         from backend import client_ip
 
-        source = client_ip.proxy_headers_configured.__doc__ or ""
-        assert "uvicorn" in source
+        assert not hasattr(client_ip, "proxy_headers_configured"), (
+            "proxy_headers_configured is exported again. If it is meant to be "
+            "a health check, wire it into the lifespan in backend/main.py -- a "
+            "helper nothing calls is not a health check, it is a comment."
+        )
+        assert sorted(
+            name for name in vars(client_ip) if not name.startswith("_")
+        ) == ["Request", "resolve_client_ip"], (
+            "client_ip exports something else now; every public name in this "
+            "module is a rule the rate limiter's safety rests on, and each one "
+            "has to earn its place: "
+            f"{sorted(vars(client_ip))}"
+        )
