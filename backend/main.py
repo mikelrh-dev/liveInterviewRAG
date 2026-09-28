@@ -98,12 +98,29 @@ tts_service = TTSService(
 )
 
 # CHUNK_SIZE=400 / CHUNK_OVERLAP=50 are unreachable with the current corpus, so
-# RAGPipeline._chunk_document never takes its splitting branch. Measured over
-# the 38 candidate/wiki documents the pipeline actually ingests: 214 chunks,
-# median 31 words, p95 107, longest 210, and ZERO chunks reach 400 words. The
-# distribution is also bottom-heavy -- 37.4% are under 15 words -- so the
-# settings that would matter are the opposite end: a ceiling that actually bites
-# would need to be far lower, and the overlap only matters once it does.
+# RAGPipeline._chunk_document never takes its splitting branch.
+#
+# Measured on the 37 wiki pages CandidateProfile loads, chunked by
+# _chunk_document at 400/50: 125 chunks, median 54 words, p95 131, longest 266,
+# and ZERO chunks reach 400 words. The distribution is NOT bottom-heavy -- 0.8%
+# are under 15 words, and 14.4% are under 30 -- so the previous version of this
+# comment, which claimed 37.4% under 15 and concluded that a ceiling which
+# actually bites "would need to be far lower", had the shape of the corpus
+# backwards. The conclusion that survives is the one above, and it survives for
+# the opposite reason: not because the chunks cluster at the short end, but
+# because the longest is 266 words, 134 short of the ceiling.
+# CHUNK_OVERLAP is inert for the same reason.
+#
+# The corpus is wiki/, which .gitignore excludes and which is therefore absent
+# from a clean clone -- a reader elsewhere cannot reproduce these figures and
+# should not be left to assume they are universal.
+# tests/test_chunk_size_comment.py re-derives every number above and fails when
+# the prose and the measurement disagree; it skips where wiki/ is absent, for
+# the same reason. Whether 400 is the RIGHT size rather than merely an inert one
+# is a separate question, answered by measurement in
+# tests/test_rag_chunk_size_sweep.py -- whose own figures are fixture-derived,
+# because a clean clone has no real corpus to sweep.
+#
 # Left as-is because rag.py is out of scope for this change; the constants are
 # consumed here, so this is the place the measurement belongs until then.
 rag_pipeline = RAGPipeline(
