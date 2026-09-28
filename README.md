@@ -208,17 +208,25 @@ Beyond the tech, this project also taught me to make product decisions under con
 ### Installation
 
 ```bash
-git clone <repo-url>
-cd InterviewTTS
+git clone https://github.com/mikelrh-dev/liveInterviewRAG.git
+cd liveInterviewRAG
 
 python -m venv venv
 source venv/bin/activate  # Linux/Mac
 # or
 venv\Scripts\activate  # Windows
 
-pip install -r backend/requirements.txt
-pip install pytest pytest-asyncio httpx  # for development
+# Runtime dependencies AND the test runner in one step, from the project
+# manifest. This is what CI does (tests.yml:174); `pip install -r
+# backend/requirements.txt` alone gets you the runtime but not pytest, and
+# `pyproject.toml` declares the two manifests as one contract that a test
+# (tests/test_packaging.py::TestManifestsDoNotDrift) keeps them from drifting.
+pip install -e ".[dev]"
 ```
+
+The clone directory is named after the repository (`liveInterviewRAG`), not after
+this file. Any name works: the configuration anchors `BASE_DIR` to the parent of
+the `backend` package, not to a fixed directory name.
 
 ### Configuration
 
