@@ -41,7 +41,7 @@ No es una demo. Es un sistema desplegable con tradeoffs reales, restricciones re
 - **Speech-to-Text** — [Faster Whisper](https://github.com/SYSTRAN/faster-whisper) ejecutándose en CPU con cuantización int8, tamaño de modelo configurable (por defecto `small`)
 - **Pipeline RAG** — Recupera contexto relevante del wiki del candidato (8 tipos de documento: perfil, proyectos, experiencia, habilidades, historias, opiniones, decisiones, FAQ) y lo alimenta al LLM
 - **Generación LLM** — Google AI como proveedor principal, [OpenRouter](https://openrouter.ai/) como fallback. El system prompt posiciona al modelo como el candidato
-- **Salida de voz** — [Pocket TTS](https://github.com/rhasspy/piper) para síntesis natural en español (local, rápido), con [Edge TTS](https://github.com/rany2/edge-tts) como fallback
+- **Salida de voz** — [Edge TTS](https://github.com/rany2/edge-tts) (Microsoft) sintetiza cada respuesta. Es el único motor: no hay Piper, no hay síntesis local ni cadena de fallback (ver `backend/services/tts.py`). La voz es `TTS_VOICE` — por defecto `es-ES-AlvaroNeural`, declarada en `.env.example:36`, leída en `backend/config.py:65` y aplicada en `backend/main.py:95`
 - **Avatar reactivo al audio** — Avatar 3D con crossfade entre estados neutral y hablando, sincronizado con la reproducción de audio
 - **Gestión de sesiones** — Conversaciones multi-turno con limpieza basada en TTL
 - **Rate limiting** — 10 solicitudes por minuto por IP para prevenir abuso
@@ -70,7 +70,7 @@ flowchart LR
         STT[🎙️ Faster Whisper<br/>CPU int8]
         RAG[📚 RAG<br/>sentence-transformers<br/>+ cosine similarity]
         LLM[🧠 LLM<br/>Google AI → OpenRouter]
-        TTS[🔉 Pocket TTS<br/>Local, rápido]
+        TTS[🔉 Edge TTS<br/>Microsoft, gratuito]
     end
 
     Docs[("📄 Wiki del Candidato<br/>perfil, proyectos,<br/>historias, habilidades...")]
@@ -105,7 +105,7 @@ sequenceDiagram
     participant STT as Whisper STT
     participant RAG as Pipeline RAG
     participant LLM as LLM
-    participant TTS as Pocket TTS
+    participant TTS as Edge TTS
 
     U->>B: 🎤 Habla (audio capturado)
     B->>API: POST /api/conversation/{id}/message/stream (webm)
@@ -132,7 +132,7 @@ sequenceDiagram
 | STT | faster-whisper (CTranslate2) | CTranslate2 es mucho más rápido que Whisper vanilla en CPU, cuantización int8 mantiene RAM en ~1.4 GB |
 | Embeddings | sentence-transformers (all-MiniLM-L6-v2) | Modelo pequeño, corre en CPU, suficiente para búsqueda semántica sobre documentos |
 | LLM | Google AI (Gemini) + OpenRouter | Google AI como principal (rápido, barato), OpenRouter como fallback con flexibilidad de modelo |
-| TTS | Pocket TTS (Piper) + Edge TTS | Local, rápido, sin API key; Edge como fallback para fiabilidad |
+| TTS | Edge TTS (`edge-tts`) | Sin API key que configurar, sin GPU, sin modelo local que desplegar. Es un servicio *en la nube* — el texto se envía a Microsoft — así que no hay síntesis offline |
 | Frontend | HTML/CSS/JS vanilla | Sin sobrecarga de framework, arranque más rápido en free tier |
 | Reverse proxy | Nginx | Estándar, bien documentado, maneja archivos estáticos + proxy WSGI |
 | Process manager | systemd | Auto-reinicio en fallo, logs en journal |
@@ -147,7 +147,7 @@ sequenceDiagram
 Este proyecto corre en un VPS gratuito sin GPU, así que cada decisión es un tradeoff. Los documento explícitamente porque muestran cómo pienso bajo restricciones:
 
 - **Tamaño del modelo STT** — Whisper `small` es el punto dulce para precisión en español en CPU. `tiny` es más rápido pero falla con palabras técnicas. `medium` es demasiado lento. El valor por defecto ahora es `small`, verificado por tests.
-- **Voz TTS** — Edge TTS es gratuito y corre local, pero las voces son genéricas de Microsoft, no un clon mío. Modelos de clonación como Piper o ElevenLabs dan mejor calidad, pero necesitan GPU o cuestan dinero. Edge TTS con streaming y caché es el mejor balance.
+- **Voz TTS** — Edge TTS no necesita key ni GPU, pero es un servicio *en la nube*: el texto sale del VPS y lo sintetiza Microsoft. Las voces son genéricas de Microsoft, no un clon mío. Los modelos de clonación como Piper o ElevenLabs dan mejor calidad, pero necesitan GPU o cuestan dinero. Edge TTS con streaming y caché es el mejor balance.
 - **Proveedor LLM** — Google AI (Gemini Flash Lite) es rápido y barato pero con rate limiting. OpenRouter es el fallback cuando el principal no está disponible.
 - **Recursos del VPS** — 4 cores y 24 GB RAM compartidos con el sistema. Solo Whisper consume ~1.4 GB, así que no hay margen para un modelo de voz pesado. La arquitectura es de conversación única a la vez.
 - **Sin GPU** — Toda la inferencia de ML es CPU-bound. El presupuesto de 8 segundos para el pipeline es ajustado en CPU; el endpoint de streaming es lo que hace que la UX se sienta responsiva.
