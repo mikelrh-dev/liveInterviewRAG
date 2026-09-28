@@ -120,6 +120,7 @@ export function baseState(overrides = {}) {
         turnAbortController: null,
         turnAborted: false,
         sessionStartTime: null,
+        sessionTimerId: null,
         vuBarsCache: null,
         ...overrides,
     };
@@ -255,14 +256,90 @@ function installAudioFakes(window, recorder) {
 }
 
 /**
+ * A controllable clock, for the code that measures or schedules.
+ *
+ * Real timers cannot answer "how many writers are still running", and that is
+ * the whole question for anything that leaks an interval: two registrations
+ * produce two identical DOM writes a second, which is invisible because the
+ * text is the same either way. So the count of live intervals is made
+ * observable, and firing a second invokes each live callback once, which is
+ * what lets a test count the writes rather than guess at them.
+ *
+ * `Date.now()` is virtualised too, so a timer that renders elapsed time can be
+ * advanced deliberately instead of by waiting.
+ */
+function installClock(window) {
+    let now = 1_700_000_000_000;
+    let nextId = 1;
+    /** @type {Map<number, {at:number, every:number|null, fn:Function, args:any[]}>} */
+    const timers = new Map();
+
+    const RealDate = window.Date;
+    class FakeDate extends RealDate {
+        constructor(...args) {
+            if (args.length === 0) super(now);
+            else super(...args);
+        }
+        static now() {
+            return now;
+        }
+    }
+
+    window.setInterval = (fn, ms = 0, ...args) => {
+        const id = nextId++;
+        timers.set(id, { at: now + ms, every: ms, fn, args });
+        return id;
+    };
+    window.setTimeout = (fn, ms = 0, ...args) => {
+        const id = nextId++;
+        timers.set(id, { at: now + ms, every: null, fn, args });
+        return id;
+    };
+    window.clearInterval = (id) => timers.delete(id);
+    window.clearTimeout = (id) => timers.delete(id);
+    window.Date = FakeDate;
+
+    return {
+        /** How many intervals are still registered. */
+        get intervals() {
+            let n = 0;
+            for (const t of timers.values()) if (t.every !== null) n++;
+            return n;
+        },
+        /** How many one-shot timeouts are still pending. */
+        get timeouts() {
+            let n = 0;
+            for (const t of timers.values()) if (t.every === null) n++;
+            return n;
+        },
+        /** Move virtual time forward and fire everything now due. */
+        tick(ms) {
+            now += ms;
+            const due = [...timers.entries()]
+                .filter(([, t]) => t.at <= now)
+                .sort((a, b) => a[1].at - b[1].at);
+            for (const [id, t] of due) {
+                t.at = now + (t.every ?? 0);
+                t.fn(...t.args);
+            }
+        },
+        /** Set the virtual wall clock without firing anything. */
+        setTime(ms) {
+            now = ms;
+        },
+    };
+}
+
+/**
  * Build a window with the real markup and the APIs jsdom omits.
  *
  * @param {object} [options]
- * @param {string} [options.html]        markup to parse (defaults to the shipped index.html)
- * @param {boolean} [options.visual]     enable requestAnimationFrame (default true)
+ * @param {string}  [options.html]   markup to parse (defaults to the shipped index.html)
+ * @param {boolean} [options.visual] enable requestAnimationFrame (default true)
+ * @param {boolean} [options.clock]  replace the timers and Date with a controllable clock
  */
 export function createDom(options = {}) {
-    const { html = readIndexHtml(), visual = true } = options;
+    const { html = readIndexHtml(), visual = true, clock = false } = options;
     /** Anything jsdom reported as an error, for a test to assert on or read. */
     const envErrors = [];
 
@@ -402,6 +479,8 @@ export function createDom(options = {}) {
         dom,
         window,
         document,
+        /** Present only when `clock: true`; undefined otherwise. */
+        clock: clock ? installClock(window) : undefined,
         media,
         audios,
         fetches: calls,

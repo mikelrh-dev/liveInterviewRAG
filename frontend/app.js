@@ -117,6 +117,9 @@ const typingIntervals = [];
 // ─── Sidebar data population ─────────────────────────────
 
 let sessionStartTime = null;
+// The session timer's interval. Kept so re-arming replaces the writer instead
+// of adding to it, and so there is exactly one of them at a time.
+let sessionTimerId = null;
 
 function setText(id, text) {
     const el = document.getElementById(id);
@@ -392,12 +395,26 @@ async function populateStaticSidebar() {
 /**
  * Live session timer. Starts at 00:00, ticks every second.
  * Resets whenever a new conversation is created.
+ *
+ * The handle is kept, and any previous writer is cleared before a new one is
+ * armed. It used to be discarded, which made every call another permanent 1 Hz
+ * writer: this runs on load and again from both END handlers, which each do
+ * `sessionStartTime = null; startSessionTimer()` to reset the display. So every
+ * END click left one more formatting the same string into the same element once
+ * a second for the rest of the session -- eleven writers after ten interviews,
+ * none of them stoppable.
+ *
+ * The leak is invisible in the UI precisely because the writers agree: they
+ * compute the same value and write the same text. That is what let it survive a
+ * suite that was green on every commit.
  */
 function startSessionTimer() {
     const el = document.getElementById("sidebar-timer");
     if (!el) return;
     if (!sessionStartTime) sessionStartTime = Date.now();
-    setInterval(() => {
+    // Replace, never accumulate. This is the whole fix.
+    if (sessionTimerId !== null) clearInterval(sessionTimerId);
+    sessionTimerId = setInterval(() => {
         const s = Math.floor((Date.now() - sessionStartTime) / 1000);
         const mm = String(Math.floor(s / 60)).padStart(2, "0");
         const ss = String(s % 60).padStart(2, "0");
