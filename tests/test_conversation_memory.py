@@ -480,133 +480,349 @@ class TestStoreIsConfigured:
 
 # ─── periodic_cleanup eviction + rate-limit pruning ─────
 
+#: Sentinel TTL handed to the sweep. Deliberately different from the ambient
+#: ``SESSION_TTL_HOURS`` so that patching it is not a no-op, and so the two
+#: conversations below sit on *opposite* sides of it.
+SWEEP_TTL_HOURS = 6
+
+#: How far the patched clock is moved, in seconds. An hour dwarfs the 60s
+#: window ``periodic_cleanup`` prunes the rate-limit store with, so the
+#: rate-limit outcomes depend on the patched clock rather than on how long the
+#: test took to run. One test shifts it forwards and one backwards, because a
+#: shift that only ever prunes proves nothing about the keep path.
+CLOCK_SHIFT_SECONDS = 3600
+
+
+class SweepRun:
+    """One ``periodic_cleanup`` tick, and the record of what it asked for.
+
+    Every field exists to answer "was the patch actually consulted?", which a
+    green assertion otherwise cannot tell you. A patch that is renamed but
+    stops intercepting is the same defect with a new name: the test still
+    passes, and it is passing for the wrong reason.
+    """
+
+    def __init__(self, services, sleeps, clock_calls, ttl_seen):
+        self.services = services
+        self.sleeps = sleeps
+        self.clock_calls = clock_calls
+        self.ttl_seen = ttl_seen
+
+    def assert_hermetic(self):
+        """Every real target the sweep can reach was replaced by a double.
+
+        Replacement, not per-tick reach: a sweep that grew a new call site
+        would still be isolated, because the isolation is a property of what
+        the container hands out rather than of how many times each double was
+        called. The four stubs that run on *every* tick are also asserted as
+        consulted, which is what proves the tick really executed the code under
+        test instead of short-circuiting past it.
+        """
+        from backend import container
+
+        assert container.report_service() is self.services.report
+        assert container.persistence() is self.services.store
+        assert container.semantic_cache() is self.services.cache
+        self.services.report.cleanup_expired.assert_called()
+        self.services.cache.sweep_expired.assert_called()
+        self.services.store.prune_reports.assert_called()
+        self.services.store.prune_conversations.assert_called()
+
+    def assert_sleep_was_intercepted(self, interval_seconds):
+        """The sweep awaited the patched ``asyncio.sleep``, with these delays.
+
+        The initial delay is a literal in the function and the second one is
+        its argument, so a record of both proves the patched module is the one
+        under test. Had the patch stopped intercepting, the real sleep would
+        have blocked here instead and the test would hang rather than lie --
+        but a passing assertion on the recorded delays settles it either way.
+        """
+        assert self.sleeps == [30, interval_seconds], (
+            f"the sweep slept {self.sleeps}, expected the patched sleep to be "
+            f"awaited with the initial 30s delay and then the interval"
+        )
+
+    def assert_clock_was_intercepted(self):
+        assert self.clock_calls, (
+            "time.time() was never called through the patched clock, so the "
+            "patch is not intercepting anything"
+        )
+
+    def assert_ttl_reached_the_store(self):
+        assert self.ttl_seen == [SWEEP_TTL_HOURS], (
+            f"prune_conversations was asked about {self.ttl_seen}, not the "
+            f"patched TTL {SWEEP_TTL_HOURS}: the config patch is not reaching "
+            f"the sweep"
+        )
+
+
+@pytest.fixture
+def sweep(monkeypatch):
+    """Run the real ``periodic_cleanup`` against hermetic targets.
+
+    The function is not stubbed -- these tests are about what it does. What
+    *is* stubbed is everything it does it to, because the real targets are the
+    production-shaped ones: this sweep reached into the real ``audio/``
+    directory and deleted real rows from ``data/interviewtts.db``. Measured,
+    not assumed: a seeded 400-day-old conversation was gone after one run of
+    these four tests.
+
+    The database is protected by the persistence double and by nothing else.
+    Redirecting ``config.DB_PATH`` would be theatre -- ``PersistenceService``
+    captured its path when it was built, so patching the config attribute
+    afterwards changes nothing that the service reads.
+    """
+    import asyncio
+    import time
+    from datetime import datetime
+    from unittest.mock import MagicMock
+
+    from backend import container
+    from backend.config import config
+    from backend.conversation import _rate_limit_store
+    from backend.maintenance import periodic_cleanup
+
+    # ── Isolation: the four services the sweep reaches ─────────────
+    services = MagicMock()
+    services.report.generate.return_value = None  # no report file is written
+    services.report.cleanup_expired.return_value = 0
+    services.cache.sweep_expired.return_value = 0
+    services.store.prune_reports.return_value = 0
+
+    ttl_seen = []
+    services.store.prune_conversations.side_effect = lambda ttl: (
+        ttl_seen.append(ttl) or 0
+    )
+
+    # Read before the patch: this is the value the sweep would have used, and
+    # comparing it to the sentinel is what proves the patch is not a no-op.
+    ambient_ttl = config.SESSION_TTL_HOURS
+    monkeypatch.setattr(
+        "backend.maintenance.config.SESSION_TTL_HOURS",
+        SWEEP_TTL_HOURS,
+    )
+
+    monkeypatch.setattr(container, "report_service", lambda: services.report)
+    monkeypatch.setattr(container, "persistence", lambda: services.store)
+    monkeypatch.setattr(container, "semantic_cache", lambda: services.cache)
+    # The sweep calls `container.cleanup_stale_audio()()`, i.e. it resolves a
+    # factory and then calls what the factory returned. That is the indirection
+    # that keeps the real audio directory out of the test's reach.
+    audio_sweep = MagicMock(name="cleanup_stale_audio")
+    monkeypatch.setattr(container, "cleanup_stale_audio", lambda: audio_sweep)
+
+    # ── Interception: the three patches, made observable ────────────
+    sleeps = []
+    clock_calls = []
+    clock_offset = {"seconds": 0}
+
+    # Captured here, not looked up at call time: the patch replaces the
+    # attribute on the shared ``time`` module, so a fake that called
+    # ``time.time()`` would be calling itself.
+    real_time = time.time
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+        if len(sleeps) >= 2:
+            # The interval sleep is the end of the tick; cancelling there is
+            # how one pass of the loop is expressed without a real timer.
+            raise asyncio.CancelledError()
+
+    def fake_time():
+        clock_calls.append(1)
+        return real_time() + clock_offset["seconds"]
+
+    monkeypatch.setattr(
+        "backend.maintenance.asyncio.sleep", fake_sleep, raising=True
+    )
+
+    run = SweepRun(services, sleeps, clock_calls, ttl_seen)
+
+    async def tick(*, interval_seconds=4242, clock_offset_seconds=0):
+        """One tick. ``interval_seconds`` and the clock offset are distinctive
+        on purpose: the assertions read them back, so a patch that stopped
+        intercepting cannot pass by accident."""
+        clock_offset["seconds"] = clock_offset_seconds
+        with monkeypatch.context() as patcher:
+            patcher.setattr("backend.maintenance.time.time", fake_time)
+            with pytest.raises(asyncio.CancelledError):
+                await periodic_cleanup(interval_seconds=interval_seconds)
+        return run
+
+    run.tick = tick
+    run.ambient_ttl = ambient_ttl
+    # Exposed so the tests can seed the rate-limit store the sweep prunes.
+    # The seeds must come from the epoch clock the sweep prunes against, not
+    # from `datetime.utcnow().timestamp()`: that one reads a naive UTC value as
+    # local time, so it is silently offset by the machine's UTC offset and the
+    # 60s window stops meaning anything.
+    run.rate_limits = _rate_limit_store
+    run.real_time = real_time
+    run.now = datetime.utcnow
+    run.services_stub = services
+    run.audio_sweep = audio_sweep
+    return run
+
 
 @pytest.mark.asyncio
-async def test_conversation_eviction():
-    """Conversation with stale last_activity_at is evicted by periodic_cleanup."""
-    import asyncio
-    from datetime import datetime, timedelta
-    from unittest.mock import patch
-    from backend.main import periodic_cleanup
+async def test_conversation_eviction(sweep):
+    """A conversation older than the *patched* TTL is evicted by the sweep.
+
+    Twenty-four hours is past the patched six-hour TTL, and the eviction
+    reaches the store: the report is written for the doomed conversation first
+    and the rows are evicted after, which is the ordering the maintenance
+    module calls load-bearing and the reason both have to be doubles.
+    ``assert_ttl_reached_the_store`` is the direct proof that the patched TTL
+    was the one consulted.
+    """
+    from datetime import timedelta
+
+    from backend.main import conversations
 
     conv_id = "test-evict-1"
     conversations[conv_id] = {
         "id": conv_id,
-        "last_activity_at": (datetime.utcnow() - timedelta(hours=3)).isoformat(),
+        "last_activity_at": (sweep.now() - timedelta(hours=24)).isoformat(),
         "messages": [],
         "turns": [],
         "summary": "",
         "created_at": "",
     }
 
-    sleep_count = [0]
+    assert sweep.ambient_ttl != SWEEP_TTL_HOURS, (
+        f"the sentinel TTL ({SWEEP_TTL_HOURS}h) equals the ambient "
+        f"SESSION_TTL_HOURS, so patching it is a no-op and this test would "
+        f"pass without proving the patch intercepts"
+    )
 
-    async def mock_sleep(seconds):
-        sleep_count[0] += 1
-        if sleep_count[0] >= 2:  # Let initial 30s pass, cancel at interval sleep
-            raise asyncio.CancelledError()
+    await sweep.tick()
 
-    with patch("backend.main.asyncio.sleep", mock_sleep), \
-         patch("backend.main.config.SESSION_TTL_HOURS", 2):
-        try:
-            await periodic_cleanup(interval_seconds=999)
-        except asyncio.CancelledError:
-            pass
-
-    assert conv_id not in conversations
+    assert conv_id not in conversations, (
+        f"a conversation 24h old is past a {SWEEP_TTL_HOURS}h TTL and must "
+        f"be evicted; it survived"
+    )
+    # Eviction reaches the store, and the report is written for the doomed
+    # conversation first -- the ordering the module docstring calls load-bearing,
+    # and the reason both of these have to be doubles.
+    assert sweep.services.report.generate.call_args[0][0] == conv_id
+    sweep.services.store.evict_conversation.assert_called_once_with(conv_id)
+    sweep.assert_sleep_was_intercepted(4242)
+    sweep.assert_ttl_reached_the_store()
+    sweep.assert_hermetic()
 
 
 @pytest.mark.asyncio
-async def test_recent_conversation_not_evicted():
-    """Active conversation with recent last_activity_at is NOT evicted."""
-    import asyncio
-    from datetime import datetime, timedelta
-    from unittest.mock import patch
-    from backend.main import periodic_cleanup
+async def test_recent_conversation_not_evicted(sweep):
+    """A conversation inside the *patched* TTL survives the sweep.
+
+    "Recent" means recent with respect to the configured TTL, which is the
+    question the sweep actually asks -- and here the two disagree: three hours
+    is stale against the ambient default and current against the patched one.
+    So this test passes only while the config patch is intercepting, and fails
+    by evicting if it ever stops.
+    """
+    from datetime import timedelta
+
+    from backend.main import conversations
 
     conv_id = "test-keep-1"
     conversations[conv_id] = {
         "id": conv_id,
-        "last_activity_at": datetime.utcnow().isoformat(),
+        "last_activity_at": (sweep.now() - timedelta(hours=3)).isoformat(),
         "messages": [],
         "turns": [],
         "summary": "",
         "created_at": "",
     }
+    assert sweep.ambient_ttl != SWEEP_TTL_HOURS, (
+        f"the sentinel TTL ({SWEEP_TTL_HOURS}h) equals the ambient "
+        f"SESSION_TTL_HOURS, so patching it is a no-op and this test would "
+        f"pass without proving the patch intercepts"
+    )
 
-    sleep_count = [0]
+    await sweep.tick()
 
-    async def mock_sleep(seconds):
-        sleep_count[0] += 1
-        if sleep_count[0] >= 2:
-            raise asyncio.CancelledError()
-
-    with patch("backend.main.asyncio.sleep", mock_sleep), \
-         patch("backend.main.config.SESSION_TTL_HOURS", 2):
-        try:
-            await periodic_cleanup(interval_seconds=999)
-        except asyncio.CancelledError:
-            pass
-
-    assert conv_id in conversations
+    assert conv_id in conversations, (
+        f"three hours is inside a {SWEEP_TTL_HOURS}h TTL and must survive; "
+        f"the sweep evicted it, so the TTL patch is not reaching the code"
+    )
+    sweep.assert_ttl_reached_the_store()
+    sweep.assert_hermetic()
 
 
 @pytest.mark.asyncio
-async def test_rate_limit_pruning():
-    """Rate-limit entry with all stale timestamps is pruned."""
-    import asyncio
-    import time
-    from unittest.mock import patch
-    from backend.main import periodic_cleanup, _rate_limit_store
+async def test_rate_limit_pruning(sweep):
+    """An entry older than the 60s window is pruned, judged on the patched clock.
 
-    _rate_limit_store.clear()
+    The stored timestamps are seconds old to the *real* clock -- comfortably
+    inside the 60s window -- and the patched clock is an hour ahead, so to the
+    sweep they are an hour stale and the entry goes. Unpatched, the same data
+    is fresh and the entry would survive, which is what makes the clock patch
+    load-bearing rather than decorative.
+    """
+    sweep.rate_limits.clear()
+    real_now = sweep.real_time()
+    sweep.rate_limits["stale-ip"] = [real_now - 5, real_now - 2]
 
-    # Insert IP with timestamps all outside the 60s window
-    now = time.time()
-    _rate_limit_store["stale-ip"] = [now - 120, now - 90]
+    await sweep.tick(clock_offset_seconds=CLOCK_SHIFT_SECONDS)
 
-    sleep_count = [0]
-
-    async def mock_sleep(seconds):
-        sleep_count[0] += 1
-        if sleep_count[0] >= 2:  # Let initial 30s pass, cancel at interval sleep
-            raise asyncio.CancelledError()
-
-    with patch("backend.main.asyncio.sleep", mock_sleep), \
-         patch("backend.main.time.time", return_value=now):
-        try:
-            await periodic_cleanup(interval_seconds=999)
-        except asyncio.CancelledError:
-            pass
-
-    assert "stale-ip" not in _rate_limit_store
+    assert "stale-ip" not in sweep.rate_limits, (
+        "an hour-old entry to the patched clock is outside the 60s window and "
+        "must be pruned; it survived, so the clock patch is not reaching the "
+        "rate-limit pruning"
+    )
+    sweep.assert_clock_was_intercepted()
+    sweep.assert_hermetic()
 
 
 @pytest.mark.asyncio
-async def test_active_rate_limit_entry_not_pruned():
-    """IP with recent timestamps is NOT pruned."""
-    import asyncio
-    import time
-    from unittest.mock import patch
-    from backend.main import periodic_cleanup, _rate_limit_store
+async def test_active_rate_limit_entry_not_pruned(sweep):
+    """An entry inside the 60s window survives, judged on the patched clock.
 
-    _rate_limit_store.clear()
+    The mirror image of the test above: the patched clock is an hour *behind*
+    the stored timestamps, so they are 30s old to the sweep. Against the real
+    clock they are an hour old, so with the clock patch broken this entry
+    would be pruned and the assertion would fail.
+    """
+    sweep.rate_limits.clear()
+    fake_now = sweep.real_time() - CLOCK_SHIFT_SECONDS
+    sweep.rate_limits["active-ip"] = [fake_now - 10, fake_now - 5]
 
-    now = time.time()
-    _rate_limit_store["active-ip"] = [now - 10, now - 5]  # Within 60s window
+    await sweep.tick(clock_offset_seconds=-CLOCK_SHIFT_SECONDS)
 
-    sleep_count = [0]
+    assert "active-ip" in sweep.rate_limits, (
+        "an entry 10s old to the patched clock is inside the 60s window and "
+        "must survive; it was pruned, so the clock patch is not reaching the "
+        "rate-limit pruning"
+    )
+    sweep.assert_clock_was_intercepted()
+    sweep.assert_hermetic()
 
-    async def mock_sleep(seconds):
-        sleep_count[0] += 1
-        if sleep_count[0] >= 2:
-            raise asyncio.CancelledError()
 
-    with patch("backend.main.asyncio.sleep", mock_sleep), \
-         patch("backend.main.time.time", return_value=now):
-        try:
-            await periodic_cleanup(interval_seconds=999)
-        except asyncio.CancelledError:
-            pass
+def _config_ttl():
+    from backend.config import config
 
-    assert "active-ip" in _rate_limit_store
+    return config.SESSION_TTL_HOURS
+
+
+@pytest.mark.asyncio
+async def test_the_sweep_never_reaches_the_real_filesystem(sweep):
+    """The isolation is total, and that is asserted rather than promised.
+
+    The four tests above depend on the sweep being harmless, which is a claim
+    about every call site rather than about the four assertions they happen to
+    make. This one says it directly: the audio sweep, the report writer, the
+    report pruner and the store are all doubles, so the real ``audio/``,
+    ``reports/`` and ``data/interviewtts.db`` cannot be reached -- including by
+    a call site added after this test was written.
+    """
+    await sweep.tick()
+
+    sweep.audio_sweep.assert_called()
+    # Nothing was stale in this tick, so the report writer and the store's
+    # eviction were never asked to do anything -- the four always-run stubs
+    # were, which is what shows the tick executed the code under test.
+    assert sweep.services_stub.report.generate.call_count == 0
+    assert sweep.services_stub.store.evict_conversation.call_count == 0
+    sweep.assert_hermetic()
+
