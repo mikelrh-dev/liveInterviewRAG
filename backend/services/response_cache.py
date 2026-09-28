@@ -219,6 +219,15 @@ _CACHED_QUESTIONS = [
         ),
     },
     {
+        # Two areas, because that is what the wiki attributes. The previous
+        # answer added a third -- "integración de la inteligencia artificial" --
+        # which no page supports: wiki/faq/area-preferida.md names backend and
+        # data, twice, and enumerates frontend, DevOps and backend as the areas
+        # it considered. A cached answer is spoken verbatim to an interviewer,
+        # so an unsupported area here is not a documentation nit; it is the
+        # candidate claiming something they have not said. Guarded by
+        # tests/test_response_cache.py::test_the_preferred_area_answer_is_not_
+        # left_claiming_more_than_its_page.
         "phrases": [
             "que area del desarrollo te gusta mas",
             "que area te gusta mas",
@@ -227,9 +236,8 @@ _CACHED_QUESTIONS = [
         ],
         "keywords": [],
         "answer": (
-            "Me gusta todo, pero si tuviera que elegir: backend, datos e integración "
-            "de la inteligencia artificial. Me gusta diseñar APIs, modelar bases de "
-            "datos e integrar la IA en los procesos donde pueda aportar valor."
+            "Me gusta todo, pero si tuviera que elegir: backend o datos. Me gusta "
+            "diseñar APIs y modelar bases de datos."
         ),
     },
     {

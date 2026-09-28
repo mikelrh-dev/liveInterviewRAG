@@ -480,14 +480,40 @@ def test_negation_interposed_in_a_phrase_breaks_the_substring():
 WIKI_DIR = Path(__file__).resolve().parents[1] / "wiki"
 FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "retrieval_corpus"
 
-# Vocabulary used only to *detect* a database name inside a cached answer.
-# This is a scanner, not an allowlist of approved claims: a database the corpus
-# does not list fails the test, and a database the corpus adds passes without
-# touching the test. That is what keeps the assertion maintainable.
-_DATABASE_VOCABULARY = {
-    "cassandra", "cockroach", "db2", "dynamodb", "elasticsearch", "firebird",
-    "mariadb", "mongo", "mongodb", "mssql", "mysql", "oracle", "postgres",
-    "postgresql", "redis", "sqlite", "sqlalchemy", "sqlserver",
+# ── The vocabularies a cached answer may not outrun the wiki on ──────────────
+#
+# Each entry is a SCANNER, not an allowlist of approved claims: a term the
+# corpus never mentions fails, and a term the corpus adds passes without
+# touching the test. That is what keeps the assertion maintainable, and it is
+# why the corpus is scanned rather than quoted.
+#
+# There are two, and there used to be one. The database scan was added after an
+# answer claimed "MySQL, PostgreSQL y SQLite" while the corpus attributed
+# MySQL, PostgreSQL and MongoDB. The area scan is here because the preferred-area
+# answer claimed "backend, datos e integracion de la inteligencia artificial"
+# and no page supports that claim -- the page that answers that question names
+# backend and data, twice, and enumerates frontend, DevOps and backend as the
+# areas considered.
+#
+# Deliberately NOT here, and this is the limit of a corpus-wide scan: a term the
+# corpus mentions SOMEWHERE ELSE still passes. The shipped claim would pass a
+# union scan whenever the candidate's pages mention AI at all, which they do. A
+# union scan catches "this area is nowhere in the wiki"; it does not catch "this
+# area is not what the wiki says about THIS question". Catching the second needs
+# a question-to-page binding, and inventing one here -- declaring by hand which
+# page supports which answer, on a machine that cannot read the pages -- would
+# manufacture exactly the kind of unsupported claim this file exists to catch.
+_VOCABULARIES: dict[str, frozenset[str]] = {
+    "databases": frozenset({
+        "cassandra", "cockroach", "db2", "dynamodb", "elasticsearch", "firebird",
+        "mariadb", "mongo", "mongodb", "mssql", "mysql", "oracle", "postgres",
+        "postgresql", "redis", "sqlite", "sqlalchemy", "sqlserver",
+    }),
+    "areas": frozenset({
+        "backend", "frontend", "devops", "datos", "web", "nube", "movil",
+        "infraestructura", "redes", "seguridad", "qa", "inteligencia",
+        "artificial", "ia", "movilidad",
+    }),
 }
 
 
@@ -505,6 +531,70 @@ def _cached_answers() -> list[str]:
     return [entry["answer"] for entry in response_cache._CACHED_QUESTIONS]
 
 
+def _normalised_tokens(text: str) -> set[str]:
+    import unicodedata
+
+    decomposed = unicodedata.normalize("NFD", text.lower())
+    without_accents = "".join(
+        char for char in decomposed if not unicodedata.combining(char)
+    )
+    return set(re.findall(r"[a-z]+", without_accents))
+
+
+def _terms_in(answer: str, vocabulary) -> set[str]:
+    """Every term of ``vocabulary`` a piece of text claims.
+
+    ``vocabulary`` is either one of the registered sets or its NAME. Accepting
+    the name is a convenience with a trap on the other side: ``set("areas")`` is
+    ``{'a','r','e','s'}``, so passing the name where a set was expected does not
+    fail -- it silently degrades the scan into matching single letters and then
+    reports the check as clean. An unknown name raises instead.
+    """
+    if isinstance(vocabulary, str):
+        if vocabulary not in _VOCABULARIES:
+            raise AssertionError(
+                f"unknown vocabulary {vocabulary!r}; known: "
+                f"{sorted(_VOCABULARIES)}"
+            )
+        vocabulary = _VOCABULARIES[vocabulary]
+    return _normalised_tokens(answer) & set(vocabulary)
+
+
+def _corpus_vocabulary(vocabulary: frozenset[str], documents: dict[str, str]) -> set[str]:
+    """Every term of ``vocabulary`` the corpus attributes, across ALL its pages.
+
+    The union over every page, not a hand-picked one. Reading a single page is
+    how the original check missed a database the corpus did attribute on
+    another page: the candidate really does use Redis, it is just not in the
+    profile's summary line.
+    """
+    attributed: set[str] = set()
+    for text in documents.values():
+        attributed |= _terms_in(text, vocabulary)
+    return attributed
+
+
+def _fixture_documents() -> dict[str, str]:
+    """The committed corpus, loaded through the production loader.
+
+    Loaded rather than ``rglob``-ed so the loader's own skip list applies: an
+    index page or a template must not be able to attribute a technology to the
+    candidate.
+    """
+    from tests.fixture_corpus import load_documents
+
+    return load_documents()
+
+
+def _real_wiki_documents() -> dict[str, str]:
+    """The candidate's real pages, through the production loader."""
+    from backend.services.candidate import CandidateProfile
+
+    profile = CandidateProfile(WIKI_DIR / "candidate", wiki_dir=WIKI_DIR)
+    profile.load()
+    return profile.documents
+
+
 def _wiki_text(relative_path: str) -> str:
     return (WIKI_DIR / relative_path).read_text(encoding="utf-8")
 
@@ -518,11 +608,7 @@ def _databases_listed_in(text: str, marker: str) -> set[str]:
 
 
 def _databases_in(answer: str) -> set[str]:
-    return {
-        word.lower()
-        for word in re.findall(r"[A-Za-z]+", answer)
-        if word.lower() in _DATABASE_VOCABULARY
-    }
+    return _terms_in(answer, _VOCABULARIES["databases"])
 
 
 def _assert_cache_does_not_overstate(answer: str, corpus_databases: set[str]) -> None:
@@ -556,23 +642,36 @@ def _real_wiki_databases() -> set[str]:
 
 
 def _fixture_databases() -> set[str]:
-    """Databases the committed fixture corpus attributes.
+    """Databases the committed fixture corpus attributes, across all its pages.
 
-    profile/nuria-belvis.md, "## Resumen de competencias" ->
-    "**Backend:** ... PostgreSQL ..." — but the corpus also lists Redis in
-    skills/devops.md and skills/automatizacion.md, so both pages are read and
-    the union taken. Reading only one page is how the original check missed a
-    database the corpus did attribute.
+    Measured, not quoted: the corpus names ``postgres`` and ``postgresql`` both,
+    and only four of its 46 pages mention Redis -- none of them the profile
+    summary the original check read.
     """
-    databases: set[str] = set()
-    for page in ("profile/nuria-belvis.md", "skills/devops.md"):
-        text = (FIXTURE_ROOT / page).read_text(encoding="utf-8")
-        for line in text.splitlines():
-            for token in re.findall(r"[A-Za-z]+", line):
-                if token.lower() in _DATABASE_VOCABULARY:
-                    databases.add(token.lower())
+    databases = _corpus_vocabulary(
+        _VOCABULARIES["databases"], _fixture_documents()
+    )
     assert databases, "the fixture corpus must attribute at least one database"
     return databases
+
+
+def _scan_offenders(
+    answers: list[str], attributed: dict[str, set[str]]
+) -> dict[str, dict[str, list[str]]]:
+    """Answers naming, per vocabulary, terms the corpus does not attribute.
+
+    One function, used by every scan in this file. That is deliberate: the
+    defect this section corrects was partly that the check lived beside one
+    hand-picked answer, so there was exactly one thing to get wrong and exactly
+    one place to extend.
+    """
+    offenders: dict[str, dict[str, list[str]]] = {}
+    for answer in answers:
+        for name, terms in attributed.items():
+            ungrounded = sorted(_terms_in(answer, _VOCABULARIES[name]) - terms)
+            if ungrounded:
+                offenders.setdefault(answer, {})[name] = ungrounded
+    return offenders
 
 
 # The two real-wiki checks, marked not deleted. They are the owner's own
@@ -662,34 +761,258 @@ def test_pitch_matches_the_wiki_presentation():
     assert "gerente" in answer.lower()
 
 
-# ─── The checker itself ─────────────────────────────────────────────────────
+# ─── Coverage: is the guard actually pointed at the answers? ────────────────
 #
-# Two tests, both unconditional, both against the committed fixture corpus. A
-# consistency guard that only runs where the subject happens to exist is a
-# guard nobody can trust, and the failure mode is invisible: delete the wiki and
-# the assertions quietly become dead code that still looks like coverage.
+# The defect this section exists to correct is not only that a claim was wrong.
+# It is that 21 of 22 cached answers had NO wiki check at all, and the one that
+# did was hand-picked -- so a future answer that overstated something was
+# invisible by construction, and the check that existed never ran in CI because
+# the wiki is gitignored.
+#
+# So the two questions are separated and both are asked here:
+#
+#   1. DOES THE SCAN REACH THE ANSWERS?  (hermetic, always runs)
+#   2. ARE THE CLAIMS WITHIN THE CORPUS?  (against whichever corpus exists)
 
 
-def test_the_consistency_checker_catches_an_overstated_answer():
-    """An answer naming a database the corpus does not list must be REJECTED.
+def test_an_unknown_vocabulary_name_raises_rather_than_matching_letters():
+    """The trap on the convenience in ``_terms_in``, pinned.
 
-    Negative control. The real-wiki check above is an assertion that
-    something is true; this is the proof that the assertion can be false, which
-    is the only way to know it is doing anything.
+    ``set("areas")`` is ``{'a','r','e','s'}``. A name passed where a set was
+    expected therefore does not fail -- it matches single letters, and the scan
+    reports itself clean. That is how the area check below first "passed"
+    against the exact answer it was written to reject.
     """
-    corpus_databases = _fixture_databases()
-    overstated = "MySQL, PostgreSQL, MongoDB y SQLite."
     with pytest.raises(AssertionError) as caught:
-        _assert_cache_does_not_overstate(overstated, corpus_databases)
-    message = str(caught.value)
-    assert "sqlite" in message, f"the failure must name the offender: {message!r}"
-    assert "sqlite" not in corpus_databases, (
-        "the fixture corpus lists SQLite, so it cannot be the counterexample. "
-        "Pick a different one, or the control has stopped testing anything."
+        _terms_in("backend o datos", "areas-of-practice")
+    assert "areas-of-practice" in str(caught.value)
+
+    assert _terms_in("backend o datos", "areas") == {"backend", "datos"}
+
+
+def test_the_scan_reaches_the_answers_it_must():
+    """Question 1, and the one that runs everywhere.
+
+    The scan is generic over the table and over the vocabularies -- it is not a
+    hand-picked entry with a hand-picked vocabulary attached. So this asserts
+    reach: every vocabulary reaches at least one shipped answer, and the areas
+    vocabulary -- the one the defect was about -- reaches several.
+
+    The databases vocabulary reaching exactly ONE entry is the honest number,
+    not a failure: that is the whole databases surface of the cache today. The
+    test that protects the NEXT database entry is the generic one below.
+    """
+    answers = _cached_answers()
+    reached = {
+        name: [a for a in answers if _terms_in(a, vocabulary)]
+        for name, vocabulary in _VOCABULARIES.items()
+    }
+    for name, hit in reached.items():
+        assert hit, (
+            f"the {name} scan reaches none of the {len(answers)} cached "
+            "answers, so it is pointed at nothing"
+        )
+    assert len(reached["areas"]) >= 3, (
+        "the areas scan reaches only "
+        f"{len(reached['areas'])} answers; a scan that reads one hand-picked "
+        "entry cannot catch a future entry that overstates something, which is "
+        f"exactly how this defect shipped. Reached: {reached['areas']}"
     )
 
 
-def test_the_consistency_checker_catches_an_understated_answer():
+@pytest.mark.parametrize("vocabulary", sorted(_VOCABULARIES))
+def test_a_new_entry_that_overstates_something_is_caught_without_being_registered(
+    monkeypatch, vocabulary
+):
+    """The property that would have caught this defect, proved on its own.
+
+    Nobody adds a test when they add a cache entry -- that is the whole shape of
+    the failure: 21 of 22 answers had no check because checks were attached to
+    entries by hand. So the scan must find an offending entry that was never
+    registered anywhere, and this injects exactly that.
+    """
+    attributed = _corpus_vocabulary(_VOCABULARIES[vocabulary], _fixture_documents())
+    ungrounded = {
+        "databases": "Trabajo con PostgreSQL y SQLite.",
+        "areas": "Prefiero backend e integracion de la inteligencia artificial.",
+    }[vocabulary]
+    assert _terms_in(ungrounded, _VOCABULARIES[vocabulary]) - attributed, (
+        "the injected answer is grounded, so this control proves nothing"
+    )
+
+    monkeypatch.setattr(
+        "backend.services.response_cache._CACHED_QUESTIONS",
+        [{"answer": ungrounded, "phrases": ["x"], "keywords": []}],
+    )
+    offenders = _scan_offenders(_cached_answers(), {vocabulary: attributed})
+    assert offenders, (
+        f"a brand new cache entry claiming something the corpus does not "
+        f"attribute was not caught by the {vocabulary} scan. The scan is "
+        "pointed at named entries rather than at the table."
+    )
+
+
+def test_the_scan_reaches_the_answer_that_shipped_the_unsupported_claim():
+    """The specific answer the defect names must be inside the scan's reach.
+
+    Named rather than counted, so that "the scan covers things" cannot be
+    satisfied by a scan that happens to cover everything EXCEPT the entry that
+    was wrong.
+    """
+    answer = get_cached_response("¿Qué área del desarrollo te gusta más?")
+    assert answer is not None
+    claimed = _terms_in(answer, _VOCABULARIES["areas"])
+    assert "backend" in claimed, (
+        "the preferred-area answer no longer names an area at all, so this "
+        f"test is no longer looking at the answer it was written for: {answer!r}"
+    )
+
+
+# The question, and the page in the committed corpus that answers it. A corpus
+# union is the wrong instrument for a question-scoped claim -- the candidate's
+# pages mention AI all over the place, so "mentioned somewhere" cannot tell an
+# AI preference from an AI project. What can is the page that answers THIS
+# question.
+_AREA_QUESTION = "que area del desarrollo te gusta mas"
+_AREA_PAGE = "faq/area-preferida.md"
+
+
+def _attributed_by(path, vocabulary: str) -> set[str]:
+    return _terms_in(path.read_text(encoding="utf-8"), _VOCABULARIES[vocabulary])
+
+
+def test_the_preferred_area_answer_is_not_left_claiming_more_than_its_page():
+    """The shipped defect, as a question-scoped check, hermetically.
+
+    The answer used to claim "backend, datos e integracion de la inteligencia
+    artificial". The page that answers this question attributes backend, data
+    and frontend -- and no AI at all. An answer adding a fourth area is
+    asserting something no page supports, and an interviewer is the last person
+    who should find out.
+
+    The subject is the committed fixture corpus's page for this question, which
+    stands in for the candidate's own ``wiki/faq/area-preferida.md`` (backend
+    and data, twice, enumerating frontend, DevOps and backend). What is under
+    test is the RULE -- an answer may not name an area that the page answering
+    its question does not attribute -- and it is the rule that has to run in CI,
+    because the real wiki never will.
+    """
+    attributed = _attributed_by(FIXTURE_ROOT / _AREA_PAGE, "areas")
+    assert attributed, (
+        f"{_AREA_PAGE} attributes no areas at all, so this check is pointed at "
+        "nothing; re-read the page and re-calibrate"
+    )
+
+    answer = get_cached_response("¿Qué área del desarrollo te gusta más?")
+    assert answer is not None
+    claimed = _terms_in(answer, "areas")
+    assert claimed, f"the answer names no area at all: {answer!r}"
+    assert claimed <= attributed, (
+        f"the cached preferred-area answer claims "
+        f"{sorted(claimed - attributed)}, which {_AREA_PAGE} -- the page that "
+        f"answers '{_AREA_QUESTION}' -- does not support. It attributes "
+        f"{sorted(attributed)}."
+    )
+
+
+@needs_real_wiki
+def test_the_preferred_area_answer_matches_the_real_wiki_page():
+    """The same rule, against the candidate's own page for this question."""
+    answer = get_cached_response("¿Qué área del desarrollo te gusta más?")
+    assert answer is not None
+    attributed = _attributed_by(WIKI_DIR / "faq" / "area-preferida.md", "areas")
+    claimed = _terms_in(answer, "areas")
+    assert claimed <= attributed, (
+        f"the cached preferred-area answer claims {sorted(claimed - attributed)} "
+        "and wiki/faq/area-preferida.md supports only "
+        f"{sorted(attributed)}"
+    )
+
+
+@needs_real_wiki
+def test_no_cached_answer_names_an_area_the_wiki_does_not_attribute():
+    """Question 2 for the areas, over EVERY answer rather than one entry."""
+    attributed = _corpus_vocabulary(
+        _VOCABULARIES["areas"], _real_wiki_documents()
+    )
+    assert attributed, "the wiki attributes no areas at all; the scan is inert"
+
+    offenders = _scan_offenders(_cached_answers(), {"areas": attributed})
+    assert not offenders, (
+        f"cached answers naming areas the wiki never attributes: {offenders}"
+    )
+
+
+# ─── The checker itself, against a corpus CI always has ─────────────────────
+#
+# Two subjects, both unconditional, both against the committed fixture corpus.
+# A consistency guard that only runs where the subject happens to exist is a
+# guard nobody can trust, and the failure mode is invisible: delete the wiki and
+# the assertions quietly become dead code that still looks like coverage.
+#
+# The subjects are drawn FROM the corpus rather than invented, so a faithful
+# answer exists to be accepted -- and each guarded vocabulary has one, so
+# adding a vocabulary without a subject fails here instead of silently never
+# being checked.
+
+_FIXTURE_SUBJECTS: dict[str, str] = {
+    "databases": "Trabajo con PostgreSQL y Redis en el taller.",
+    "areas": "Prefiero backend sobre frontend.",
+}
+
+
+def _assert_within_corpus(answer: str, attributed: set[str], vocabulary: str) -> None:
+    claimed = _terms_in(answer, _VOCABULARIES[vocabulary])
+    assert claimed <= attributed, (
+        f"the answer claims {sorted(claimed - attributed)} and the corpus "
+        f"attributes {sorted(attributed)} ({vocabulary})"
+    )
+
+
+@pytest.mark.parametrize("vocabulary", sorted(_VOCABULARIES))
+def test_the_consistency_checker_accepts_a_faithful_answer(vocabulary):
+    """The positive control: an answer that agrees with the corpus passes."""
+    attributed = _corpus_vocabulary(
+        _VOCABULARIES[vocabulary], _fixture_documents()
+    )
+    assert attributed, (
+        f"the fixture corpus attributes no {vocabulary}, so this control has "
+        "nothing to accept or reject"
+    )
+    _assert_within_corpus(_FIXTURE_SUBJECTS[vocabulary], attributed, vocabulary)
+
+
+@pytest.mark.parametrize("vocabulary", sorted(_VOCABULARIES))
+def test_the_consistency_checker_catches_an_overstated_answer(vocabulary):
+    """The negative control, per vocabulary: the assertion can be false.
+
+    The overstated answer is the real one this defect shipped -- a preferred
+    area the corpus does not attribute -- rather than an invented string, so
+    the control fails if the vocabulary or the scanner stops matching the way
+    the shipped defect actually was shaped.
+    """
+    attributed = _corpus_vocabulary(
+        _VOCABULARIES[vocabulary], _fixture_documents()
+    )
+    overstated = (
+        "Prefiero backend, datos e integracion de la inteligencia artificial."
+        if vocabulary == "areas"
+        else "Trabajo con PostgreSQL y SQLite."
+    )
+    ungrounded = _terms_in(overstated, _VOCABULARIES[vocabulary]) - attributed
+    assert ungrounded, (
+        f"the counterexample is grounded in the corpus, so the {vocabulary} "
+        "control is not testing anything: pick a different one"
+    )
+    with pytest.raises(AssertionError) as caught:
+        _assert_within_corpus(overstated, attributed, vocabulary)
+    for term in ungrounded:
+        assert term in str(caught.value), (
+            f"the failure must name the offender {term!r}: {caught.value!r}"
+        )
+
+
+def test_the_checker_catches_an_understated_answer():
     """An answer that omits a database the corpus does list must be REJECTED."""
     corpus_databases = _fixture_databases()
     assert len(corpus_databases) >= 2, (
@@ -704,14 +1027,27 @@ def test_the_consistency_checker_catches_an_understated_answer():
     )
 
 
-def test_the_consistency_checker_accepts_a_faithful_answer():
-    """The positive control: a cache that agrees with the corpus must pass."""
+def test_the_checker_reads_a_union_of_pages_not_one():
+    """The single-page weakness, made explicit.
+
+    The database check originally read one page's summary line. Redis is
+    attributed by the corpus on other pages, so a one-page read reported it as
+    unsupported -- a false failure that would have been "fixed" by deleting the
+    claim.
+    """
     corpus_databases = _fixture_databases()
-    faithful = (
-        "Trabajo con " + ", ".join(sorted(c.upper() for c in corpus_databases)) + "."
+    profile_only = _terms_in(
+        (FIXTURE_ROOT / "profile" / "nuria-belvis.md").read_text(encoding="utf-8"),
+        _VOCABULARIES["databases"],
     )
-    _assert_cache_does_not_overstate(faithful, corpus_databases)
-    _assert_cache_does_not_understate(faithful, corpus_databases)
+    assert corpus_databases > profile_only, (
+        "the corpus no longer attributes a database outside the profile page, "
+        "so this test no longer distinguishes a union read from a single-page "
+        f"one: profile={sorted(profile_only)} union={sorted(corpus_databases)}"
+    )
+    _assert_cache_does_not_overstate(
+        "Trabajo con " + " y ".join(sorted(corpus_databases)) + ".", corpus_databases
+    )
 
 
 def test_the_fixture_corpus_attributed_databases_are_the_ones_it_lists():
@@ -721,7 +1057,7 @@ def test_the_fixture_corpus_attributed_databases_are_the_ones_it_lists():
     having anything to omit and starts passing for the wrong reason. That is
     exactly the silent-coverage-loss this section exists to prevent.
     """
-    assert _fixture_databases() == {"postgresql", "redis"}, (
+    assert _fixture_databases() == {"postgres", "postgresql", "redis"}, (
         "the fixture corpus's database list changed; the consistency controls "
-        "above are calibrated on {postgresql, redis}"
+        "above are calibrated on {postgres, postgresql, redis}"
     )
