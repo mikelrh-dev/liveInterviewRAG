@@ -856,6 +856,50 @@ function setMicLabel(isActive) {
     btnMic.setAttribute("aria-label", micLabel(isActive));
 }
 
+/**
+ * The single writer of the mic button's presentation.
+ *
+ * The lit state, the two icons and the accessible name are one fact, so they
+ * are written together from one decision. They used to be four class
+ * manipulations repeated at each site that changed them, which is how a branch
+ * could report a failure, move the state machine to idle, and leave all four
+ * describing a running interview that was not running.
+ *
+ * The name is the part that matters most: it is the only thing that tells a
+ * screen-reader user whether the control starts or ends, and it has to be true
+ * at the same moment as the icons or the button is lying to half its users.
+ */
+function applyMicButtonState(isActive) {
+    btnMic.classList.toggle("active", isActive);
+    // The two icons are the same fact with opposite polarity: while an interview
+    // runs the mic glyph is hidden and the stop glyph shows, and when it is not
+    // running it is exactly reversed.
+    micIcon.classList.toggle("hidden", isActive);
+    stopIconEl.classList.toggle("hidden", !isActive);
+    setMicLabel(isActive);
+}
+
+/**
+ * The interview cannot run. Put the page back in a shape the user can act on.
+ *
+ * Both failure branches of the recorder used to report the message and call
+ * `setState("idle")`, and stop there. That moved the avatar to idle and left
+ * `isInterviewActive` true with the mic button still drawn and still named as
+ * the control that ends a running interview. Three indicators, one of them
+ * true, and a recovery that existed but was invisible: press the button, watch
+ * an interview that was not running appear to end, press again to find out.
+ *
+ * So the interview is put back to the shape it had before it started. The one
+ * control that can start an interview is then the one control that is offered,
+ * and retrying is the single press its own label already promised. A user who
+ * denied the microphone by accident, or whose input device was briefly busy,
+ * gets one obvious way forward instead of a button that lies.
+ */
+function abandonInterviewStart() {
+    isInterviewActive = false;
+    applyMicButtonState(false);
+}
+
 function toggleInterview() {
     if (isInterviewActive) stopInterview();
     else startInterview();
@@ -898,10 +942,7 @@ async function startInterview() {
     }
 
     isInterviewActive = true;
-    btnMic.classList.add("active");
-    micIcon.classList.add("hidden");
-    stopIconEl.classList.remove("hidden");
-    setMicLabel(true);
+    applyMicButtonState(true);
     setState("listening");
 
     startListening();
@@ -940,10 +981,7 @@ function stopInterview() {
         mediaStream = null;
     }
 
-    btnMic.classList.remove("active");
-    micIcon.classList.remove("hidden");
-    stopIconEl.classList.add("hidden");
-    setMicLabel(false);
+    applyMicButtonState(false);
     setState("idle");
     setStatus("Entrevista finalizada");
     addMessage("system", "Entrevista finalizada.");
@@ -1038,6 +1076,9 @@ async function startRecording() {
                 true,
             );
             setState("idle");
+            // The interview is not running, so it must not be left looking as
+            // though it were -- see abandonInterviewStart().
+            abandonInterviewStart();
             mediaStream.getTracks().forEach((t) => t.stop());
             return;
         }
@@ -1068,6 +1109,10 @@ async function startRecording() {
             true,
         );
         setState("idle");
+        // Nothing was ever recorded, so there is no interview to end and no
+        // state to keep. The page has to stop claiming one, or the recovery is
+        // a double-press the candidate has to guess at.
+        abandonInterviewStart();
     }
 }
 

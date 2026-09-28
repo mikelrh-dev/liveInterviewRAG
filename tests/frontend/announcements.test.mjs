@@ -37,6 +37,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { extractFunction, loadWithGlobals, readAppJs } from "./harness.mjs";
+import { createDom } from "./dom.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const FRONTEND = join(here, "..", "..", "frontend");
@@ -274,28 +275,83 @@ test("the markup's initial name is the idle one", () => {
     );
 });
 
-test("both transitions set the name", () => {
-    const start = extractFunction("startInterview", appJs);
-    const stop = extractFunction("stopInterview", appJs);
+/**
+ * A window with the interview lifecycle loaded, so the mic's name can be read
+ * off the real element instead of searched for in the source.
+ */
+function interviewEnv() {
+    const env = createDom();
+    env.recorder.fakes.FakeMediaRecorder.supported = ["audio/webm;codecs=opus"];
+    const fn = env.loadApp(
+        [
+            "startInterview",
+            "stopInterview",
+            "initAudio",
+            "resetInterviewView",
+            "addMessage",
+            "updateSessionInfo",
+            "updateTurnCount",
+            "setMicLabel",
+            "micLabel",
+            "setStatus",
+            "setState",
+            "chooseMimeType",
+            "ensureAudioContext",
+            "startVad",
+            "stopVad",
+            "startRecording",
+            "startListening",
+            "createTurnState",
+        ],
+        { isInterviewActive: false },
+    );
+    fn.state.turnState = fn.createTurnState();
+    env.onFetch(() => ({
+        ok: true,
+        status: 200,
+        json: async () => ({ conversation_id: "conv-1", welcome_message: "Hola" }),
+    }));
+    return { env, fn, name: () => env.document.getElementById("btn-mic").getAttribute("aria-label") };
+}
 
-    assert.match(start, /setMicLabel\(true\)/, "starting does not rename the mic");
-    assert.match(stop, /setMicLabel\(false\)/, "stopping does not rename the mic");
+test("both transitions set the name", async () => {
+    // Was a regex over the two function bodies looking for `setMicLabel(true)`
+    // and `setMicLabel(false)`. It asserted the spelling of the rename, so it
+    // broke the moment the rename moved into the function that owns the button's
+    // presentation -- and would have been equally happy if the call sat in a
+    // branch that never runs. The claim underneath is about the name on the
+    // element, so that is what is read.
+    const { env, fn, name } = interviewEnv();
+
+    assert.equal(name(), "Iniciar entrevista", "precondition: the idle name is wrong");
+
+    await fn.startInterview();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(name(), "Detener entrevista", "starting does not rename the mic");
+
+    fn.stopInterview();
+    assert.equal(name(), "Iniciar entrevista", "stopping does not rename the mic");
+    env.close();
 });
 
-test("the rename waits for the interview that actually starts", () => {
+test("the rename waits for the interview that actually starts", async () => {
     // startInterview() returns early when the conversation cannot be created.
     // Renaming before that would leave a button offering to stop an interview
-    // that does not exist -- the same class of lie, one turn earlier.
-    const start = extractFunction("startInterview", appJs);
-    const failed = start.indexOf('"Error de conexión');
-    const renamed = start.indexOf("setMicLabel(true)");
+    // that does not exist -- the same class of lie, one turn earlier, and the
+    // one a screen-reader user is worst served by.
+    const { env, fn, name } = interviewEnv();
+    env.onFetch(() => ({ ok: false, status: 503, json: async () => ({}) }));
 
-    assert.notEqual(failed, -1, "the connection-failure path is gone; re-derive this test");
-    assert.ok(
-        failed < renamed,
-        "the mic is renamed before the failure path can return, so a failed " +
-            "start leaves a stop control on screen",
+    await fn.startInterview();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.equal(
+        name(),
+        "Iniciar entrevista",
+        `a start that failed leaves the mic reading "${name()}": a stop control ` +
+            "on screen for an interview that does not exist",
     );
+    env.close();
 });
 
 test("the mic carries no aria-pressed on top of its name", () => {

@@ -116,6 +116,23 @@ export function baseState(overrides = {}) {
         skippedChunkIds: new Set(),
         isAudioPlaying: false,
         allChunksReceived: false,
+        // The real default is `createTurnNarrator()` -- a narrator with no hooks,
+        // which writes nothing. Reproduced as its shape rather than built by the
+        // factory, because createTurnNarrator is only on the window when a test
+        // asked for it. Any test that reads the status line builds the real one
+        // and assigns it; a test that does not is not asserting on the line.
+        turnNarrator: {
+            stage: () => null,
+            text: () => null,
+            begin: () => {},
+            transcribing: () => {},
+            generating: () => {},
+            speaking: () => {},
+            chunkSkipped: () => {},
+            failed: () => {},
+            complete: () => {},
+            audioState: () => {},
+        },
         currentAudio: null,
         turnAbortController: null,
         turnAborted: false,
@@ -596,16 +613,24 @@ function topLevelFunctions(source = readAppJs()) {
 }
 
 /**
- * Close `wanted` under app.js's own call graph, one hop at a time.
+ * Close `wanted` under app.js's own references, one hop at a time.
  *
- * A lifted function resolves the names it calls against the window, so those
+ * A lifted function resolves the names it mentions against the window, so those
  * names have to be there too. Enumerating them by hand is how `setStatus` ends
  * up loaded without `applyStatusClasses` and every test that touches the status
  * line fails with `applyStatusClasses is not defined` -- an error that reads
  * like a broken harness and says nothing about the code under test.
  *
- * It walks the real call graph instead. Loading an extra function declaration
- * is free (it is not invoked), and not loading a needed one is a broken test.
+ * It walks the real reference graph instead. Matching BARE REFERENCES, not
+ * just calls, is the part that matters: `startVad` hands `vadLoop` to
+ * requestAnimationFrame rather than calling it, so a call-shaped pattern missed
+ * it -- and the ReferenceError was then raised inside `startRecording`'s own
+ * try block, where the app catches it and reports "mic denied". The suite read
+ * that as a microphone failure. A missing binding must never be able to
+ * impersonate the code's own error handling.
+ *
+ * Over-including is the safe direction: an extra top-level declaration has no
+ * side effect when it is created, whereas a missing one is a test that lies.
  */
 function resolveDependencies(wanted, source, declared) {
     const loaded = new Set(wanted);
@@ -619,10 +644,9 @@ function resolveDependencies(wanted, source, declared) {
         } catch {
             continue;
         }
-        // Any other top-level function this body calls.
         for (const candidate of declared) {
             if (loaded.has(candidate)) continue;
-            if (!new RegExp(`\\b${candidate}\\s*\\(`).test(body)) continue;
+            if (!new RegExp(`\\b${candidate}\\b`).test(body)) continue;
             loaded.add(candidate);
             queue.push(candidate);
         }
