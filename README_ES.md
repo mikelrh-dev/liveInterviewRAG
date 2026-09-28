@@ -319,17 +319,25 @@ Los pasos completos, en el orden en que se ejecutan, están en
 ## Estructura del proyecto
 
 ```
-InterviewTTS/
+<repo>/                      # Clonado como liveInterviewRAG; el nombre no es significativo
 ├── backend/
 │   ├── main.py              # Aplicación FastAPI
 │   ├── config.py            # Gestión de configuración
+│   ├── container.py         # Cableado de servicios / punto de inyección
+│   ├── middleware.py        # Límite de tamaño de cuerpo + rate limit por IP
+│   ├── client_ip.py         # Resolución de dirección de cliente con proxies de confianza
+│   ├── sse.py               # Framing SSE y keep-alive
 │   ├── services/
 │   │   ├── stt.py           # Speech-to-Text (Faster Whisper)
-│   │   ├── llm.py           # Cliente LLM (OpenRouter + Google AI)
-│   │   ├── tts.py           # Text-to-Speech (Pocket TTS + Edge TTS)
+│   │   ├── llm.py           # Cliente LLM (Google AI primero, OpenRouter fallback)
+│   │   ├── tts.py           # Text-to-Speech (solo Edge TTS — el único motor)
 │   │   ├── rag.py           # Pipeline RAG con persistencia de embeddings
 │   │   ├── candidate.py     # Cargador de perfil del candidato (fuente wiki/)
+│   │   ├── persistence.py   # Store SQLite write-through
+│   │   ├── report.py        # Generación de transcripciones Markdown
 │   │   └── response_cache.py # Caché de respuestas FAQ para respuestas instantáneas
+│   ├── routers/             # Transporte HTTP: conversations, turns, system
+│   ├── turns/               # El turno en sí: blocking, streaming, answer source
 │   └── prompts/
 │       └── candidate.py     # Template del system prompt
 ├── candidate/               # Datos del perfil (input RAG)
@@ -355,13 +363,14 @@ InterviewTTS/
 ├── openspec/                # Artefactos de gestión de cambios
 │   ├── specs/               # Specs de capacidades actuales
 │   └── changes/             # Cambios en progreso y archivados
-├── nginx/                   # Configuración de Nginx
-├── deployment/              # Archivos de servicio systemd
+├── nginx/                   # Configuración de Nginx (interview.conf)
+├── deployment/              # Archivo de unidad systemd (interviewtts.service)
+├── scripts/                 # validate/compile/index del wiki + deploy.sh
 ├── .env.example             # Template de entorno
 ├── pyproject.toml
 ├── PLAN.md                  # Doc de planificación local (gitignored)
 ├── README.md                # English version
-└── README_ES.md             # Versión en español
+└── README_ES.md             # Esta versión
 ```
 
 ---
