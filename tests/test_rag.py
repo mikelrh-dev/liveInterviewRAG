@@ -1094,6 +1094,39 @@ class TestEmbeddingCache:
         "skills.md": "## Skills\nJavaScript, React for frontend.",
     }
 
+    @pytest.fixture(autouse=True)
+    def _stub_embedder(self, monkeypatch):
+        """Give every model name in this class a stand-in, and download nothing.
+
+        ``initialize()`` now loads ``self._embedding_model`` instead of a
+        hardcoded name, which is the whole point of the fix -- and it means a
+        test that varies the model name now varies which model is fetched.
+        Without this, ``test_model_mismatch_triggers_recompute`` pulled a second
+        ~470 MB checkpoint off the network to prove something about a JSON file.
+
+        Deterministic per text, so the cache's contents are still comparable
+        across runs; the real embedder is exercised by the retrieval sweeps.
+        """
+        import sys
+        import types
+
+        module = types.ModuleType("sentence_transformers")
+
+        def _vector(text: str, dimensions: int = 384) -> np.ndarray:
+            generator = np.random.default_rng(abs(hash(text)) % (2**31))
+            raw = generator.random(dimensions).astype(np.float32)
+            return raw / np.linalg.norm(raw)
+
+        class SentenceTransformer:
+            def __init__(self, name):
+                self.name = name
+
+            def encode(self, texts, show_progress_bar=False):
+                return np.stack([_vector(text) for text in texts])
+
+        module.SentenceTransformer = SentenceTransformer
+        monkeypatch.setitem(sys.modules, "sentence_transformers", module)
+
     def _make_rag(self, tmp_path: Path, model: str = "all-MiniLM-L6-v2") -> RAGPipeline:
         return RAGPipeline(
             chunk_size=100,

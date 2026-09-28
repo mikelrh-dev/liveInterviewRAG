@@ -364,6 +364,10 @@ class Chunk:
 class RAGPipeline:
     """In-memory RAG pipeline with cosine similarity retrieval."""
 
+    #: How many features the TF-IDF fallback keeps. Part of the cache identity
+    #: below, because a different ceiling is a different vector space.
+    TFIDF_MAX_FEATURES = 384
+
     def __init__(self, chunk_size: int = 400, chunk_overlap: int = 50, threshold: float = 0.3,
                  cache_dir: Optional[Path] = None, embedding_model: str = "all-MiniLM-L6-v2"):
         self.chunk_size = chunk_size
@@ -407,19 +411,31 @@ class RAGPipeline:
             self._metadata_path = self._cache_dir / "embeddings.json"
 
     def initialize(self) -> None:
-        """Load the embedding model. Falls back to TF-IDF if unavailable."""
+        """Load the embedding model. Falls back to TF-IDF if unavailable.
+
+        The model name comes from ``self._embedding_model``, which is the same
+        field the cache is tagged and validated against. It used to be
+        hardcoded here, which made ``config.EMBEDDING_MODEL`` configure nothing:
+        the one place a configured model could have taken effect was the one
+        place that never read it, while the cache happily claimed the vectors
+        came from whatever the configuration said.
+        """
         if self._initialized:
             return
         try:
             from sentence_transformers import SentenceTransformer
-            logger.info("Loading sentence-transformer model...")
-            self._embedder = SentenceTransformer("all-MiniLM-L6-v2")
-            logger.info("Sentence-transformer model loaded successfully")
+            logger.info("Loading sentence-transformer model %s...", self._embedding_model)
+            self._embedder = SentenceTransformer(self._embedding_model)
+            logger.info(
+                "Sentence-transformer model %s loaded successfully", self._embedding_model
+            )
         except Exception as e:
             logger.warning("Sentence-transformers unavailable (%s), falling back to TF-IDF", e)
             self._use_tfidf = True
             from sklearn.feature_extraction.text import TfidfVectorizer
-            self._tfidf_vectorizer = TfidfVectorizer(max_features=384)
+            self._tfidf_vectorizer = TfidfVectorizer(
+                max_features=self.TFIDF_MAX_FEATURES
+            )
         self._initialized = True
 
     @property
@@ -439,6 +455,44 @@ class RAGPipeline:
 
     # ── Embedding cache helpers ──────────────────────────────────────────
 
+    @property
+    def _embedder_identity(self) -> str:
+        """Which embedder produced (or will consume) the vectors in this run.
+
+        Not the same question as ``_embedding_model``: that is what the model
+        field says, and the field is only a claim. This is what is actually
+        loaded, so a fallback run cannot describe its TF-IDF numbers as
+        sentence-transformer output.
+        """
+        if self._use_tfidf:
+            return f"tfidf:max_features={self.TFIDF_MAX_FEATURES}"
+        return f"sentence-transformer:{self._embedding_model}"
+
+    @property
+    def _cache_is_readable(self) -> bool:
+        """Whether this run may read the on-disk cache at all.
+
+        False for the TF-IDF fallback, and the reason is not caution: a TF-IDF
+        vector is a coordinate in a space defined by the vectorizer that
+        produced it, and that fitted vectorizer is not in the cache. A run that
+        restored TF-IDF numbers would have an unfitted vectorizer to compare
+        queries against, and a run with a real embedder that took them would be
+        dotting two unrelated spaces together. Neither is a cache hit; both are
+        an ungrounded interview.
+
+        A fallback run therefore also writes nothing: there is no consumer for
+        those vectors, and a file only somebody can read is not a cache.
+        """
+        if not self._cache_dir:
+            return False
+        if self._use_tfidf:
+            logger.info(
+                "Embedding cache skipped: this run fell back to TF-IDF, whose "
+                "vectors no other run could interpret"
+            )
+            return False
+        return True
+
     @staticmethod
     def _compute_documents_hash(documents: dict[str, str]) -> str:
         """Compute a deterministic SHA-256 hash of all loaded documents."""
@@ -453,9 +507,11 @@ class RAGPipeline:
 
         Saves two files inside ``_cache_dir``:
         - ``embeddings.npz`` — numpy compressed embeddings + metadata arrays.
-        - ``embeddings.json`` — validation metadata (model, hash, counts).
+        - ``embeddings.json`` — everything a later run must match before it may
+          serve these vectors: which embedder wrote them, the model, the
+          document hash, the chunking, the filter version and the count.
         """
-        if not self._cache_dir:
+        if not self._cache_is_readable:
             return
         try:
             self._cache_dir.mkdir(parents=True, exist_ok=True)
@@ -481,7 +537,10 @@ class RAGPipeline:
 
             # Write metadata
             metadata = {
+                "embedder": self._embedder_identity,
                 "model": self._embedding_model,
+                "chunk_size": self.chunk_size,
+                "chunk_overlap": self.chunk_overlap,
                 "document_hash": documents_hash,
                 "chunk_filter_version": CHUNK_FILTER_VERSION,
                 "chunk_count": len(chunks),
@@ -495,8 +554,14 @@ class RAGPipeline:
             logger.warning("Failed to save embedding cache: %s", e)
 
     def _load_embeddings_cache(self, documents: dict[str, str]) -> Optional[List[Chunk]]:
-        """Try to load cached embeddings. Returns None if cache is invalid or missing."""
-        if not self._cache_dir or not self._metadata_path:
+        """Try to load cached embeddings. Returns None if cache is invalid or missing.
+
+        Every field below is a question whose wrong answer silently returns the
+        wrong vectors. A cache is only as good as what it claims about itself,
+        so anything it does not claim -- including anything written before the
+        field existed -- is treated as "recompute", never as "assume".
+        """
+        if not self._cache_is_readable or not self._metadata_path:
             return None
 
         npz_path = self._cache_dir / "embeddings.npz"
@@ -508,6 +573,20 @@ class RAGPipeline:
             with open(self._metadata_path, "r", encoding="utf-8") as f:
                 meta = json.load(f)
 
+            # 1a. Which embedder produced these numbers. This field's absence
+            # was the whole defect: a cache written by the TF-IDF fallback was
+            # tagged with the sentence-transformer name and restored as if it
+            # were embeddings -- which is how a real corpus's 121 cached chunks
+            # came back as vectors no MiniLM run had ever produced, and
+            # retrieve() returned nothing for any question.
+            if meta.get("embedder") != self._embedder_identity:
+                logger.info(
+                    "Cache embedder mismatch (cache=%s, current=%s) — recomputing "
+                    "so vectors from another embedding space are not served",
+                    meta.get("embedder"), self._embedder_identity,
+                )
+                return None
+
             if meta.get("model") != self._embedding_model:
                 logger.info(
                     "Cache model mismatch (cache=%s, current=%s) — recomputing",
@@ -515,9 +594,25 @@ class RAGPipeline:
                 )
                 return None
 
-            # 1b. Validate the chunking/filtering semantics. The document hash
+            # 1b. The chunking. It decides WHICH chunks exist, not merely how
+            # big they are, so a cache written at 400/50 says nothing about a
+            # run configured at 400/80.
+            if (meta.get("chunk_size"), meta.get("chunk_overlap")) != (
+                self.chunk_size,
+                self.chunk_overlap,
+            ):
+                logger.info(
+                    "Cache chunking mismatch (cache=%s/%s, current=%s/%s) — "
+                    "recomputing so the cached chunk set is the one this "
+                    "configuration actually produces",
+                    meta.get("chunk_size"), meta.get("chunk_overlap"),
+                    self.chunk_size, self.chunk_overlap,
+                )
+                return None
+
+            # 1c. Validate the filtering semantics. The document hash
             # below covers the RAW wiki text, which placeholder filtering does
-            # not touch, so a cache written before this filter existed would
+            # not touch, so a cache written before this filter existed would be
             # otherwise be restored with its [TODO chunks intact.
             if meta.get("chunk_filter_version") != CHUNK_FILTER_VERSION:
                 logger.info(
