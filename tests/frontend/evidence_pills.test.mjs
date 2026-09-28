@@ -25,9 +25,18 @@
  * overflow rather than truncate until `min-width: 0` says it may.
  *
  * The unit under test is lifted verbatim out of frontend/app.js by
- * tests/frontend/harness.mjs, so the shipped source is what runs. The CSS that
- * decides whether the ellipsis applies is asserted by reading the declarations
- * that decide it -- there is no browser in this suite.
+ * tests/frontend/harness.mjs, and rendered into the REAL #context-content of
+ * the shipped index.html by tests/frontend/dom.mjs. That is not tidiness. The
+ * version of this file before it took a real DOM injected its OWN `escapeHtml`
+ * and then asserted that `renderContext` escaped -- so replacing the shipped
+ * `escapeHtml` with `return String(text)` left the whole suite green at
+ * 186/186. The function under protection was never loaded. The escaping is
+ * checked here against the real one now, and the DOM is what decides it: if an
+ * `<img>` element exists in the rendered tree, the text was not escaped,
+ * whatever the string looked like.
+ *
+ * The CSS that decides whether the ellipsis applies is asserted by reading the
+ * declarations that decide it -- there is still no layout engine in this suite.
  *
  *   node --test tests/frontend/
  */
@@ -37,7 +46,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { extractFunction, loadWithGlobals, readAppJs } from "./harness.mjs";
+import { extractFunction, readAppJs } from "./harness.mjs";
+import { createDom } from "./dom.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const FRONTEND = join(here, "..", "..", "frontend");
@@ -49,57 +59,42 @@ const CHUNKS = [
     { score: 0.4, text: "Second", source: "skills/frontend.md" },
 ];
 
-/**
- * A stand-in for the panel body. `renderContext` writes to `innerHTML` and
- * reads nothing else, so this is the whole of the DOM it touches.
- */
+const env = createDom();
+const { document } = env;
+// The REAL escapeHtml. Injected here it was the source of the defect: the test
+// asserted the renderer escaped while the code doing the escaping was a stub
+// the test itself wrote.
+const { renderContext, toggleChunk, escapeHtml } = env.loadApp(
+    ["renderContext", "toggleChunk", "escapeHtml"],
+    { contextContent: document.getElementById("context-content") },
+);
+
+test.after(() => env.close());
+
+/** Render into the real panel and return the panel element. */
 function render(chunks) {
-    const host = { innerHTML: "" };
-    loadWithGlobals("renderContext", {
-        contextContent: host,
-        escapeHtml: (text) =>
-            String(text)
-                .replace(/&/g, "&amp;")
-                .replace(/</g, "&lt;")
-                .replace(/>/g, "&gt;"),
-    })(chunks);
-    return host.innerHTML;
+    renderContext(chunks);
+    return document.getElementById("context-content");
 }
 
-/** A stand-in for one rendered chip: records classes and attributes. */
-function fakePill() {
-    const classes = new Set();
-    const attrs = {};
-    return {
-        attrs,
-        classList: {
-            toggle(name, force) {
-                const on = force === undefined ? !classes.has(name) : Boolean(force);
-                if (on) classes.add(name);
-                else classes.delete(name);
-                return on;
-            },
-            contains: (name) => classes.has(name),
-        },
-        setAttribute: (name, value) => (attrs[name] = value),
-        getAttribute: (name) => attrs[name],
-    };
+/** The serialised panel, for the assertions that are about markup shape. */
+function renderHTML(chunks) {
+    return render(chunks).innerHTML;
 }
 
-const toggleChunk = loadWithGlobals("toggleChunk", {});
 
 // ─── 1. The chip is a real control ─────────────────────────────────────────
 
 test("each evidence chip is a native button", () => {
-    const html = render(CHUNKS);
+    const panel = render(CHUNKS);
 
     assert.equal(
-        (html.match(/<button/g) || []).length,
+        panel.querySelectorAll("button.chunk-pill").length,
         CHUNKS.length,
         "every chunk must render exactly one button",
     );
     assert.match(
-        html,
+        panel.innerHTML,
         /<button[^>]*type="button"/,
         "the chip is a <button> without type, so it defaults to submit and " +
             "inherits form semantics it has no business having",
@@ -110,12 +105,12 @@ test("the chip is not a div with a role bolted on", () => {
     // The re-implementation that looks like the fix and is not: role="button"
     // only changes what is announced. It does not make the div focusable, does
     // not handle Enter or Space, and does not draw a focus ring.
-    const html = render(CHUNKS);
+    const panel = render(CHUNKS);
 
-    assert.doesNotMatch(html, /<div/, "the chip is still a div");
-    assert.doesNotMatch(
-        html,
-        /role="button"/,
+    assert.equal(panel.querySelectorAll("div").length, 0, "the chip is still a div");
+    assert.equal(
+        panel.querySelectorAll('[role="button"]').length,
+        0,
         'the chip carries role="button", which announces a control it does not ' +
             "behave like",
     );
@@ -125,11 +120,11 @@ test("the chip has no inline onclick", () => {
     // An inline handler can only reach a function published on `window`, which
     // is why `window.toggleChunk = toggleChunk` existed. It also cannot be
     // activated from the keyboard even when the element is a button.
-    const html = render(CHUNKS);
+    const panel = render(CHUNKS);
 
-    assert.doesNotMatch(
-        html,
-        /onclick=/,
+    assert.equal(
+        panel.querySelectorAll("[onclick]").length,
+        0,
         "the chip still carries an inline onclick, so it needs a global to work",
     );
     assert.doesNotMatch(
@@ -141,24 +136,27 @@ test("the chip has no inline onclick", () => {
 });
 
 test("the chip declares the state it is in and the region it controls", () => {
-    const html = render(CHUNKS);
+    const panel = render(CHUNKS);
 
-    assert.match(
-        html,
-        /aria-expanded="false"/,
-        "a collapsed chip does not say it is collapsed, so a screen-reader " +
-            "user hears a control with no state",
-    );
+    const pills = panel.querySelectorAll("button.chunk-pill");
+    assert.ok(pills.length > 0, "no chip rendered at all");
 
-    const controls = [...html.matchAll(/aria-controls="([^"]+)"/g)].map((m) => m[1]);
-    const ids = [...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]);
+    const ids = new Set([...panel.querySelectorAll("[id]")].map((el) => el.id));
 
-    assert.ok(controls.length > 0, "no chip names the region it expands");
-    for (const id of controls) {
+    for (const pill of pills) {
+        assert.equal(
+            pill.getAttribute("aria-expanded"),
+            "false",
+            "a collapsed chip does not say it is collapsed, so a screen-reader " +
+                "user hears a control with no state",
+        );
+
+        const controls = pill.getAttribute("aria-controls");
+        assert.ok(controls, "no chip names the region it expands");
         assert.ok(
-            ids.includes(id),
-            `aria-controls="${id}" points at an element that does not exist in ` +
-                `the rendered markup; the ids present are ${JSON.stringify(ids)}`,
+            ids.has(controls),
+            `aria-controls="${controls}" points at an element that does not ` +
+                `exist in the rendered markup; ids present are ${JSON.stringify([...ids])}`,
         );
     }
 });
@@ -167,51 +165,144 @@ test("the chip contains only phrasing content", () => {
     // A <button> may not contain flow content. The full text this wrapped in a
     // <div><p> is flow content, so it has to be a <span> that the stylesheet
     // lays out as a block -- otherwise the "fix" ships invalid HTML.
-    const button = /<button[\s\S]*?<\/button>/.exec(render(CHUNKS))[0];
+    const pill = render(CHUNKS).querySelector("button.chunk-pill");
 
-    assert.doesNotMatch(
-        button,
-        /<(div|p|section|article|ul|ol|li|table|h[1-6])\b/,
-        "the button contains flow content, which its content model forbids",
-    );
+    for (const flow of pill.querySelectorAll("div,p,section,article,ul,ol,li,table,h1,h2,h3,h4,h5,h6")) {
+        assert.fail(
+            `the chip contains <${flow.tagName.toLowerCase()}>, which its content ` +
+                "model forbids",
+        );
+    }
 });
 
-test("both the preview and the full text are escaped", () => {
-    // renderContext writes retrieved wiki text into innerHTML. The escaping is
-    // the only thing between a chunk of a markdown page and script execution,
-    // and rewriting the template is exactly when it goes missing.
-    const html = render([
+// ─── 1b. The escaping, checked against the function that actually escapes ──
+
+test("chunk text cannot become an element", () => {
+    // The control. `renderContext` writes retrieved markdown into innerHTML, so
+    // the escaping is the only thing between a wiki page and script execution.
+    //
+    // The assertion is a query, not a substring: if the text had been
+    // interpolated raw the parser would have built an <img> element, and that
+    // element is right here. This is the test the stubbed version could not be.
+    const panel = render([
         { score: 0.5, text: '<img src=x onerror="boom">', source: "cv.md" },
     ]);
 
-    assert.doesNotMatch(html, /<img/, "the chunk text was interpolated unescaped");
-    // escapeHtml() is `textContent` -> `innerHTML`, which escapes `&`, `<` and
-    // `>` and deliberately leaves quotes alone: the value lands in element
-    // CONTENT, where a quote is a character, not an attribute delimiter.
-    assert.match(
-        html,
-        /&lt;img src=x onerror="boom"&gt;/,
-        "the chunk text was not escaped for a content position",
+    assert.equal(
+        panel.querySelectorAll("img").length,
+        0,
+        "the chunk text was interpolated unescaped: the parser built a real " +
+            "<img> element out of it",
+    );
+    assert.equal(
+        panel.querySelectorAll("script").length,
+        0,
+        "the chunk text produced a script element",
     );
     assert.match(
-        html,
-        /Fuente: cv\.md/,
+        panel.textContent,
+        /<img src=x onerror="boom">/,
+        "the text is not even rendered as literal characters, so the chip has " +
+            "silently dropped the passage it exists to show",
+    );
+});
+
+test("the source attribution cannot become an element either", () => {
+    const panel = render([
+        { score: 0.5, text: "safe", source: '<svg onload="boom">' },
+    ]);
+
+    assert.equal(
+        panel.querySelectorAll("svg").length,
+        0,
+        "chunk.source was interpolated unescaped: the parser built an <svg>",
+    );
+    assert.match(
+        panel.textContent,
+        /Fuente: <svg onload="boom">/,
         "the source is no longer rendered, so the chip has lost half its claim",
+    );
+});
+
+test("the preview and the full text are both escaped", () => {
+    // Both positions, or the chip is half a control: a preview that renders raw
+    // executes the payload even though the collapsed body below it is escaped.
+    const panel = render([
+        { score: 0.5, text: '<img src=x onerror="boom">', source: "cv.md" },
+    ]);
+    const pill = panel.querySelector("button.chunk-pill");
+
+    const preview = pill.querySelector(".chunk-preview");
+    const full = pill.querySelector(".chunk-full span");
+    assert.ok(preview && full, "the chip lost its preview or its full text");
+
+    for (const [name, node] of [["preview", preview], ["full text", full]]) {
+        assert.equal(
+            node.querySelectorAll("img").length,
+            0,
+            `the ${name} was interpolated unescaped`,
+        );
+        assert.equal(node.textContent, '<img src=x onerror="boom">');
+    }
+});
+
+test("a payload that closes its own span cannot escape the chip", () => {
+    // The template is a single concatenated string, so the payload does not have
+    // to be well-formed HTML to break out of a position -- it only has to close
+    // the tag that is open. This is the case a per-node query is the only honest
+    // judge of: the string still contains "<span>", the tree does not.
+    const panel = render([
+        { score: 0.5, text: '</span><img src=x onerror="boom"><span>', source: "cv.md" },
+    ]);
+
+    assert.equal(
+        panel.querySelectorAll("img").length,
+        0,
+        "a payload that closes the surrounding span was interpolated unescaped",
+    );
+    assert.equal(
+        panel.querySelectorAll("button.chunk-pill").length,
+        1,
+        "the payload broke out of the chip's own markup",
+    );
+});
+
+test("the escape helper is the one the renderer calls", () => {
+    // Guard against the specific shape of the old defect coming back: a local
+    // escaper shadowing the shipped one. The renderer resolves `escapeHtml`
+    // from its own scope, so if that name is ever bound to anything but the
+    // real function the XSS tests above would be testing the substitute.
+    const body = extractFunction("renderContext", appJs);
+
+    assert.match(
+        body,
+        /escapeHtml\(chunk\.text\)/,
+        "renderContext no longer routes the passage through escapeHtml",
+    );
+    assert.match(
+        body,
+        /escapeHtml\(chunk\.source\)/,
+        "renderContext no longer routes the source through escapeHtml",
+    );
+    assert.doesNotMatch(
+        body,
+        /function\s+escapeHtml/,
+        "renderContext declares its own escapeHtml, so the real one is not what " +
+            "escapes the text the tests inspect",
     );
 });
 
 test("the empty case still says so", () => {
     // Regression guard: the rewrite must not lose the "nothing retrieved" state,
     // which is a claim the panel has to be able to make honestly.
-    assert.match(render([]), /context-empty/);
-    assert.match(render(null), /context-empty/);
+    assert.ok(render([]).querySelector(".context-empty"), "the empty case lost its message");
+    assert.ok(render(null).querySelector(".context-empty"), "the null case lost its message");
 });
 
 // ─── 2. The state a chip is in is reported, not just drawn ────────────────
 
 test("activating a collapsed chip expands it and says so", () => {
-    const pill = fakePill();
-    pill.setAttribute("aria-expanded", "false");
+    const pill = render(CHUNKS).querySelector("button.chunk-pill");
 
     toggleChunk(pill);
 
@@ -220,7 +311,7 @@ test("activating a collapsed chip expands it and says so", () => {
 });
 
 test("activating an expanded chip collapses it and says so", () => {
-    const pill = fakePill();
+    const pill = render(CHUNKS).querySelector("button.chunk-pill");
     pill.classList.toggle("expanded", true);
     pill.setAttribute("aria-expanded", "true");
 
@@ -238,7 +329,7 @@ test("the class and the attribute never disagree", () => {
     // The class drives the visual and the attribute drives the announcement.
     // A toggle that only flipped one of them is a control that lies to half its
     // users, so the two are written from the same decision on every call.
-    const pill = fakePill();
+    const pill = render(CHUNKS).querySelector("button.chunk-pill");
     let expanded = null;
 
     for (let i = 0; i < 4; i++) {
@@ -252,6 +343,7 @@ test("the class and the attribute never disagree", () => {
         );
     }
 });
+
 
 test("a re-render does not leave the handler behind on a discarded node", () => {
     // renderContext replaces #context-content's innerHTML on every turn, so a
@@ -414,3 +506,25 @@ test("the toggle is still reachable and still the only expander", () => {
         "toggleChunk() no longer touches aria-expanded",
     );
 });
+
+test("a chip is actually clickable in the rendered panel", () => {
+    // The delegated listener is bound in init(), which this suite does not run.
+    // It is bound here, by hand, exactly as app.js binds it -- the assertion
+    // under test is that a click on a real chip in a real panel reaches the
+    // real toggle, which is the wiring the old string tests could not see.
+    const panel = render(CHUNKS);
+    panel.addEventListener("click", (e) => {
+        const pill = e.target.closest(".chunk-pill");
+        if (pill) toggleChunk(pill);
+    });
+
+    const pill = panel.querySelector("button.chunk-pill");
+    pill.dispatchEvent(new env.window.MouseEvent("click", { bubbles: true }));
+
+    assert.equal(
+        pill.classList.contains("expanded"),
+        true,
+        "a click on the chip did not expand it, so the panel's chips are dead",
+    );
+});
+
