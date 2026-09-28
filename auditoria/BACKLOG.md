@@ -1,6 +1,6 @@
 # Backlog de trabajo — InterviewTTS
 
-Estado al cierre de la sesión del 2026-09-27. **485 pytest + 2 xfailed, 89 node, 0 fallos.**
+**Estado 2026-09-28:** **555 pytest + 2 xfailed, 90 node, 0 fallos.** (Sesión anterior cerró en 485 + 89.)
 
 Regla del loop: **correcciones primero, mejoras después, visual al final.**
 En cada ciclo: spec → build → test → juez.
@@ -9,21 +9,21 @@ En cada ciclo: spec → build → test → juez.
 
 ## 1. Correcciones pendientes
 
-Verificar que cada una sigue siendo real antes de actuar.
+✅ = cerrado y verificado.
 
-| # | Corrección | Dónde | Nota |
-|---|---|---|---|
-| C1 | `nginx` sin `client_max_body_size` | `nginx/interview.conf` | El default de 1MB anula el techo de 5MB de la app. La guarda de la Fase 1 está medio muerta, y el 413 resultante se reintentaba 5× (ya no, tras el fix de reintentos) |
-| C2 | Sin clave de idempotencia en el turno | `backend/turns/`, `persistence.py` | Un fallo de red ambiguo cuesta un reintento manual. Es el trade-off explícito del fix de reintentos |
-| C3 | 2 de 6 suites node en `NODE_TESTS` | `tests/test_sse_terminal_state.py` | 20 tests corren solo con el glob explícito |
-| C4 | Test afirma una violación del spec | `tests/test_sse_terminal_state.py:236` | El spec dice que los errores NO deben incluir paths ni detalles internos; el test asegura que sí |
-| C5 | 4 tests de `periodic_cleanup` parchean el módulo equivocado | `tests/test_conversation_memory.py` | Apuntan a `backend.main.*`; el código está en `backend/maintenance.py`. Pasan por identidad de módulo |
-| C6 | `store_is_configured` toca un atributo privado | `backend/conversation.py:177` | `persistence._enabled`. Un rename silencioso cambia la semántica del fallback |
-| C7 | Tests escriben en la DB y `reports/` reales | varios | 378 directorios hex acumulados en `reports/` |
-| C8 | El turno de despedida no se cuenta | `backend/turns/streaming.py`, `frontend/app.js` | Se persiste pero no llega al contador |
-| C9 | `threshold=0.3` inerte | `backend/services/rag.py` | El coseno top-1 más bajo observado es 0.414; nunca filtra |
-| C10 | Sin CI | — | Nada demuestra que la suite está verde en HEAD |
-| C11 | Flake de mtime en NTFS | `backend/services/report.py:64-66` | Mecanismo medido: 2,38e-07s. Opciones: epsilon en el `<=`, o `os.utime()` en el test |
+| # | Corrección | Estado |
+|---|---|---|
+| C1 | `nginx` sin `client_max_body_size` | ✅ `3870547` — `5m` en `location /api/`, con test de consistencia config↔código |
+| C2 | Clave de idempotencia en el turno | 🔶 trade-off aceptado: un fallo de red ambiguo cuesta un reintento manual. Es deliberado |
+| C3 | Suites node fuera de `NODE_TESTS` | ✅ `68d0df1` — ahora se descubren por directorio, no lista. Las 4 restantes estaban verdes |
+| C4 | Fuga de excepciones internas al cliente | ✅ `acaa7b7` — 13 rutas, payload genérico + log con `exc_info=True` |
+| C5 | Patches de `periodic_cleanup` en el módulo equivocado | ✅ `49eb423` — repuntados a `backend.maintenance`, effectiveness probada por mutación |
+| C6 | `store_is_configured` toca `_enabled` | ✅ `b606696` — accesor público `is_enabled()` con fallback honesto |
+| C7 | Tests escriben en DB y `reports/` reales | 🔶 **peor de lo que decía: 1072 directorios en `reports/`** (no 378). Parcial: los 4 de `periodic_cleanup` aislados. Quedan los fixtures de streaming que tocan `AUDIO_DIR` real |
+| C8 | El turno de despedida no se cuenta | ✅ `a26c900` — nuevo evento `turn_recorded` |
+| C9 | `threshold=0.3` inerte | 🔶 sin hacer. El coseno top-1 más bajo observado es 0.414 |
+| C10 | Sin CI | 🔶 sin hacer |
+| C11 | Flake de mtime en NTFS | ✅ `83e3389` — **verificado: 0 fallos en 20 runs** (antes 2/20) |
 
 ---
 
@@ -99,3 +99,26 @@ Ordenadas por impacto sobre lo que el reclutador percibe.
 2. **Las 6 afirmaciones sin respaldo** en `response_cache.py` (líneas 189, 269, 308, 230, 283, 202) — parked explícitamente.
 3. **La decisión del keyword `interviewtts`** (M1).
 4. **Si corrige o no "diferentes establecimientos"** en la respuesta de trabajo en equipo (línea 257).
+
+---
+
+## 5. Cambio de contrato pendiente de ratificar
+
+`a26c900` introdujo el evento `turn_recorded` para que el contador recoja el turno de
+despedida. **Consecuencia: "el último evento es el terminal" ya no es cierto.**
+
+El número llega *después* del evento terminal, porque el `n` confirmado es el valor
+de retorno de `record_turn` y en el momento de emitir `interview_end` solo existe la
+*predicción*. Las alternativas eran:
+
+- meter el número en `interview_end` → imposible, es una predicción;
+- derivarlo del payload → igual;
+- escribir en disco *antes* de `interview_end` → retrasa la despedida, que es justo
+  lo que el diseño actual evita.
+
+Se eligió la única que no retrasa ni predice. Los dos tests que afirmaban
+`events[-1] == "interview_end"` se ajustaron a "el último *evento terminal*, y nada
+salvo `turn_recorded` después de la despedida" — siguen fallando ante un segundo
+terminal, un error post-despedida o un stream truncado.
+
+**Ratifica o rechazo pendiente.** El owner puede preferir el orden inverso.
