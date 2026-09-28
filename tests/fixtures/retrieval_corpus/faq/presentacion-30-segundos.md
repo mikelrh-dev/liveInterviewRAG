@@ -24,12 +24,11 @@ ahi: un panel que nadie mira no sirve.
 
 Durante doce años he estado en el mismo sector, primero como operaria
 de linea, luego como responsable de calidad y desde 2018 dirigiendo la
-produccion de una planta de ocho hornos. Software, lo que construyo
-para resolver problemas que me han constexpr myself: la trazabilidad de
+produccion de una planta de ocho hornos. El software lo construyo para
+resolver problemas que me he encontrado yo mismo: la trazabilidad de
 los lotes, el inventario de repuestos y un panel de hornos. No soy
-alguien que hizo un cambio de carrera a los cincuenta; soy alguien que
-llevo una decada,...
-...
+alguien que hizo un cambio de carrera a los cincuenta; llevo una decada
+en esto y cada vez me interesa mas la parte de datos.
 
 ## Fuentes
 - [[profile/nuria-belvis]]

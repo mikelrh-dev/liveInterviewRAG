@@ -14,8 +14,9 @@ summary_1line: Tres meses de planillas a las que nadie queria renunciar
 ## Situacion
 
 El stock de los once telares llevaba seis años en tres hojas de calculo
-que se copiaban entre si. Cuando me deprive que las dos primeras no
-coincidian, el responsable me dijo que eso era normal.
+que se copiaban entre si. Cuando vi que las dos primeras no
+coincidian, el responsable me dijo que eso era normal. No lo fue: eran
+las dos primeras hojas y no cuadraban ni entre ellas.
 
 ## Que hice
 

@@ -16,7 +16,7 @@ summary_1line: Un ensayo mal hecho, un cliente dolido y la leccion que todavia u
 En 2019 monte un control de curva de coccion para una serie nueva de
 gres. El control estaba bien, pero mi error fue no probarlo con la
 mezcla real: lo probé con los datos de la serie anterior, que tenian
-menosshrink y otro beige.
+menos retraccion y otro tono.
 
 ## Que hice
 

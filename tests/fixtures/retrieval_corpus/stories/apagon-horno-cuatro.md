@@ -6,7 +6,7 @@ updated: 2026-09-05
 confidence: high
 tags: [story, incidente, leadership, produccion]
 related: [experience/jefa-produccion-vinalar-2018-2024.md, projects/horno-siete.md]
-summary_1line: El apagon del horno cuatro y como se reordered la produccion
+summary_1line: El apagon del horno cuatro y como se reordeno la produccion
 ---
 
 # El apagon del horno cuatro

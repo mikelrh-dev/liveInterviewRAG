@@ -27,7 +27,7 @@ diecisiete minutos por coccion frente al horno uno.
 
 ## Resultado
 
-Ese numero fue lo que convencio a la direccion de pagar el
+Ese numero fue lo que convencio a la direccion para que pagara el
 historial. Horno Siete se dejo de ver como un panel bonito y se
 empezo a ver como un sistema de datos con un panel delante.
 

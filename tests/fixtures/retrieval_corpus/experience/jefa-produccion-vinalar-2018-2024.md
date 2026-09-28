@@ -13,7 +13,7 @@ summary_1line: Jefa de produccion en Ceramica Vinalar entre 2018 y 2024
 
 ## Que hacia
 
-Dirijia la produccion de la planta de Vinalar: ocho hornos, tres lineas
+Dirigia la produccion de la planta de Vinalar: ocho hornos, tres lineas
 de esmaltado y un equipo de treinta y una personas entre turnos. Dentro
 de mi area estaban el plan de carga, el cumplimiento de fechas, la
 gestion de la parada anual y la coordinacion con compras y laboratorio.

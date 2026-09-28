@@ -21,8 +21,8 @@ pero me cuesta el idioma colloquial fino y las bromas.
 ## Respuesta larga
 
 Empece a los cuarenta y dos, con una hora diaria y nueve meses seguidos.
-Aguant defender una reunion completa en ingles a los cuarenta y seis, y
-desde entonces lo uso en el trabajo: la documentacion de los hornos
+Aguante defender una reunion completa en ingles a los cuarenta y seis,
+y desde entonces lo uso en el trabajo: la documentacion de los hornos
 esta en ingles, y leo hilos de soporte de los proveedores de
 maquinaria del otro lado. Me sigue costando el idioma coloquial fino, y
 no lo disimulo.

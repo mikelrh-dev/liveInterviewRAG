@@ -29,8 +29,8 @@ veinte minutos, y desviacion que no se recupera en tres ciclos.
 
 Las alertas que quedan saltan cuatro o cinco veces al mes, y las cuatro
 veces habia que bajar a la nave. Un aviso que aparece diez veces al dia
-es ruido confrastructure, y el ruido hace que la gente deje de mirar el
-canal entero.
+es ruido de infraestructura, y el ruido hace que la gente deje de
+mirar el canal entero.
 
 ## Lo que aprendi
 

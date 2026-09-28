@@ -24,7 +24,8 @@ pasaron de la calidad a produccion.
 A corto plazo quiero seguir cerca de la operacion, porque es donde mas
 aprendo. A medio plazo me veo liderando la parte de datos de un
 equipo: decidiendo que se guarda, como se modela y quien lo usa. No me
-veoanga Quantum. Si el equipo es pequeno, mas me vale: prefiero estar
+veo haciendo Investigacion Cuantica. Si el equipo es pequeno, mas me
+vale: prefiero estar
 cerca del problema que tres niveles por encima.
 
 ## Fuentes

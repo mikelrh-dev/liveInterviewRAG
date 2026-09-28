@@ -21,7 +21,7 @@ proximidad no existe y se acaba construyendo cosas que nadie usa.
 ## Respuesta larga
 
 Lo que busco es un equipo donde se pueda ir a la nave a ver el problema
-antes de escribir codigo. He trabajado con equipos que solo mireban la
+antes de escribir codigo. He trabajado con equipos que solo miraban la
 cifra, y sale software que no encaja con nada. Tambien busco que se
 pueda discutir una decision tecnica sin jerarquia, que es mi forma de
 trabajar y no estoy dispuesto a negociar.

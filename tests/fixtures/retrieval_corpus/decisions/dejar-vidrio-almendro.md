@@ -15,7 +15,7 @@ summary_1line: Por que deje el taller de vidrio para ir a produccion
 
 En 2018 acepte el puesto de produccion en Vinalar y deje el taller de
 Almendro, donde llevaba tres años como responsable de calidad. No fue
-un salto porowanie el sueldo, aunque tambien contara.
+un salto por el sueldo, aunque tambien contara.
 
 ## Por que
 
