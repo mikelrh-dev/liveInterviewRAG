@@ -69,7 +69,7 @@ from backend.conversation import (
 from backend.farewell import FAREWELL_TEXT, detect_farewell
 from backend.prompts.candidate import build_system_prompt, sanitize_for_tts
 from backend.services.llm import SentenceBuffer
-from backend.sse import sse_format
+from backend.sse import sse_format, with_keepalive
 from backend.turns.answer_source import LLM, resolve_answer_source
 from backend.turns.errors import (
     FAREWELL_TTS_FAILED,
@@ -561,4 +561,11 @@ def build_stream(
             if temp_audio.exists():
                 temp_audio.unlink(missing_ok=True)
 
-    return event_generator()
+    # Wrapped, not merely passed through. The generator below is silent for the
+    # whole of STT -- its first `yield` is at :130, after the transcription at
+    # :125 -- and a silent stream is a stream nginx's proxy_read_timeout closes
+    # and the browser reports as a finished interview. The wrapper emits a
+    # comment frame through any stall, so the silence is never actually silent
+    # on the wire. See backend/sse.py and tests/test_sse_keepalive.py, which
+    # also holds this in step with the nginx side of the same fix.
+    return with_keepalive(event_generator())
