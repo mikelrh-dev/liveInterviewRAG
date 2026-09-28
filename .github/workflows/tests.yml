@@ -7,6 +7,14 @@ name: tests
 # commands that are canonical locally, so a green run here means a green run
 # on a developer machine.
 #
+# It also guarantees the dependency manifests stay honest, which it could not
+# do before: tests/test_packaging.py fails the build if backend/ imports a
+# distribution that neither backend/requirements.txt nor pyproject.toml
+# declares, or if those two files disagree on any distribution or floor. That
+# test is why the "install the undeclared packages by hand" step below is gone,
+# and why it cannot be reintroduced quietly -- a hand-written pip line is not
+# a declaration, and adding one here is what hid this class of bug.
+#
 # IT IS CURRENTLY RED, AND THAT IS THE POINT
 # ------------------------------------------
 # Measured on a real `git clone` of this repository (not a guess), pytest gives
@@ -114,24 +122,41 @@ jobs:
           # pytest-asyncio is not optional here -- pyproject.toml sets
           # asyncio_mode = "auto", and without the plugin the async tests are
           # not collected correctly.
-          pip install "pytest>=7.4.0" "pytest-asyncio>=0.21.0" "httpx>=0.25.0"
+          pip install "pytest>=7.4.0" "pytest-asyncio>=0.21.0" "httpx>=0.28.0"
 
-          # UNDECLARED DEPENDENCIES -- a real packaging defect, installed here
-          # so the suite runs today and REPORTED rather than silently fixed,
-          # because declaring them is a requirements.txt / pyproject.toml
-          # change and out of this workflow's scope:
+          # There is deliberately no `pip install "pyyaml>=6.0"
+          # "scikit-learn>=1.3"` line here any more. It used to be here, and it
+          # was papering over an undeclared-dependency defect that has since
+          # been fixed properly in the manifests:
           #
-          #   pyyaml       imported at backend/services/rag.py:14 (module level)
-          #                and scripts/wiki/_common.py:12
-          #   scikit-learn imported at backend/services/rag.py:421 (TF-IDF
-          #                fallback when sentence-transformers is unavailable)
+          #   pyyaml        backend/services/rag.py:14  (module level)
+          #   scikit-learn  backend/services/rag.py:421 (TF-IDF fallback)
+          #   starlette     backend/middleware.py:13    (module level)
           #
-          # Neither appears in backend/requirements.txt or pyproject.toml. A
-          # clean `pip install -r backend/requirements.txt` therefore cannot
-          # import backend.services.rag at all. Declaring them properly needs
-          # `pyyaml>=6.0` and `scikit-learn>=1.3` in requirements.txt, and the
-          # same two in [project] dependencies in pyproject.toml.
-          pip install "pyyaml>=6.0" "scikit-learn>=1.3"
+          # All three are now declared in backend/requirements.txt AND
+          # pyproject.toml, at the exact floors an already-mandatory dependency
+          # imposes, so the resolved install is unchanged (76 packages before
+          # and after -- verified, not assumed).
+          #
+          # A correction to the comment that used to sit here, because the
+          # wrong diagnosis is more expensive than the defect was: it claimed
+          # that "a clean `pip install -r backend/requirements.txt` cannot
+          # import backend.services.rag at all". That is FALSE, and it was never
+          # true. All three arrived as hard, non-extra transitives --
+          # pyyaml via ctranslate2 (from faster-whisper) and via transformers,
+          # scikit-learn via sentence-transformers, starlette via fastapi -- so a
+          # clean install imported the module fine and the suite passed. That is
+          # exactly what made this worth fixing rather than ignoring: the
+          # dependency was installed by coincidence, so the day any of those
+          # three packages re-extras or drops that edge, the app stops starting
+          # on a machine where CI was green the day before.
+          #
+          # If you ever need to see the failure for yourself, suppress the
+          # transitives rather than waiting for an upstream release to do it:
+          #   pip install --no-deps -r backend/requirements.txt
+          # Reproduces `ModuleNotFoundError: No module named 'yaml'` at
+          # backend/services/rag.py:14. tests/test_packaging.py asserts the
+          # declarations exist, so the omission cannot come back silently.
 
       - name: Generate the auto-generated wiki index
         run: python scripts/wiki/generate_index.py --wiki wiki
