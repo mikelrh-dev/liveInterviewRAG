@@ -130,29 +130,6 @@ test("does not ask for context the turn does not have", () => {
     assert.equal(state.last(), 4, "but the turn counter still advances");
 });
 
-// ─── The farewell's number arrives after the turn already settled ─────────
-
-test("a number reported after settlement reaches the state unchanged", () => {
-    const state = loadTurnState();
-
-    // The farewell's turn is written to disk *after* `interview_end`, so the
-    // terminal event settles the turn while the committed number is still
-    // unknown. It arrives on `turn_recorded`, after settlement.
-    //
-    // This is deliberately a thin test. `createTurnState` has no idea which
-    // event carried a number — it only holds the last one — so the only new
-    // claim here is that a late commit is treated exactly like an early one.
-    // The interesting rule, `displayed count = n + 1`, lives in the DOM-bound
-    // dispatcher and is asserted structurally from Python instead; see
-    // tests/test_farewell.py::TestFarewellTurnIsCountedInTheFrontend.
-    assert.equal(state.commit({ n: 4, has_context: false }), 4);
-    assert.equal(state.last(), 4);
-    assert.equal(state.last() + 1, 5, "committed n -> the count the sidebar shows");
-    // The farewell carries no RAG chunks, so a late commit must not queue a
-    // Context request that would 404.
-    assert.equal(state.contextTurn(), null);
-});
-
 // ─── A new interview starts clean ─────────────────────────────────────────
 
 test("reset clears the state of the previous interview", () => {

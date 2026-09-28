@@ -395,19 +395,14 @@ class TestTerminalEventGuarantee:
         types = [e["event"] for e in events]
 
         assert _terminal_count(events) == 1, types
-        # The stream terminates on `interview_end`. This used to assert
-        # `types[-1]`, which is no longer the same claim: the farewell's
-        # committed turn number travels in a non-terminal `turn_recorded` that
-        # necessarily trails the terminal event, because the write that
-        # produces the number happens after it on purpose — the goodbye must
-        # not queue behind a slow disk. What is still guaranteed, and what
-        # would break the client, is that exactly one terminal event happened
-        # and that it was `interview_end`, plus the tighter companion
-        # assertion below: only the turn number may follow it.
-        terminal = [e["event"] for e in events if e["event"] in TERMINAL_EVENTS]
-        assert terminal[-1] == "interview_end", types
-        last_terminal = len(types) - 1 - types[::-1].index("interview_end")
-        assert types[last_terminal + 1 :] in ([], ["turn_recorded"]), types
+        # The stream terminates on `interview_end`, and on nothing after it.
+        # The committed turn number travels *inside* `interview_end`, because
+        # the write that produces it happens first — the goodbye is already
+        # queued behind ~1.3 s of TTS, so a 5.8 ms SQLite write is 0.4% of a
+        # path that has already spent a second. So the last event in the
+        # stream is the terminal one, unconditionally, and a client that stops
+        # reading when it sees a terminal event loses nothing.
+        assert types[-1] == "interview_end", types
 
 
 # ─── Frontend: the extracted settler, behaviourally ───────────────────────
@@ -728,6 +723,24 @@ class TestServerAuthoritativeTurnNumber:
 
         assert "turnState.commit(event.data)" in branch, (
             "the done branch must hand the server-reported turn to turnState"
+        )
+        assert branch.index("turnState.commit(") < branch.index("turn.settle("), (
+            "the turn must be committed before the turn is settled"
+        )
+
+    def test_interview_end_commits_the_server_turn_before_settling(self):
+        """The farewell obeys the same rule, and for the same reason.
+
+        ``interview_end`` carries the committed turn in its payload, so the
+        number is in the branch's hand when it settles. Skipping the commit
+        here would settle on a null turn and leave the sidebar one short of
+        the store -- silently, because the write succeeded.
+        """
+        branch = _strip_js_comments(_js_branch(_sse_dispatch_body(), "interview_end"))
+
+        assert "turnState.commit(event.data)" in branch, (
+            "the interview_end branch must hand the committed turn to "
+            "turnState, or the farewell is stored and never counted"
         )
         assert branch.index("turnState.commit(") < branch.index("turn.settle("), (
             "the turn must be committed before the turn is settled"

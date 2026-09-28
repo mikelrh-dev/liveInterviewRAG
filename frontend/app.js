@@ -1412,8 +1412,8 @@ function createTurnSettler(hooks) {
  * `null` means "the server named no turn": a turn whose write failed, an empty
  * transcription, a truncated stream. Nothing is counted and nothing is
  * requested in that case, which is the whole point — a wrong turn number is a
- * 404. The farewell is not one of these: its number arrives late, on
- * `turn_recorded`, and this object is indifferent to which event carried it.
+ * 404. Both `done` and `interview_end` feed this state the same way, so the
+ * object is indifferent to which terminal event carried the number.
  *
  * See tests/frontend/turn_state.test.mjs.
  *
@@ -1588,34 +1588,19 @@ async function processRecordingStream() {
                         if (isInterviewActive) startListening();
                     }
                 } else if (type === "interview_end") {
-                    // Terminal event for the farewell path. Settling here is
-                    // what unblocks the mic and hands the session back, and
-                    // it is the last thing that can happen to this turn: the
-                    // farewell is written to disk *after* this event, so the
-                    // committed turn number does not exist yet. That is why
-                    // the counter update is not in the settler for this path —
-                    // see the `turn_recorded` branch.
+                    // Terminal event for the farewell path. The payload is
+                    // `done`'s payload — same builder, from the turn the DB
+                    // committed — so the number is already here when the
+                    // settler reads it on the way out. Commit first, then
+                    // settle, exactly as the `done` branch does: that is what
+                    // lets both terminal events share one counter call site
+                    // in the onSettle hook instead of two copies of the same
+                    // arithmetic, which is how they drifted apart once
+                    // already. A farewell carries no RAG chunks, so
+                    // has_context is false and nothing is requested.
+                    turnState.commit(event.data);
                     turn.settle("interview_end");
                     stopInterview();
-                } else if (type === "turn_recorded") {
-                    // The farewell's turn number, arriving after its terminal
-                    // event. The payload is `done`'s payload, built by the
-                    // same function from the turn the DB committed, so this is
-                    // the same rule as the settler applies — not a second
-                    // numbering rule that can drift from it.
-                    //
-                    // The counter call is duplicated from the onSettle hook
-                    // deliberately. Putting it there instead is impossible:
-                    // the settler has already run, on an event that named no
-                    // turn. Keeping it here is the only way the sidebar can
-                    // learn a number that did not exist at settlement time.
-                    turnState.commit(event.data);
-                    const recordedTurn = turnState.last();
-                    // A farewell carries no RAG chunks, so has_context is
-                    // false and contextTurn() is null: nothing is requested.
-                    if (recordedTurn !== null) {
-                        updateTurnCount(recordedTurn + 1);
-                    }
                 } else if (type === "error") {
                     const chunkId = event.data ? event.data.id : undefined;
                     if (

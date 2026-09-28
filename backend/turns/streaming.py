@@ -12,31 +12,32 @@ reported.
                       {"id": int, "url": "..."}        per-sentence stream
     - error:          {"detail": "..."}               fatal, non-recoverable
                       {"detail": "...", "id": int}    recoverable, per-chunk
-    - turn_recorded:  {"n": int, "has_context": bool} committed turn (farewell)
-                      {}                              nothing was stored
     - done:           {"n": int, "has_context": bool} terminal (normal turn)
                       {}                              terminal (nothing stored)
-    - interview_end:  {"message": "..."}              terminal (farewell)
+    - interview_end:  {"message": "...",              terminal (farewell)
+                      "n": int, "has_context": bool}
+                      {"message": "..."}               terminal (nothing stored)
 
-Exactly one terminal event is emitted per stream. ``audio_url`` is the single
-canonical audio event name; the optional ``id`` is the frontend playback cursor
-and is absent when the answer is one whole file.
+Exactly one terminal event is emitted per stream, and it is the last event.
+``audio_url`` is the single canonical audio event name; the optional ``id`` is
+the frontend playback cursor and is absent when the answer is one whole file.
 
-The two events that name a turn — ``done`` and ``turn_recorded`` — carry the
-identical payload, built by the same function from the turn the DB actually
-committed. The frontend must not count transcript elements to find a turn
-number, and must not read one event differently from the other. An empty
-payload means no turn was stored (a failed write, an empty transcription, an
-LLM that died mid-stream), so the client asks the Context panel about nothing.
+The two events that name a turn — ``done`` and ``interview_end`` — carry the
+identical turn-number payload, built by the same function from the turn the DB
+actually committed. The frontend must not count transcript elements to find a
+turn number, and must not read one event differently from the other. Absent
+turn-number fields mean no turn was stored (a failed write, an empty
+transcription, an LLM that died mid-stream), so the client asks the Context
+panel about nothing.
 
-``done`` names the turn it terminates on. ``turn_recorded`` exists because
-``interview_end`` cannot: the farewell is written *after* the terminal event,
-on purpose, so the goodbye never queues behind a slow disk — and at that point
-no turn number exists, only the number the pipeline requested. ``record_turn``
-is free to commit a different one, so the request is not a report. The
-committed number is the return value of the write, which is why it travels in
-its own non-terminal event once the write returns. The ordering is unchanged;
-what changed is that the counter is no longer left guessing.
+Each terminal event names the turn it terminates on, which is why the farewell
+is written *before* ``interview_end`` rather than after it. The number the DB
+commits is the return value of the write, and ``record_turn`` is free to
+override the number the pipeline requested from memory, so the request is not a
+report — the committed one is. Writing first also keeps the terminal event
+last, which is what lets a client stop reading at it. The cost is one write on
+a path that has already blocked on TTS for the goodbye, which is the larger
+cost by two orders of magnitude.
 
 This module is where the two endpoints still diverge: only the streaming path
 detects a farewell and ends the interview. That is a known gap, not an
@@ -208,8 +209,6 @@ def build_stream(
                 if audio_url:
                     yield sse_format("audio_url", {"url": audio_url})
 
-                yield sse_format("interview_end", {"message": farewell})
-                terminal_emitted = True
                 # Store the farewell in conversation (messages + turns stay in
                 # sync so build_conversation_context sees the full history).
                 # audio_url is empty when TTS failed, so a later read of the
@@ -218,22 +217,48 @@ def build_stream(
                     conversation_id, user_text, farewell, [], audio_url
                 )
                 # Write-through: persist the closing exchange atomically, then
-                # let the committed n decide what memory keeps. Runs after
-                # interview_end on purpose — the goodbye must not queue behind
-                # a slow disk. Memory is reconciled before the report is built,
-                # so the report describes exactly what survived the write.
-                committed = await persist_turn(
-                    conversation_id, farewell_turn, farewell_message
+                # let the committed n decide what memory keeps. Runs *before*
+                # the terminal event so `interview_end` can carry the committed
+                # number, and so the terminal event is genuinely last.
+                #
+                # The write is not the bottleneck this ordering was chosen to
+                # avoid. The candidate's wait is already dominated by TTS for
+                # the goodbye — measured ~1.3 s on this machine — so a ~5.8 ms
+                # SQLite write (median, p95 ~8.9 ms, n=200) is 0.4% of it. What
+                # the ordering actually bought was a terminal event that named
+                # no turn, so the counter fell a turn short of the store, and a
+                # client that closes the stream on a terminal event lost the
+                # follow-up event entirely.
+                #
+                # A write that raises is treated exactly like one that returned
+                # None: reported, then terminal. Letting it reach the outer
+                # handler would emit `error` + `done` and leave the interview
+                # running, which is worse than losing a turn.
+                try:
+                    committed = await persist_turn(
+                        conversation_id, farewell_turn, farewell_message
+                    )
+                except Exception as e:
+                    logger.error(
+                        "Farewell turn write failed: %s", e, exc_info=True
+                    )
+                    committed = None
+
+                # The terminal event carries what the DB committed — same
+                # builder as `done`, so the two cannot disagree — alongside the
+                # goodbye text it always carried. A failed or empty write
+                # contributes no turn-number fields, which the client reads as
+                # "nothing was stored" rather than as a number to guess.
+                yield sse_format(
+                    "interview_end",
+                    {"message": farewell, **turn_done_payload(committed)},
                 )
-                # The committed number, now that it exists. Without this the
-                # farewell is on disk and off the sidebar: the client already
-                # settled the turn on interview_end, when the number was still
-                # unknowable, so nothing else will ever count it. Same payload
-                # as `done`, from the same builder, so the two agree by
-                # construction. Non-terminal on purpose — the turn is settled.
-                yield sse_format("turn_recorded", turn_done_payload(committed))
-                # Post-hoc report — must never break the SSE stream.
-                # to_thread keeps the event loop free during the file write.
+                terminal_emitted = True
+
+                # Post-hoc report — must never break the SSE stream. Memory was
+                # reconciled by the write above, so the report describes exactly
+                # what survived it. to_thread keeps the event loop free during
+                # the file write.
                 report_path = await asyncio.to_thread(
                     container.report_service().generate,
                     conversation_id,

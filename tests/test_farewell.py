@@ -278,19 +278,13 @@ ORDINARY_QUESTION = "How do you architect a system?"
 class TestFarewellTurnIsCounted:
     """The farewell turn reaches disk *and* the sidebar.
 
-    The write happens after ``interview_end`` on purpose, so the goodbye is
-    never queued behind a slow disk. The cost of that ordering is that
-    ``interview_end`` is yielded before anything knows the turn number: the
-    number the DB commits is the *return value* of ``persist_turn``, and it
-    does not exist yet. The settler therefore reads ``turnState.last()`` while
-    it is still ``null``, the counter never advances, and the interview ends
-    one turn short of what was stored.
-
-    Emitting the number inside ``interview_end`` cannot fix that, because at
-    that moment there is no number -- only the pipeline's *request*, derived
-    from memory, which ``record_turn`` is free to override when the requested
-    slot is taken. So the number travels in a second, non-terminal event
-    emitted once the write returns.
+    ``interview_end`` is yielded after the farewell's write, so the payload can
+    carry the turn the DB *committed* -- the return value of ``persist_turn``,
+    not the number the pipeline requested from memory and that ``record_turn``
+    is free to override. The client therefore learns the turn number from the
+    same event that ends the interview, and the terminal event stays last,
+    which is the shape a client is entitled to rely on when it reads a
+    terminal event as "stop reading".
 
     The invariant these tests pin is the one the sidebar actually performs:
     the reported ``n`` plus one equals the number of stored turns.
@@ -381,7 +375,7 @@ class TestFarewellTurnIsCounted:
 
         events = _stream(client, cid)
         types = _types(events)
-        reported = self._payload(events, "turn_recorded")["n"]
+        reported = self._payload(events, "interview_end")["n"]
         numbers = self._stored_numbers(stored, cid)
 
         assert numbers == [0], f"stored turns: {numbers}"
@@ -393,11 +387,10 @@ class TestFarewellTurnIsCounted:
             f"the sidebar would show {reported + 1} turns and the store holds "
             f"{len(numbers)}"
         )
-        assert types.index("interview_end") < types.index("turn_recorded"), (
-            "the committed number must be reported after the terminal event; "
-            "reporting it earlier would mean reporting a number that does not "
-            "exist yet, and would put the goodbye behind the disk write"
-        )
+        # The number rides the terminal event, and the terminal event is last.
+        # A client that stops reading at `interview_end` -- the reasonable
+        # thing to do with an event that reads as terminal -- must not lose it.
+        assert types[-1] == "interview_end", types
 
     def test_the_count_is_right_after_several_turns(
         self, client, tts, stored, no_report
@@ -407,7 +400,7 @@ class TestFarewellTurnIsCounted:
 
         first = self._ordinary_turn(client, tts, cid)
         second = self._ordinary_turn(client, tts, cid, "And your testing?")
-        farewell = self._payload(self._farewell_turn(client, tts, cid), "turn_recorded")
+        farewell = self._payload(self._farewell_turn(client, tts, cid), "interview_end")
         numbers = self._stored_numbers(stored, cid)
 
         assert numbers == [0, 1, 2], f"stored turns: {numbers}"
@@ -417,12 +410,30 @@ class TestFarewellTurnIsCounted:
             f"the farewell reported {farewell['n']} after done reported "
             f"{second['n']}"
         )
-        # One payload language for both events, so the client needs one reader.
-        assert set(farewell) == set(first) == {"n", "has_context"}, (
-            f"payload shapes drifted: done={set(first)} "
-            f"turn_recorded={set(farewell)}"
-        )
         assert farewell["n"] + 1 == len(numbers)
+
+    def test_the_turn_number_fields_agree_with_done(self, client, tts, stored, no_report):
+        """``done`` and ``interview_end`` must speak the same payload language.
+
+        They are the two events that name a turn, they are built by the same
+        function, and the client applies one reader to both. If the key set
+        drifts -- a bare ``n`` on one side, ``has_context`` on the other --
+        the frontend grows a special case, and a special case on the farewell
+        path is exactly how the count drifted in the first place.
+        """
+        cid = client.post("/api/conversation").json()["conversation_id"]
+
+        done = self._ordinary_turn(client, tts, cid)
+        ended = self._payload(self._farewell_turn(client, tts, cid), "interview_end")
+
+        assert set(done) == {"n", "has_context"}, done
+        # `interview_end` adds the goodbye text, which is its own job; the
+        # turn-number fields are the part that must not drift.
+        assert set(ended) - {"message"} == set(done), (
+            f"turn-number fields drifted: done={set(done)} "
+            f"interview_end={set(ended) - {'message'}}"
+        )
+        assert "message" in ended, "the goodbye text must survive"
 
     def test_an_interview_without_a_farewell_is_untouched(
         self, client, tts, stored, no_report
@@ -430,8 +441,8 @@ class TestFarewellTurnIsCounted:
         """The ordinary path keeps naming its turn with ``done`` alone.
 
         A normal turn is settled by ``done``, so its number is already in
-        ``turnState`` when the settler runs. Emitting the post-write event
-        there too would count the same turn a second time.
+        ``turnState`` when the settler runs. Carrying a number on a second
+        event there would count the same turn a second time.
         """
         cid = client.post("/api/conversation").json()["conversation_id"]
 
@@ -441,9 +452,10 @@ class TestFarewellTurnIsCounted:
         second = self._payload(second_events, "done")
         numbers = self._stored_numbers(stored, cid)
 
-        assert "turn_recorded" not in _types(second_events), (
-            f"a normal turn must be named by done alone, got {_types(second_events)}"
+        assert "interview_end" not in _types(second_events), (
+            f"a normal turn must end on done alone, got {_types(second_events)}"
         )
+        assert _types(second_events).count("done") == 1
         assert first["n"] == 0 and second["n"] == 1, (first, second)
         assert numbers == [0, 1], f"stored turns: {numbers}"
         assert second["n"] + 1 == len(numbers), (
@@ -456,22 +468,64 @@ class TestFarewellTurnIsCounted:
         """A turn that did not land must not be counted.
 
         ``persist_turn`` returns ``None`` for a write that failed, and the
-        payload builder turns that into ``{}``. The client reads a missing
-        ``n`` as "nothing to count" -- the same rule ``done`` follows.
-        Inventing a number here would put the counter one ahead of the store,
-        which is the same class of bug this whole change is about.
+        payload builder turns that into ``{}``. Merged into ``interview_end``,
+        the goodbye text survives and the turn-number fields are simply
+        absent -- the client reads a missing ``n`` as "nothing to count", the
+        same rule ``done`` follows. Inventing a number here would put the
+        counter one ahead of the store, which is the same class of bug this
+        whole change is about.
+
+        The interview still ends: a failed write must not strand the
+        candidate in a session that will never terminate.
         """
         stored.record_turn = lambda *a, **k: None
 
         cid = client.post("/api/conversation").json()["conversation_id"]
         events = _stream(client, cid)
-        reported = self._payload(events, "turn_recorded")
+        types = _types(events)
+        ended = self._payload(events, "interview_end")
 
-        assert reported == {}, (
-            f"a write that failed must report an empty payload, got {reported}"
+        assert "n" not in ended and "has_context" not in ended, (
+            f"a write that failed must name no turn, got {ended}"
         )
+        assert ended["message"], "the goodbye text must survive a failed write"
+        assert types.count("interview_end") == 1, types
+        assert types[-1] == "interview_end", types
         assert self._stored_numbers(stored, cid) == [], (
             "nothing was stored, so nothing may be counted"
+        )
+
+    def test_a_raising_farewell_write_still_ends_the_interview(
+        self, client, tts, stored, no_report
+    ):
+        """A write that *throws* must behave like a write that returns None.
+
+        This is the failure mode that the ordering change would otherwise
+        introduce silently. While the write sat after ``interview_end`` it
+        could only be reached with ``terminal_emitted`` already true, so a
+        raise fell through to the broad handler, which emits nothing when a
+        terminal event is already out. Moving the write ahead of the terminal
+        event hands that same raise to a handler that has not terminated yet,
+        which reports ``error`` + ``done`` -- and the interview never ends.
+        The candidate would be left in a live session with no goodbye and no
+        way out but reloading the page.
+        """
+
+        def exploding(*args, **kwargs):
+            raise RuntimeError("disk on fire")
+
+        stored.record_turn = exploding
+
+        cid = client.post("/api/conversation").json()["conversation_id"]
+        events = _stream(client, cid)
+        types = _types(events)
+
+        assert types.count("interview_end") == 1, (
+            f"a write that raised must not strand the interview: {types}"
+        )
+        assert types[-1] == "interview_end", types
+        assert "done" not in types, (
+            f"a second terminal event would mean the mic never comes back: {types}"
         )
 
     def test_a_hydrated_conversation_counts_what_it_stored(
@@ -487,7 +541,7 @@ class TestFarewellTurnIsCounted:
 
         cid = client.post("/api/conversation").json()["conversation_id"]
         self._ordinary_turn(client, tts, cid)
-        farewell = self._payload(self._farewell_turn(client, tts, cid), "turn_recorded")
+        farewell = self._payload(self._farewell_turn(client, tts, cid), "interview_end")
 
         main_mod.conversations.clear()  # a process restart, from the store's side
         hydrated = stored.load_conversation(cid)
@@ -537,22 +591,33 @@ class TestFarewellTurnIsCountedInTheFrontend:
     text check and is labelled as one.
     """
 
-    def test_the_dispatcher_handles_the_post_write_event(self):
-        from tests.test_sse_contract import handled_event_types
+    def test_no_turn_recorded_reference_survives(self):
+        """The event is gone from both sides, not merely unused.
 
-        assert "turn_recorded" in handled_event_types(), (
-            "the frontend has no branch for the event carrying the farewell's "
-            "turn number, so the count stays one short of the store"
+        A half-removed event is worse than either version: the backend stops
+        emitting it, so ``test_sse_contract``'s orphan check is the only thing
+        left holding the frontend's dead branch to earth, and that check
+        describes a contract failure, not a cleanup.
+        """
+        from tests.test_sse_contract import FRONTEND_APP, emitted_event_types
+
+        assert "turn_recorded" not in emitted_event_types(), (
+            "the backend still emits turn_recorded; interview_end now carries "
+            "the committed number, and one source of truth is the point"
+        )
+        assert "turn_recorded" not in FRONTEND_APP.read_text(encoding="utf-8"), (
+            "app.js still references turn_recorded, so the event is only "
+            "half-removed"
         )
 
-    def test_the_reporting_branch_publishes_the_committed_turn(self):
+    def test_interview_end_commits_the_committed_turn(self):
         """STRUCTURAL, not behavioural: a text check, and honestly so.
 
-        The counter update *cannot* live in the settler on this path, and that
-        is a consequence of the ordering rather than a tidiness problem:
-        ``interview_end`` settles the turn, and at that point no number
-        exists. So the branch has to apply the same arithmetic as the settler,
-        and this test is what keeps the two from being edited apart.
+        The number arrives on the same event that settles the turn, so the
+        branch must hand it to ``turnState`` *before* calling ``settle`` --
+        the settler reads the number on its way out. Committing afterwards
+        would let the sidebar be driven by a stale turn, which is the exact
+        bug the server-authoritative number replaced.
 
         What it cannot prove is that the arithmetic is right -- that is the
         behavioural test above, and the Node suite.
@@ -563,27 +628,42 @@ class TestFarewellTurnIsCountedInTheFrontend:
             _strip_js_comments,
         )
 
-        branch = _strip_js_comments(_js_branch(_sse_dispatch_body(), "turn_recorded"))
+        branch = _strip_js_comments(_js_branch(_sse_dispatch_body(), "interview_end"))
 
-        assert "turnState.commit(" in branch, (
+        assert "turnState.commit(event.data)" in branch, (
             "the branch must hand the committed turn to turnState; anything "
             "else is a second, private numbering rule"
         )
-        assert "updateTurnCount(" in branch, (
-            "the committed turn must reach the sidebar counter: the settler "
-            "already ran on interview_end, when no number existed yet"
+        assert branch.index("turnState.commit(") < branch.index("turn.settle("), (
+            "the turn must be committed before the turn is settled -- the "
+            "settler reads the number on its way out"
         )
-        assert "turn.settle(" not in branch, (
-            "the turn is already settled by interview_end; settling again is "
-            "a second terminal signal for one turn"
+
+    def test_the_farewell_keeps_a_single_counter_call_site(self):
+        """The counter stays in the settler. One place, not two.
+
+        Duplicating ``updateTurnCount`` into the branch is what
+        ``turn_recorded`` needed and it is exactly the two-places-to-drift
+        shape this path just came out of.
+        """
+        from tests.test_sse_terminal_state import (
+            _js_branch,
+            _sse_dispatch_body,
+            _strip_js_comments,
         )
+
+        branch = _strip_js_comments(_js_branch(_sse_dispatch_body(), "interview_end"))
+        assert "updateTurnCount(" not in branch, (
+            "the counter must advance from the onSettle hook only, so every "
+            "terminal event shares one implementation"
+        )
+        assert "fetchContext(" not in branch
 
     def test_the_ordinary_path_keeps_a_single_counter_call_site(self):
-        """The duplication above must not spread.
+        """A ``done`` must not grow its own counter call either.
 
-        A ``done`` that updated the counter in its own branch would give the
-        two paths two places to drift -- which is precisely how the farewell
-        count drifted in the first place.
+        Two paths with two implementations is precisely how the farewell count
+        drifted in the first place.
         """
         from tests.test_sse_terminal_state import (
             _js_branch,

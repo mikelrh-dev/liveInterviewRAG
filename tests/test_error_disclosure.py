@@ -79,29 +79,6 @@ def _terminal_count(events) -> int:
     return sum(1 for e in events if e["event"] in TERMINAL_EVENTS)
 
 
-def _last_terminal_event(events) -> str | None:
-    """The event the stream actually terminated on, or None if it never did."""
-    terminal = [e["event"] for e in events if e["event"] in TERMINAL_EVENTS]
-    return terminal[-1] if terminal else None
-
-
-def _events_after_last_terminal(events) -> list[str]:
-    """Event names that follow the terminal event.
-
-    Not always empty, and that is deliberate. The farewell's committed turn
-    number can only be known once the write returns, and the write happens
-    after ``interview_end`` so the goodbye is never queued behind a slow disk.
-    The number therefore arrives in one non-terminal event that trails the
-    terminal one. Anything *else* trailing it -- a second terminal event, an
-    error, more tokens -- means the stream is malformed.
-    """
-    last = max(
-        (i for i, e in enumerate(events) if e["event"] in TERMINAL_EVENTS),
-        default=len(events) - 1,
-    )
-    return [e["event"] for e in events[last + 1 :]]
-
-
 def _assert_not_disclosed(payload, where: str) -> None:
     """The one assertion every case shares.
 
@@ -694,19 +671,11 @@ class TestTerminalEventInvariantSurvives:
         events = _stream_events(client, conversation_id)
         assert _terminal_count(events) == 1, [e["event"] for e in events]
         # The stream still terminates on `interview_end`, not on a truncation
-        # and not on `done`. This used to read `events[-1]`, which is no longer
-        # the same claim: the farewell's committed turn number travels in a
-        # non-terminal `turn_recorded` that necessarily follows the terminal
-        # event, because the write that produces the number happens after it on
-        # purpose. The last *terminal* event is still the invariant, and the
-        # trailing-events assertion below keeps the stream's shape pinned in
-        # the dimension that matters: nothing but the turn number may follow
-        # the goodbye, so a second terminal event or a post-hoc error still
-        # fails here.
-        assert _last_terminal_event(events) == "interview_end", [e["event"] for e in events]
-        assert _events_after_last_terminal(events) in ([], ["turn_recorded"]), [
-            e["event"] for e in events
-        ]
+        # and not on `done`, and the terminal event is the last one. The
+        # farewell's committed turn number rides inside `interview_end`, so
+        # nothing has to follow it and a client that stops reading on a
+        # terminal event loses nothing.
+        assert events[-1]["event"] == "interview_end", [e["event"] for e in events]
 
     def test_llm_stream_failure_still_terminates_once(self, client, mock_services):
         def exploding_stream(*args, **kwargs):
