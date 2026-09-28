@@ -171,12 +171,79 @@ class TestReportServiceCleanup:
     def test_cleanup_custom_days_override(self, svc, tmp_path):
         out_dir = tmp_path / "reports"
         f = self._seed(out_dir, "fresh.md")
+        # Pin the mtime instead of relying on the file having been written a
+        # moment ago. With days=0 the cutoff is essentially "now", so the test
+        # was asking whether an mtime recorded microseconds earlier is <= a
+        # time.time() read microseconds later. On NTFS the recorded mtime can
+        # land up to ~2.4e-07 s AHEAD of that later read, so the comparison
+        # failed about 1 run in 3 -- and an intermittently red suite makes every
+        # other number in the project untrustworthy.
+        #
+        # Pinned to an hour ago rather than to a rounder value: the margins
+        # then run in opposite directions and are both enormous. days=0 keeps
+        # it by 1 hour, the 30-day default keeps it by 29 days 23 hours, and
+        # both dwarf the 2.4e-07 s skew by some thirteen orders of magnitude.
+        #
+        # This is a test-side fix on purpose. Adding a tolerance to
+        # cleanup_expired() would change production to serve a test: the only
+        # callers (backend/main.py:205, backend/maintenance.py:88) never pass
+        # `days`, so the zero-day window this flake needed does not exist in
+        # production, and a 30-day window is not sensitive to 238 ns by any
+        # measure that matters.
+        one_hour_ago = time.time() - 3600
+        os.utime(f, (one_hour_ago, one_hour_ago))
         assert svc.cleanup_expired(days=0) == 1
         assert not f.exists()
-        # Default uses constructor retention_days (30): a fresh file survives
+        # Default uses constructor retention_days (30): a fresh file survives.
+        # Left on the real clock deliberately -- a report written just now
+        # being kept by a 30-day window is the realistic case, and it has a
+        # 30-day margin, so nothing here is sensitive to clock skew.
         g = self._seed(out_dir, "fresh2.md")
         assert svc.cleanup_expired() == 0
         assert g.exists()
+
+    def test_the_days_argument_actually_moves_the_window(self, svc, tmp_path):
+        """One file, two adjacent windows, opposite outcomes.
+
+        This is the contract the `days` parameter exists for, asserted with
+        real margins instead of a zero-day knife-edge. The same report is one
+        hour old: a 0-day window must reap it and a 1-day window must keep it.
+        Because both sides of the comparison are fixed instants, the result
+        cannot depend on how the mtime happened to land relative to the clock
+        -- which is what made the sibling test flaky.
+        """
+        out_dir = tmp_path / "reports"
+        f = self._seed(out_dir, "boundary.md")
+        one_hour_ago = time.time() - 3600
+        os.utime(f, (one_hour_ago, one_hour_ago))
+
+        assert svc.cleanup_expired(days=1) == 0, (
+            "a 1-day window must not reap a report that is only an hour old"
+        )
+        assert f.exists()
+
+        assert svc.cleanup_expired(days=0) == 1, (
+            "a 0-day window must reap it; if this fails the `days` argument is "
+            "not reaching the cutoff at all"
+        )
+        assert not f.exists()
+
+    def test_a_file_stamped_in_the_future_is_not_reaped(self, svc, tmp_path):
+        """The window is an honest `<=` against the recorded mtime.
+
+        Pins the absence of a hidden tolerance. If someone later adds an
+        epsilon to cleanup_expired() to paper over a clock-related test, this
+        states the boundary the epsilon must not cross: a file whose mtime is
+        in the future is not expired, whatever the window says.
+        """
+        out_dir = tmp_path / "reports"
+        f = self._seed(out_dir, "future.md")
+        ahead = time.time() + 3600
+        os.utime(f, (ahead, ahead))
+
+        assert svc.cleanup_expired(days=0) == 0
+        assert f.exists()
+
 
     def test_cleanup_never_raises(self, tmp_path):
         from backend.services.report import ReportService
