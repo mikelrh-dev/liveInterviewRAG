@@ -1,0 +1,174 @@
+name: tests
+
+# What this workflow guarantees, and what it does not.
+#
+# GUARANTEES: that both test suites run on every push and pull request, and
+# that a real failure in either is reported as a failure. It runs the exact
+# commands that are canonical locally, so a green run here means a green run
+# on a developer machine.
+#
+# IT IS CURRENTLY RED, AND THAT IS THE POINT
+# ------------------------------------------
+# Measured on a real `git clone` of this repository (not a guess), pytest gives
+# 557 passed / 7 failed / 1 xfailed, versus 563 / 0 / 2 in the working tree.
+# Six of those seven failures have one root cause that is NOT a test bug and
+# NOT something this workflow can fix: four hand-authored wiki pages are
+# untracked because `.gitignore` line 77 says `/wiki/`, so they exist on the
+# author's machine and in no checkout anywhere else:
+#
+#   wiki/faq/nivel-ingles.md
+#   wiki/faq/disponibilidad.md
+#   wiki/faq/hobbies-intereses.md
+#   wiki/faq/por-que-contratarte.md
+#
+# 46 wiki pages are tracked; these four were added after `/wiki/` was
+# gitignored, so git silently skipped them. The suite is calibrated against all
+# 50, and the retrieval floors (recall@3, the regression guard) are calibrated
+# against the 50-page corpus, not the 46-page one that ships. That is why:
+#
+#   - test_candidate: "expected the 37 typed wiki pages, got 33"
+#   - test_rag: 2 questions lose their own document (nivel-ingles, disponibilidad)
+#   - test_rag: the corpus reference-heading set no longer matches the table
+#   - test_rag_chunk_size_sweep: recall@3 is 0.551 on the shipped corpus,
+#     0.653 in the working tree
+#
+# The fix is one commit adding those four files (`git add -f`), or removing
+# `/wiki/` from `.gitignore` and committing them. It is deliberately NOT done
+# here: this workflow's job is to make the gap impossible to ignore, not to
+# paper over it. Do not add `continue-on-error`, a deselect, or a retry to
+# silence these — that would defeat the only reason this file exists.
+#
+# The seventh failure, test_config.py::test_config_paths, is an artifact of the
+# clone this was measured in (it asserts the checkout directory is named
+# "InterviewTTS"). GitHub Actions checks out into a directory of exactly that
+# name, so it passes there.
+#
+# `wiki/index.md` is AUTO-GENERATED (README: "never hand-edit it") and is not
+# committed, so the workflow generates it. That is a legitimate build step, not
+# hidden state: it is reproducible from the tracked pages alone.
+#
+# TWO ENVIRONMENT TRAPS THIS REPRODUCES ON PURPOSE
+# ------------------------------------------------
+# 1. `PYTEST_DISABLE_PLUGIN_AUTOLOAD` is NOT set. With it set, pytest-asyncio
+#    is never auto-loaded and 8 async tests fail with a misleading
+#    "async def functions are not natively supported" error. There is no
+#    `-p no:cacheprovider`-style fix; the variable simply must stay unset, so
+#    it is called out here rather than left to be re-introduced.
+# 2. The interpreter is the one `actions/setup-python` provisioned, and it is
+#    the one that received the dependencies below. Running `pytest` from a
+#    different interpreter — a system python, a sibling venv — produces
+#    "No module named pydantic" and looks like a dependency bug.
+#
+# MODEL DOWNLOAD
+# --------------
+# The RAG embeds with `all-MiniLM-L6-v2` (~90 MB) and downloads it from
+# HuggingFace on first use. It is NOT vendored, and this workflow does not
+# pretend otherwise. First run downloads it; later runs hit the cache. A
+# transient network failure must not be reported as a test failure, so the
+# download is retried once, in its own step, BEFORE any test runs. The tests
+# themselves still run exactly once, with no retry: retrying a download is
+# resilience, retrying a test is hiding a defect.
+#
+# No matrix across Python versions: the project declares `requires-python =
+# ">=3.10"` and 3.10 is what the venv runs. A version matrix here would triple
+# the runtime to re-test a range nobody claims to support.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # 3.10 matches the local venv exactly, so "green here" and "green on my
+      # machine" mean the same thing. setup-python also puts this
+      # interpreter first on PATH, which is the trap-2 fix.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            pyproject.toml
+
+      # Pinned rather than inherited: ubuntu-latest ships whatever Node it
+      # ships, and "the Node suite passed" should not depend on a runner image
+      # detail. Nothing in tests/frontend/*.test.mjs needs a build step.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+
+          # Declared runtime.
+          pip install -r backend/requirements.txt
+
+          # Declared test runner: the `dev` extra from pyproject.toml.
+          # pytest-asyncio is not optional here -- pyproject.toml sets
+          # asyncio_mode = "auto", and without the plugin the async tests are
+          # not collected correctly.
+          pip install "pytest>=7.4.0" "pytest-asyncio>=0.21.0" "httpx>=0.25.0"
+
+          # UNDECLARED DEPENDENCIES -- a real packaging defect, installed here
+          # so the suite runs today and REPORTED rather than silently fixed,
+          # because declaring them is a requirements.txt / pyproject.toml
+          # change and out of this workflow's scope:
+          #
+          #   pyyaml       imported at backend/services/rag.py:14 (module level)
+          #                and scripts/wiki/_common.py:12
+          #   scikit-learn imported at backend/services/rag.py:421 (TF-IDF
+          #                fallback when sentence-transformers is unavailable)
+          #
+          # Neither appears in backend/requirements.txt or pyproject.toml. A
+          # clean `pip install -r backend/requirements.txt` therefore cannot
+          # import backend.services.rag at all. Declaring them properly needs
+          # `pyyaml>=6.0` and `scikit-learn>=1.3` in requirements.txt, and the
+          # same two in [project] dependencies in pyproject.toml.
+          pip install "pyyaml>=6.0" "scikit-learn>=1.3"
+
+      - name: Generate the auto-generated wiki index
+        run: python scripts/wiki/generate_index.py --wiki wiki
+
+      - name: Cache the sentence-transformer model
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: >-
+            ${{ runner.os }}-minilm-l6-v2-${{ hashFiles('backend/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-minilm-l6-v2-
+
+      - name: Pre-fetch the embedding model
+        run: |
+          for attempt in 1 2 3; do
+            if python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"; then
+              echo "model ready"
+              break
+            fi
+            if [ "$attempt" = "3" ]; then
+              echo "could not download all-MiniLM-L6-v2 after 3 attempts"
+              exit 1
+            fi
+            echo "model download failed (attempt $attempt); retrying in 10s"
+            sleep 10
+          done
+
+      - name: Python suite
+        # Canonical local form. `PYTEST_DISABLE_PLUGIN_AUTOLOAD` must stay
+        # unset here -- see the trap-1 note in the header.
+        run: python -m pytest tests/ -q -p no:cacheprovider
+
+      - name: Node frontend suites
+        # Run separately from pytest on purpose. These suites are also wired
+        # into pytest via NODE_TESTS, so a Node failure could otherwise be
+        # reported as a Python failure and read as a harness problem. No
+        # retry: test_cleanup_custom_days_override is a real test now, and if
+        # it ever fails that is information.
+        run: node --test "tests/frontend/*.test.mjs"
