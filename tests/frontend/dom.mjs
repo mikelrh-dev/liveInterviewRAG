@@ -103,6 +103,7 @@ export function baseState(overrides = {}) {
         silenceStart: null,
         hasSpoken: false,
         currentState: "idle",
+        statusIsError: false,
         waveformBars: [],
         waveformAnimationId: null,
         currentCandidateDiv: null,
@@ -446,7 +447,9 @@ export function createDom(options = {}) {
                     return `var ${key} = ${toSource(value, idx)};`;
                 })
                 .join("\n");
-            const bodies = names.map((name) => extractFunction(name)).join("\n\n");
+            const source = readAppJs();
+            const resolved = resolveDependencies(names, source, topLevelFunctions(source));
+            const bodies = resolved.map((name) => extractFunction(name, source)).join("\n\n");
             window.eval(`${preamble}\n${bodies}\n`);
 
             const fn = {};
@@ -454,6 +457,8 @@ export function createDom(options = {}) {
                 assertCallable(window[name], name);
                 fn[name] = window[name];
             }
+            // Everything pulled in, so a test can reach a helper it did not name.
+            fn.resolved = resolved;
             fn.state = new Proxy(
                 {},
                 {
@@ -472,6 +477,56 @@ export function createDom(options = {}) {
         },
     };
     return env;
+}
+
+/**
+ * Every top-level function declaration in app.js, by name.
+ *
+ * Only declarations count, not any nested function: a declaration has no side
+ * effect at the moment it is created, so including one is free, whereas a
+ * nested function is part of some other unit's body.
+ */
+function topLevelFunctions(source = readAppJs()) {
+    const names = new Set();
+    const pattern = /(?:^|\n)[ \t]*(?:async[ \t]+)?function[ \t]+([A-Za-z_$][\w$]*)[ \t]*\(/g;
+    let match;
+    while ((match = pattern.exec(source)) !== null) names.add(match[1]);
+    return names;
+}
+
+/**
+ * Close `wanted` under app.js's own call graph, one hop at a time.
+ *
+ * A lifted function resolves the names it calls against the window, so those
+ * names have to be there too. Enumerating them by hand is how `setStatus` ends
+ * up loaded without `applyStatusClasses` and every test that touches the status
+ * line fails with `applyStatusClasses is not defined` -- an error that reads
+ * like a broken harness and says nothing about the code under test.
+ *
+ * It walks the real call graph instead. Loading an extra function declaration
+ * is free (it is not invoked), and not loading a needed one is a broken test.
+ */
+function resolveDependencies(wanted, source, declared) {
+    const loaded = new Set(wanted);
+    const queue = [...wanted];
+
+    while (queue.length) {
+        const name = queue.shift();
+        let body;
+        try {
+            body = extractFunction(name, source);
+        } catch {
+            continue;
+        }
+        // Any other top-level function this body calls.
+        for (const candidate of declared) {
+            if (loaded.has(candidate)) continue;
+            if (!new RegExp(`\\b${candidate}\\s*\\(`).test(body)) continue;
+            loaded.add(candidate);
+            queue.push(candidate);
+        }
+    }
+    return [...loaded];
 }
 
 function assertCallable(value, name) {

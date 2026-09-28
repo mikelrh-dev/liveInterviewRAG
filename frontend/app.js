@@ -784,11 +784,11 @@ function setState(state) {
         }
     }
 
-    // Update status text class
-    statusEl.className = "hud-status";
-    if (state !== "idle") {
-        statusEl.classList.add(state);
-    }
+    // The status line's classes, written by the one function that owns them.
+    // This used to be `statusEl.className = "hud-status"` followed by a
+    // classList.add, which is what wiped the error class setStatus() had just
+    // applied -- see applyStatusClasses().
+    applyStatusClasses(state, statusIsError);
 
     // Avatar video crossfade: show talking when speaking, neutral otherwise
     if (avatarTalkingVideo) {
@@ -1893,7 +1893,9 @@ async function processRecordingStream() {
         // branch: one owner of the line, and a real class name. (It passed
         // boolean `true` here, which setStatus concatenated into the class
         // attribute as the literal class "true" -- so the error styling this
-        // call was reaching for never applied.)
+        // call was reaching for never applied. setStatus now normalises the
+        // boolean, and applyStatusClasses() is the only writer of the list, so
+        // the three remaining `true` call sites cannot drift the same way.)
         narrator.failed();
         // The turn produced no measurable result, so the pill must not keep
         // showing one — including the partial stopwatch.
@@ -2171,9 +2173,57 @@ function toggleChunk(el) {
 
 // ─── Helpers ───────────────────────────────────────────
 
+// ─── Status line ─────────────────────────────────────────
+
+/**
+ * Is the last thing written to the status line a failure?
+ *
+ * Module state, not a parameter, because the two writers of the class list run
+ * at different times: the failure paths call `setStatus(msg, true)` and then
+ * `setState(...)` on the next line, and the state change must not forget that
+ * the message on screen is an error.
+ */
+let statusIsError = false;
+
+/**
+ * The single writer of #status's class list.
+ *
+ * This attribute used to have two owners. `setStatus` wrote
+ * `"hud-status" + (className ? " " + className : "")`, which for a boolean
+ * `true` produced the class `true` -- a JavaScript value that had leaked into a
+ * class attribute and that no stylesheet has a rule for. `setState` then ran
+ * `statusEl.className = "hud-status"` on the very next line and threw away
+ * whatever had been written, so even a correctly spelled error class would have
+ * lasted zero frames. Both faults are the same fault: two functions writing
+ * one attribute without knowing about each other.
+ *
+ * So there is one function, and it is handed both facts -- the state the
+ * machine is in, and whether the line is currently reporting a failure -- and
+ * derives the whole list. `hud-status` is the base, the state is added when it
+ * is not idle, and `error` is added when the message is a failure. There is
+ * nothing for a caller to get wrong, because no caller names a class any more.
+ */
+function applyStatusClasses(state, isError) {
+    const classes = ["hud-status"];
+    if (state && state !== "idle") classes.push(state);
+    if (isError) classes.push("error");
+    statusEl.className = classes.join(" ");
+}
+
+/**
+ * Write the status line.
+ *
+ * `className` is the failure flag, and it accepts two spellings: `true` and
+ * `"error"`. Both mean the same thing and are normalised here, once, so no call
+ * site has to know which one the stylesheet has a rule for. The `true` spelling
+ * is what three call sites pass; `"error"` is what the turn narrator passes.
+ * A new status with no flag clears a previous error, because a stale error is
+ * its own kind of lie.
+ */
 function setStatus(text, className) {
     statusEl.textContent = text;
-    statusEl.className = "hud-status" + (className ? " " + className : "");
+    statusIsError = className === true || className === "error";
+    applyStatusClasses(currentState, statusIsError);
 }
 
 function scrollToBottom() {

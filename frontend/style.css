@@ -30,6 +30,10 @@
     --green: #22c55e;
     --amber: #f59e0b;
     --red: #ef4444;
+    /* Speaking. The orb turns violet in this state (0x8b5cf6 in avatar.js), so
+       the line that reports the state uses the orb's colour rather than a
+       fourth invented one. */
+    --violet: #8b5cf6;
 
     /* Text */
     --text-primary: #e2e8f0;
@@ -769,6 +773,14 @@ body[data-state="speaking"] #btn-mic.active {
 
 #status.processing {
     color: var(--amber);
+}
+
+/* Speaking was missing while listening and processing were both here, so the
+   longest phase of every turn -- the one where the candidate is definitely
+   getting an answer -- was drawn exactly like idle. The state class was always
+   reaching the element; there was simply no rule for it. */
+#status.speaking {
+    color: var(--violet);
 }
 
 #status.error {
