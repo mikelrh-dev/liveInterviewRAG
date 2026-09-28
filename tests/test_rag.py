@@ -19,6 +19,13 @@ from backend.services.rag import (
     split_sections,
 )
 
+# The 49-question labelled retrieval set, reused so the threshold's measured
+# behaviour is scored on the same questions the chunk-size sweep used. Importing
+# a labelled set across test modules is already the pattern here (see
+# ``tests/test_farewell.py`` importing ``tests/test_sse_contract.py``); a second
+# copy of the questions would be a second thing to keep in sync.
+from tests.test_rag_chunk_size_sweep import LABELLED_CASES
+
 # A body line that is nothing but wikilinks: ``- [[profile/mikel]]``.
 _WIKILINK_LINE = re.compile(r"^\s*(?:[-*]\s+)?(?:\[\[[^\]]*\]\](?:[,;]\s*)?)+\s*$")
 
@@ -119,12 +126,18 @@ Second section content."""
         assert results == []
 
     def test_retrieve_no_match(self):
-        """Retrieval returns empty when nothing matches threshold."""
-        rag = RAGPipeline(chunk_size=100)
+        """Retrieval returns empty when nothing clears the score filter.
+
+        The filter is set on the pipeline, not per call: ``retrieve()`` takes no
+        ``threshold`` argument (see ``TestRetrievalThresholdIsHonest``), because
+        no production caller passed one and a second unmeasured knob is how this
+        filter came to be mistaken for inert.
+        """
+        rag = RAGPipeline(chunk_size=100, threshold=0.99)
         docs = {"cv.md": "Python experience and skills."}
         rag.ingest_documents(docs)
 
-        results = rag.retrieve("quantum physics superposition", top_k=3, threshold=0.99)
+        results = rag.retrieve("quantum physics superposition", top_k=3)
         # With high threshold, irrelevant query should return nothing or very low scores
         assert all(score < 0.99 for _, score in results) or len(results) == 0
 
@@ -1713,6 +1726,175 @@ class TestChunkFilterVersionGuardsTheStaleCache:
 
         assert rewritten["chunk_filter_version"] == CHUNK_FILTER_VERSION, (
             "the rejected cache was not rewritten at the current version"
+        )
+
+
+class TestRetrievalThresholdIsHonest:
+    """What the 0.3 score filter actually does, measured — not assumed.
+
+    THE BRIEF THIS REPLACES
+    ----------------------
+    A review claimed the threshold was "inert": the lowest top-1 cosine across
+    the 49-question labelled set is 0.414, well above the 0.3 default, so the
+    filter "never removes anything". The 0.414 reproduces exactly (measured,
+    real 37-page wiki, real ``all-MiniLM-L6-v2``, real ``expand_query``). The
+    INFERENCE DOES NOT.
+
+    ``retrieve()`` filters every candidate, THEN sorts descending and slices
+    ``top_k``. So a score filter can only change what the caller receives when
+    fewer than ``top_k`` candidates survive it. Two things are true at once:
+
+      * The filter is NOT inert. Over the 49 x 125 (question, chunk) matrix it
+        drops 1792 of 6125 pairs -- 29% of the candidate pool. The full-matrix
+        minimum is -0.0906, not 0.414: 0.414 is the best chunk per question,
+        which is a different statistic entirely.
+      * On the DIRECT path it still cannot change an answer: at least 12 of 125
+        chunks clear 0.3 for every one of the 49 questions, so ``top_k`` up to
+        12 is unaffected.
+      * On the PRODUCTION path (``get_context_string`` /
+        ``get_chunks_with_scores``, which also apply ``detect_doc_type``) it
+        DOES change an answer. ``detect_doc_type`` maps "cuentame sobre ti en
+        treinta segundos" to ``profile``, leaving 1 surviving chunk at 0.3081
+        against a second-best of 0.2252 -- so the shipped default returns 1
+        chunk (819 chars of context) where an unfiltered run returns 3
+        (2553 chars). The margin is 0.0081.
+
+    That last figure is why this class exists rather than a deletion. A guard a
+    future reader will trust is a guard that has been measured, and 0.0081 is
+    the opposite of a comfortable default: it is one wiki edit away from
+    returning NO context at all, which this file's own ``doc_type`` fallback
+        comment calls worse than a slightly less precise answer.
+
+    So the default stays at 0.3 -- it is the measured-free setting, costing
+    0 of 49 questions of recall, against 1 question lost at 0.45 and 3 at 0.50
+    -- and what is removed is the surface that invited the wrong conclusion:
+    the per-call ``threshold`` override, which no production caller passes.
+    """
+
+    def test_the_filter_is_live_and_drops_a_fourth_of_the_candidate_pool(self, real_wiki_pipeline):
+        """Guard the OTHER direction: the filter must not be vacuous.
+
+        Without this, every "the default drops nothing" test below could be
+        satisfied by a filter that never binds at all (a threshold of -1, a
+        comparison against a constant). Pinning that 0.3 really does discard
+        29% of the matrix is what makes them non-vacuous.
+
+        The count is taken from ``retrieve()`` with a ``top_k`` larger than the
+        corpus, so the number of returned chunks IS the number of survivors.
+        Recomputing the cosine here instead would test the test: an earlier
+        draft of this assertion re-implemented the dot product and therefore
+        passed unchanged when ``retrieve()``'s comparison was mutated to
+        ``score >= -1.0``. Verified by mutation — do not "simplify" this back
+        into local arithmetic.
+        """
+        rag = real_wiki_pipeline
+        shipped = rag.threshold
+        assert shipped == 0.3, (
+            f"the shipped default is {shipped}, not 0.3. Raising it is not free: "
+            f"measured over the labelled set, 0.40 costs 0 questions of recall@3, "
+            f"0.45 costs 1, 0.50 costs 3, 0.60 costs 7."
+        )
+
+        deeper = len(rag.chunks) * 2
+        survivors = sum(len(rag.retrieve(case.question, top_k=deeper)) for case in LABELLED_CASES)
+        total = len(LABELLED_CASES) * len(rag.chunks)
+        dropped = total - survivors
+
+        assert total == len(LABELLED_CASES) * len(rag.chunks), (
+            f"expected {len(LABELLED_CASES)} questions x {len(rag.chunks)} chunks "
+            f"= {total} pairs, scored {survivors} survivors"
+        )
+        assert dropped > 0.15 * total, (
+            f"the 0.3 filter now drops only {dropped}/{total} "
+            f"({dropped / total:.1%}) of the candidate pool. If it has stopped "
+            f"binding, every 'the default drops no real result' test in this "
+            f"class is vacuously true and this file is guarding nothing. It was "
+            f"measured dropping 1792/6125 (29%)."
+        )
+
+    def test_shipped_default_drops_no_result_the_unfiltered_run_keeps(
+        self, real_wiki_pipeline
+    ):
+        """The direct path: 0.3 must not remove anything the caller would get.
+
+        This is the non-vacuous version of the review's claim. It is stated
+        behaviourally -- the same chunks, in the same order, with and without
+        the filter -- rather than as a statistic about top-1, because top-1 is
+        precisely the statistic that made the original claim look safe while
+        the filter was still dropping 29% of the pool.
+
+        Fails the moment the default is lowered far enough to bite, which is the
+        regression this is here to catch.
+        """
+        rag = real_wiki_pipeline
+        shipped = rag.threshold
+        try:
+            for case in LABELLED_CASES:
+                filtered = rag.retrieve(case.question, top_k=3)
+                rag.threshold = -1.0
+                unfiltered = rag.retrieve(case.question, top_k=3)
+                rag.threshold = shipped
+
+                assert [_norm_source(c.source) for c, _ in filtered] == [
+                    _norm_source(c.source) for c, _ in unfiltered
+                ], (
+                    f"the shipped threshold of {shipped} changed the result for "
+                    f"{case.question!r}: filtered="
+                    f"{[_norm_source(c.source) for c, _ in filtered]} vs unfiltered="
+                    f"{[_norm_source(c.source) for c, _ in unfiltered]}. It is "
+                    f"filtering real results."
+                )
+        finally:
+            rag.threshold = shipped
+
+    def test_shipped_default_never_empties_the_production_context(self, real_wiki_pipeline):
+        """The production path, and the 0.0081 margin that makes this fragile.
+
+        ``get_context_string`` additionally runs ``detect_doc_type``, which is a
+        much narrower candidate pool than the direct path, and that is where
+        the default actually bites. An empty context is the failure this file
+        already documents as worse than a loose one.
+
+        HONEST LIMIT: this is coupled to the live corpus. One labelled question
+        clears 0.3 by 0.0081, so a wiki edit can legitimately fail this. That
+        is the intended signal, not a flake -- the message says so -- but it
+        means the test must be re-read, never quietly relaxed, when it fires.
+        """
+        rag = real_wiki_pipeline
+        empty = [c.question for c in LABELLED_CASES if not rag.get_context_string(c.question, top_k=3)]
+        assert not empty, (
+            f"the shipped threshold of {rag.threshold} leaves {len(empty)} of "
+            f"{len(LABELLED_CASES)} real questions with NO context at all: {empty}. "
+            f"An interview answer with no grounding from the profile is worse "
+            f"than a loose one. Either lower the default (measured to cost 0 "
+            f"recall questions down to 0.40) or fix the detect_doc_type "
+            f"misroute, which is the actual cause here."
+        )
+
+    def test_retrieve_takes_no_per_call_threshold(self):
+        """The per-call override is dead surface and must not come back.
+
+        No production caller passes it: ``main.py`` constructs ``RAGPipeline``
+        with the instance default, and both production entry points call
+        ``retrieve(query, top_k=..., doc_type=...)``. A second, per-call
+        threshold is one more way for a reader to believe the filter is doing
+        something configurable when only one value has ever been measured.
+
+        This is the assertion that failed before the change; it is here so the
+        removal is a contract rather than an edit someone can revert.
+        """
+        import inspect
+
+        params = [
+            name
+            for name in inspect.signature(RAGPipeline.retrieve).parameters
+            if name != "self"
+        ]
+        assert params == ["query", "top_k", "doc_type"], (
+            f"retrieve() takes {params}; the per-call `threshold` override is "
+            f"back. No production caller passes it, only one value has ever "
+            f"been measured, and it is the surface that made this filter look "
+            f"configurable when it is not."
         )
 
 
