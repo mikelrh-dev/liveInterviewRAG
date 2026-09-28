@@ -134,7 +134,7 @@ sequenceDiagram
 | LLM | Google AI (Gemini) + OpenRouter | Google AI as primary (fast, cheap), OpenRouter as fallback with model flexibility |
 | TTS | Edge TTS (`edge-tts`) | No API key to configure, no GPU, no local model to ship. It is a *cloud* service — the text is sent to Microsoft — so there is no offline synthesis |
 | Frontend | Vanilla HTML/CSS/JS | No framework overhead, faster cold start on the free tier |
-| Reverse proxy | Nginx | Standard, well-documented, handles static files + WSGI proxy |
+| Reverse proxy | Nginx | Standard, well-documented: serves the static frontend and proxies the ASGI app |
 | Process manager | systemd | Auto-restart on failure, journal logging |
 | Hosting | Oracle Cloud Free Tier (ARM64) | $0/month, 4 cores, 24 GB RAM — enough for a single-conversation workload |
 | Workflow | OpenSpec + strict TDD | Every change goes through spec → design → tasks → test-first → apply |
@@ -145,7 +145,7 @@ sequenceDiagram
 
 This project runs on a free VPS with no GPU, so every decision is a tradeoff. Documenting them explicitly because they show how I think under constraints:
 
-- **STT model size** — `small` Whisper hits the sweet spot for Spanish accuracy on CPU. `tiny` is faster but gets technical words wrong. `medium` is too slow. The config default is now `small`, and the test verifies it.
+- **STT model size** — `small` Whisper hits the sweet spot for Spanish accuracy on CPU. `tiny` is faster but gets technical words wrong. `medium` is too slow. The config default is now `small`, and the test verifies it. What ships is `WHISPER_MODEL=small`, `WHISPER_DEVICE=cpu`, `WHISPER_COMPUTE_TYPE=int8` (`backend/config.py:60-62`); the first and third are overridable per-deployment, and the shipped combination is the one the latency numbers below were measured with.
 - **TTS voice** — Edge TTS needs no key and no GPU, but it is a *cloud* service: the text leaves the VPS and is synthesized by Microsoft. The voices are generic Microsoft ones, not a clone of me. Voice cloning models like Piper or ElevenLabs give better quality, but they either need a GPU or cost money. Edge TTS with streaming and caching is the best balance.
 - **LLM provider** — Google AI (Gemini Flash Lite) is fast and cheap but rate-limited. OpenRouter is the fallback when the primary is unavailable.
 - **VPS resources** — 4 cores and 24 GB RAM are shared with the system. Whisper alone takes ~1.4 GB, so there's no headroom for a heavy voice model. The architecture is single-conversation at a time.
@@ -166,7 +166,6 @@ Every optimization targets real latency in the voice pipeline. Here's what I imp
 | Cache + RAG enrichment | 0s + rich context | Instant answer enriched with wiki-sourced details | Low |
 | Wiki metadata RAG | Better accuracy | Frontmatter parsing, type filtering, query enrichment | Low |
 | Embedding persistence | -2-3s startup | Pre-computed embeddings saved to disk, validated on load | Medium |
-| Whisper medium + float16 | +20-30% accuracy | Larger model on ARM64, no GPU needed | Low |
 | Streaming SSE | Perceived 0s | Tokens arrive before full response, avatar starts talking | None |
 
 **Before optimizations:** ~15-25s per response
