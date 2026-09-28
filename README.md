@@ -41,7 +41,7 @@ It's not a demo. It's a deployable system with real tradeoffs, real constraints,
 - **Speech-to-Text** — [Faster Whisper](https://github.com/SYSTRAN/faster-whisper) running CPU with int8 quantization, configurable model size (default `small`)
 - **RAG pipeline** — Retrieves relevant context from the candidate's wiki (8 document types: profile, projects, experience, skills, stories, opinions, decisions, FAQ) and feeds it to the LLM
 - **LLM generation** — Google AI as primary provider, [OpenRouter](https://openrouter.ai/) as fallback. System prompt positions the model as the candidate
-- **Voice output** — [Pocket TTS](https://github.com/rhasspy/piper) for natural Spanish synthesis (local, fast), with [Edge TTS](https://github.com/rany2/edge-tts) as fallback
+- **Voice output** — [Edge TTS](https://github.com/rany2/edge-tts) (Microsoft) synthesizes every response. This is the only engine: there is no Piper, no local synthesis and no fallback chain (see `backend/services/tts.py`). The voice is `TTS_VOICE` — default `es-ES-AlvaroNeural`, declared in `.env.example:36`, read at `backend/config.py:65` and applied at `backend/main.py:95`
 - **Audio-reactive avatar** — 3D avatar with crossfade between neutral and talking states, synchronized with the audio playback
 - **Session management** — Multi-turn conversations with TTL-based cleanup
 - **Rate limiting** — 10 requests per minute per IP to prevent abuse
@@ -132,7 +132,7 @@ sequenceDiagram
 | STT | faster-whisper (CTranslate2) | CTranslate2 is way faster than vanilla Whisper on CPU, int8 quantization keeps RAM at ~1.4 GB |
 | Embeddings | sentence-transformers (all-MiniLM-L6-v2) | Small model, runs on CPU, good enough for semantic search over a small doc set |
 | LLM | Google AI (Gemini) + OpenRouter | Google AI as primary (fast, cheap), OpenRouter as fallback with model flexibility |
-| TTS | Pocket TTS (Piper) + Edge TTS | Local, fast, no API key; Edge as fallback for reliability |
+| TTS | Edge TTS (`edge-tts`) | No API key to configure, no GPU, no local model to ship. It is a *cloud* service — the text is sent to Microsoft — so there is no offline synthesis |
 | Frontend | Vanilla HTML/CSS/JS | No framework overhead, faster cold start on the free tier |
 | Reverse proxy | Nginx | Standard, well-documented, handles static files + WSGI proxy |
 | Process manager | systemd | Auto-restart on failure, journal logging |
@@ -147,7 +147,7 @@ sequenceDiagram
 This project runs on a free VPS with no GPU, so every decision is a tradeoff. Documenting them explicitly because they show how I think under constraints:
 
 - **STT model size** — `small` Whisper hits the sweet spot for Spanish accuracy on CPU. `tiny` is faster but gets technical words wrong. `medium` is too slow. The config default is now `small`, and the test verifies it.
-- **TTS voice** — Edge TTS is free and runs locally, but the voices are generic Microsoft ones, not a clone of me. Voice cloning models like Piper or ElevenLabs give better quality, but they either need a GPU or cost money. Edge TTS with streaming and caching is the best balance.
+- **TTS voice** — Edge TTS needs no key and no GPU, but it is a *cloud* service: the text leaves the VPS and is synthesized by Microsoft. The voices are generic Microsoft ones, not a clone of me. Voice cloning models like Piper or ElevenLabs give better quality, but they either need a GPU or cost money. Edge TTS with streaming and caching is the best balance.
 - **LLM provider** — Google AI (Gemini Flash Lite) is fast and cheap but rate-limited. OpenRouter is the fallback when the primary is unavailable.
 - **VPS resources** — 4 cores and 24 GB RAM are shared with the system. Whisper alone takes ~1.4 GB, so there's no headroom for a heavy voice model. The architecture is single-conversation at a time.
 - **No GPU** — All ML inference is CPU-bound. The 8-second pipeline budget is tight on CPU; the streaming endpoint is what makes the UX feel responsive.
