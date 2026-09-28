@@ -810,6 +810,27 @@ function setState(state) {
 
 // ─── Interview toggle ──────────────────────────────────
 
+/**
+ * The mic button's accessible name.
+ *
+ * This was the literal string "Iniciar entrevista" for the life of the page,
+ * including while the button was the control that stopped a running interview
+ * -- so a screen-reader user was told the button starts an interview at the
+ * exact moment it is the only control that can end one. A start/stop control
+ * names the action it is about to perform, which is why this is a function of
+ * the state rather than an attribute.
+ *
+ * The two icons swap on the same two transitions, so the name cannot drift from
+ * what the button shows.
+ */
+function micLabel(isActive) {
+    return isActive ? "Detener entrevista" : "Iniciar entrevista";
+}
+
+function setMicLabel(isActive) {
+    btnMic.setAttribute("aria-label", micLabel(isActive));
+}
+
 function toggleInterview() {
     if (isInterviewActive) stopInterview();
     else startInterview();
@@ -855,6 +876,7 @@ async function startInterview() {
     btnMic.classList.add("active");
     micIcon.classList.add("hidden");
     stopIconEl.classList.remove("hidden");
+    setMicLabel(true);
     setState("listening");
 
     startListening();
@@ -872,6 +894,7 @@ function stopInterview() {
     btnMic.classList.remove("active");
     micIcon.classList.remove("hidden");
     stopIconEl.classList.add("hidden");
+    setMicLabel(false);
     setState("idle");
     setStatus("Entrevista finalizada");
     addMessage("system", "Entrevista finalizada.");
@@ -1656,6 +1679,12 @@ async function processRecordingStream() {
             allChunksReceived = true;
             hideTyping();
             removeAudioIndicator();
+            // The text is final, so let it be heard. Driven from here rather
+            // than from a branch, because `done`, `interview_end`, `error` and
+            // EOF all reach the end of a turn and every one of them must
+            // finish the answer -- a terminal path that settles in silence
+            // leaves a blind user waiting on a reply that already arrived.
+            finalizeAnswer(currentCandidateDiv);
             const settledTurn = turnState.last();
             if (settledTurn !== null) {
                 updateTurnCount(settledTurn + 1);
@@ -1841,6 +1870,45 @@ async function processRecordingStream() {
 }
 
 // ─── Typing animation ──────────────────────────────────
+
+/**
+ * Say a finished answer, exactly once.
+ *
+ * `#conversation` is a polite live region, which is what makes an arriving
+ * answer audible at all. But the answer arrives by being appended to as the LLM
+ * streams, and a live region announces every one of those appends -- a
+ * five-sentence reply read out as a growing prefix five to ten times. So the
+ * candidate bubble is muted with `aria-live="off"` in addMessage(), and this
+ * unmutes it when the turn is over and the text is final.
+ *
+ * The order is the whole trick. A live region announces on a *mutation*, and a
+ * mutation made while the region is still muted is a mutation nobody hears, so
+ * the attribute has to be lifted before the text is re-committed. Re-committing
+ * text that has not changed is exactly that mutation: setting `textContent`
+ * replaces the text node, and replacing the node is what the region reports.
+ *
+ * The cursor is removed explicitly rather than left to that reassignment to
+ * sweep up incidentally. It is appended per token and was never removed, so it
+ * blinked forever at the end of every answer; the answer being final is the
+ * only moment that is correct. Stated, it survives a refactor that changes how
+ * the text is written; left implicit, it does not.
+ */
+function finalizeAnswer(messageDiv) {
+    if (!messageDiv) return;
+
+    const bubble = messageDiv.querySelector(".bubble");
+    if (!bubble) return;
+
+    const p = bubble.querySelector("p");
+    if (!p) return;
+
+    bubble.removeAttribute("aria-live");
+
+    const cursor = p.querySelector(".typing-cursor");
+    if (cursor) cursor.remove();
+
+    p.textContent = p.textContent;
+}
 
 function appendTypingText(messageDiv, text) {
     const bubble = messageDiv.querySelector(".bubble");
@@ -2071,6 +2139,11 @@ function showTyping() {
     if (document.querySelector(".typing-indicator")) return;
     const div = document.createElement("div");
     div.className = "typing-indicator";
+    // #conversation is a polite live region, so everything appended into it is
+    // announced. This one is three empty dots in a decorative avatar: it has no
+    // text to read, and it says nothing #status has not already said one line
+    // above. Hidden from the region, not from the screen.
+    div.setAttribute("aria-hidden", "true");
     div.innerHTML = `
         <div class="avatar">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
@@ -2109,6 +2182,13 @@ function addMessage(type, text) {
         bubble.innerHTML = `<p>${escapeHtml(text || "")}</p>`;
 
         if (type === "candidate") {
+            // The only message that streams. `#conversation` is a polite live
+            // region, so without this the answer is announced once per LLM
+            // token; finalizeAnswer() unmutes it when the turn is over. Every
+            // other message type is written in one go and is announced as
+            // written -- including the user's own question, which they need
+            // echoed back.
+            bubble.setAttribute("aria-live", "off");
             div.appendChild(avatar);
             div.appendChild(bubble);
         } else {
