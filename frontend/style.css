@@ -643,9 +643,17 @@ main {
 }
 
 /* ─── Waveform ──────────────────────────────────────── */
+/* The centre column measures 100vw - 672px (two 320px sidebars plus the hero's
+   own 16px gutters), so it is narrower than this 200px SVG on any viewport
+   below 872px — and `main { overflow: hidden }` clips it instead of letting it
+   scroll. Capping against the container is the fix; `height: auto` keeps the
+   5:1 viewBox ratio as it scales. The mobile `display: none` still stands, and
+   stays limited to phones, where a 200px instrument is not worth the space. */
 
 #waveform {
     margin-top: var(--space-md);
+    max-width: 100%;
+    height: auto;
     opacity: 0;
     transition: opacity 0.3s ease;
 }

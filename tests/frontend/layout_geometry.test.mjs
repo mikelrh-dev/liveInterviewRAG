@@ -420,3 +420,71 @@ test("the header does not solve overflow by wrapping", () => {
             "rather than making room for it",
     );
 });
+
+// ─── A4: the waveform fits the column it is given ──────────────────────────
+
+test("the waveform is constrained by its container, not by a fixed width", () => {
+    // `#waveform` is an inline SVG with width="200" in the centre column, and
+    // that column measures 100vw - 672px (two 320px sidebars + hero padding).
+    // It overflows below 872px of viewport and `main { overflow: hidden }`
+    // clips it rather than letting it scroll — the broken window is 768-872px,
+    // where the mobile `display: none` has not kicked in yet.
+    const rule = decls(css, "#waveform");
+    assert.match(
+        rule,
+        /max-width:\s*100%/,
+        "#waveform is still a fixed 200px SVG inside a column that reaches " +
+            "only 100vw - 672px, so it is clipped between 768px and 872px",
+    );
+    assert.match(
+        rule,
+        /height:\s*auto/,
+        "without `height: auto` the 40px height attribute survives and the " +
+            "SVG squashes instead of scaling its viewBox aspect ratio",
+    );
+});
+
+test("the waveform keeps its viewBox, so the aspect ratio is derivable", () => {
+    // `max-width: 100%` + `height: auto` only preserves the 5:1 ratio while a
+    // viewBox exists; without one the SVG has no intrinsic ratio to keep.
+    const wave = elementById("waveform");
+    assert.equal(wave.tag, "svg");
+    assert.match(
+        wave.openTag,
+        /viewBox="0 0 200 40"/,
+        "#waveform lost its viewBox, so constraining the width distorts it",
+    );
+});
+
+test("the waveform is still hidden on phones only", () => {
+    // The honest alternative to fixing the overflow was to hide the waveform
+    // over a wider range. That deletes a feature between 768px and 872px for a
+    // device that has room for it, so this asserts the opposite: `display:
+    // none` appears for #waveform in the mobile block and nowhere else.
+    const hidingRules = [
+        ...css.matchAll(/#waveform\s*\{([^}]*)\}/g),
+    ].filter((rule) => /display:\s*none/.test(rule[1]));
+
+    assert.equal(
+        hidingRules.length,
+        1,
+        `${hidingRules.length} rules hide #waveform — it must be hidden on ` +
+            "phones and visible everywhere else, not sacrificed to fix the " +
+            "768-872px overflow",
+    );
+    assert.ok(
+        mobile.includes("display: none"),
+        "the single display:none for #waveform is no longer in the mobile block",
+    );
+    assert.match(
+        hidingRules[0][0],
+        /^\s*#waveform \{/,
+        "the hiding rule is not a plain #waveform declaration",
+    );
+    // The rule must physically live inside the ≤768px block.
+    const at = css.indexOf(hidingRules[0][0].trim().replace(" {", " {"));
+    assert.ok(
+        at > css.indexOf("@media (max-width: 768px)"),
+        "the #waveform display:none is outside the mobile block",
+    );
+});
