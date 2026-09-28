@@ -30,12 +30,20 @@ FRONTEND_APP = REPO_ROOT / "frontend" / "app.js"
 #: Node suites, run by the Python suite so the JS contract is gated in CI.
 #: Each extracts its unit under test from frontend/app.js and drives it with
 #: injected hooks -- no DOM, no bundler, no dependencies.
-NODE_TESTS = (
-    Path(__file__).resolve().parent / "frontend" / "terminal_state.test.mjs",
-    Path(__file__).resolve().parent / "frontend" / "turn_state.test.mjs",
-    Path(__file__).resolve().parent / "frontend" / "telemetry.test.mjs",
-    Path(__file__).resolve().parent / "frontend" / "retry_policy.test.mjs",
-)
+#:
+#: Discovered from the directory rather than listed by hand. A hand-written
+#: tuple is a claim about the current contents that only someone re-reading
+#: this file can refresh, and it was stale: four of the eight suites on disk
+#: were absent, so 20 tests ran only when a human remembered to invoke
+#: ``node --test "tests/frontend/*.test.mjs"`` by hand. In CI they would have
+#: run never. The gap was invisible because nothing asserted the list was
+#: complete -- see TestNodeSuiteGating, which is what keeps it that way.
+#:
+#: Sorted so the parametrised test IDs, and therefore any failure ordering and
+#: any ``-k`` selection, are stable across machines and filesystems.
+FRONTEND_TEST_DIR = Path(__file__).resolve().parent / "frontend"
+NODE_TESTS = tuple(sorted(FRONTEND_TEST_DIR.glob("*.test.mjs")))
+
 
 #: Events that terminate a turn. ``error`` is deliberately NOT one of them:
 #: the codebase uses it as an advisory event that can be followed by ``done``
@@ -424,6 +432,62 @@ class TestTerminalSettlerBehaviour:
         assert "function createTurnSettler(" in source, (
             "app.js must expose createTurnSettler() as the single terminal-state "
             "owner, so the exactly-once contract is testable without a DOM"
+        )
+
+
+class TestNodeSuiteGating:
+    """Every ``.test.mjs`` on disk must be executed by the Python run.
+
+    The failure this guards is not subtle in hindsight: it is a suite that
+    exists, is correct, and quietly runs for nobody. Nothing in the Python run
+    turns red when a suite drops out of the gate, because the suite still
+    passes when someone runs it by hand -- so the only way to notice is to
+    assert completeness directly. That is what these two tests are.
+    """
+
+    def test_every_suite_on_disk_is_gated(self):
+        """The gate must equal the directory, not a subset somebody remembered.
+
+        NODE_TESTS is discovered, so this is not tautological in the way it
+        looks: the module-level tuple is a *value* that can be replaced by a
+        hand-written one, and the realistic regression is exactly that -- an
+        edit that trades discovery for a literal list, which is a small
+        "simplification" that reintroduces this bug invisibly.
+        """
+        on_disk = set(FRONTEND_TEST_DIR.glob("*.test.mjs"))
+        gated = set(NODE_TESTS)
+
+        assert on_disk, f"no .test.mjs found in {FRONTEND_TEST_DIR}"
+        missing = sorted(p.name for p in on_disk - gated)
+        assert not missing, (
+            f"{len(missing)} Node suite(s) are not gated by NODE_TESTS and so "
+            f"never run: {missing}"
+        )
+
+    def test_the_discovery_glob_finds_nothing_below_the_top_level(self):
+        """A flat glob cannot see a subdirectory, so a nested suite would vanish.
+
+        NODE_TESTS uses ``glob("*.test.mjs")``, which is one level deep. If a
+        suite is ever added at ``tests/frontend/<subdir>/``, it is silently
+        ungated again -- the same bug, one directory deeper, and just as
+        invisible. Walking the tree with a second, independent method is the
+        only cheap way to make that failure loud.
+
+        Currently nothing is nested, so this compares two equal sets. It earns
+        its place on the day it does not.
+        """
+        found_by_walk = {
+            path
+            for path in FRONTEND_TEST_DIR.rglob("*.test.mjs")
+            if path.is_file()
+        }
+        found_by_glob = set(FRONTEND_TEST_DIR.glob("*.test.mjs"))
+
+        assert found_by_walk == found_by_glob, (
+            "NODE_TESTS discovery only sees the top level, but the tree also "
+            "contains: "
+            f"{sorted(str(p.relative_to(FRONTEND_TEST_DIR)) for p in found_by_walk - found_by_glob)}. "
+            "Widen the glob or move the suite."
         )
 
 
