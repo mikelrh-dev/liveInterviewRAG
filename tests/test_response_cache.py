@@ -452,19 +452,37 @@ def test_negation_interposed_in_a_phrase_breaks_the_substring():
     assert get_cached_response("¿Por qué no dejaste Mercadona?") is None
 
 
-# ─── Wiki consistency: the cache is a derived store ─────────
+# ─── Corpus consistency: the cache is a derived store ─────────
 #
-# `wiki/` is the single source of truth for any factual claim about the
-# candidate; this cache is a derived store that loses every disagreement, so a
-# divergence is a wrong answer in a real interview. These tests read the wiki
-# at test time, so editing the wiki to drop or add a technology fails here
-# instead of in front of a recruiter.
+# The candidate's own corpus is the single source of truth for any factual
+# claim; this cache is a derived store that loses every disagreement, so a
+# divergence is a wrong answer in a real interview.
+#
+# THE REAL WIKI CANNOT BE THE ONLY SUBJECT
+# -----------------------------------------
+# These checks used to read the repository's `wiki/`, which `.gitignore`
+# excludes, which is backed up to a private repository, and which is therefore
+# absent from a clean clone — so a clean clone failed them with a
+# FileNotFoundError on a page that is nobody's business but the owner's.
+#
+# A wiki-consistency check with no wiki cannot run, and "cannot run" is not
+# "passed". So the invariant is extracted into ``_assert_cache_does_not_
+# overstate`` / ``_assert_cache_does_not_understate`` and applied to TWO
+# subjects:
+#
+#   * the REAL wiki, when it is present — the owner's own consistency check,
+#     unchanged, skipped (not weakened) where there is no wiki to check against;
+#   * ``tests/fixtures/retrieval_corpus/``, always, with a synthetic cache
+#     injected — so the checker itself is under test on every machine. Without
+#     this, deleting the wiki would silently turn two consistency guards into
+#     two no-ops, and nobody would find out until an interviewer did.
 
 WIKI_DIR = Path(__file__).resolve().parents[1] / "wiki"
+FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "retrieval_corpus"
 
 # Vocabulary used only to *detect* a database name inside a cached answer.
-# This is a scanner, not an allowlist of approved claims: a database the wiki
-# does not list fails the test, and a database the wiki adds passes without
+# This is a scanner, not an allowlist of approved claims: a database the corpus
+# does not list fails the test, and a database the corpus adds passes without
 # touching the test. That is what keeps the assertion maintainable.
 _DATABASE_VOCABULARY = {
     "cassandra", "cockroach", "db2", "dynamodb", "elasticsearch", "firebird",
@@ -474,29 +492,107 @@ _DATABASE_VOCABULARY = {
 
 
 def _cached_answers() -> list[str]:
-    return [entry["answer"] for entry in _CACHED_QUESTIONS]
+    """Every answer currently configured in the service.
+
+    Resolved through the service module rather than the ``from ... import``
+    binding at the top of this file, so it reports what the service will
+    actually serve. The import-time binding is a snapshot: after a test
+    monkeypatches the service's table, a helper reading the snapshot would
+    scan the old table and report "clean" about a cache that is not there.
+    """
+    from backend.services import response_cache
+
+    return [entry["answer"] for entry in response_cache._CACHED_QUESTIONS]
 
 
 def _wiki_text(relative_path: str) -> str:
     return (WIKI_DIR / relative_path).read_text(encoding="utf-8")
 
 
-def _wiki_databases() -> set[str]:
-    """Databases the wiki attributes to the candidate, from the profile summary.
-
-    wiki/profile/mikel.md, "## Top skills (summary)" -> "**Databases:** ...".
-    """
-    profile = _wiki_text("profile/mikel.md")
-    marker = "**Databases:**"
-    for line in profile.splitlines():
+def _databases_listed_in(text: str, marker: str) -> set[str]:
+    for line in text.splitlines():
         if marker in line:
             listed = line.split(marker, 1)[1]
             return {name.strip().lower() for name in listed.split(",") if name.strip()}
-    raise AssertionError("wiki/profile/mikel.md no longer has a '**Databases:**' line")
+    raise AssertionError(f"no {marker!r} line found")
 
 
+def _databases_in(answer: str) -> set[str]:
+    return {
+        word.lower()
+        for word in re.findall(r"[A-Za-z]+", answer)
+        if word.lower() in _DATABASE_VOCABULARY
+    }
+
+
+def _assert_cache_does_not_overstate(answer: str, corpus_databases: set[str]) -> None:
+    """Nothing in the spoken answer that the corpus does not attribute."""
+    named = _databases_in(answer)
+    assert named, f"no database name detected in the cached answer: {answer!r}"
+    assert named <= corpus_databases, (
+        f"cache names databases the corpus does not list: "
+        f"{sorted(named - corpus_databases)}; corpus lists {sorted(corpus_databases)}"
+    )
+
+
+def _assert_cache_does_not_understate(answer: str, corpus_databases: set[str]) -> None:
+    """Every database the corpus attributes is actually spoken.
+
+    Omission is how "MySQL, PostgreSQL y SQLite" hid the fact that MongoDB is
+    the third database the corpus actually attributes.
+    """
+    for database in corpus_databases:
+        assert database in answer.lower(), (
+            f"{database} is in the corpus but not the answer"
+        )
+
+
+def _real_wiki_databases() -> set[str]:
+    """Databases the real wiki attributes, from the profile summary.
+
+    wiki/profile/mikel.md, "## Top skills (summary)" -> "**Databases:** ...".
+    """
+    return _databases_listed_in(_wiki_text("profile/mikel.md"), "**Databases:**")
+
+
+def _fixture_databases() -> set[str]:
+    """Databases the committed fixture corpus attributes.
+
+    profile/nuria-belvis.md, "## Resumen de competencias" ->
+    "**Backend:** ... PostgreSQL ..." — but the corpus also lists Redis in
+    skills/devops.md and skills/automatizacion.md, so both pages are read and
+    the union taken. Reading only one page is how the original check missed a
+    database the corpus did attribute.
+    """
+    databases: set[str] = set()
+    for page in ("profile/nuria-belvis.md", "skills/devops.md"):
+        text = (FIXTURE_ROOT / page).read_text(encoding="utf-8")
+        for line in text.splitlines():
+            for token in re.findall(r"[A-Za-z]+", line):
+                if token.lower() in _DATABASE_VOCABULARY:
+                    databases.add(token.lower())
+    assert databases, "the fixture corpus must attribute at least one database"
+    return databases
+
+
+# The two real-wiki checks, marked not deleted. They are the owner's own
+# consistency guard and they still run wherever the wiki exists; they are
+# skipped, not weakened, where it does not. ``test_the_consistency_checker_
+# itself_works`` below is the reason that is safe.
+needs_real_wiki = pytest.mark.skipif(
+    not WIKI_DIR.is_dir(),
+    reason=(
+        "the candidate's real wiki/ is gitignored and private, so it is "
+        "absent from a clean clone; there is nothing to check the production "
+        "response cache against here. The same invariant is exercised "
+        "unconditionally against tests/fixtures/retrieval_corpus/."
+    ),
+)
+
+
+@needs_real_wiki
 def test_wiki_lists_the_databases_the_cache_answers_with():
-    """The database answer names only databases the wiki attributes to him.
+    """The database answer names only databases the real wiki attributes.
 
     Regression: the answer claimed "MySQL, PostgreSQL y SQLite" while the wiki
     lists MySQL, PostgreSQL and MongoDB (wiki/profile/mikel.md,
@@ -504,39 +600,47 @@ def test_wiki_lists_the_databases_the_cache_answers_with():
     """
     answer = get_cached_response("¿Qué sabes de bases de datos?")
     assert answer is not None
-
-    named = {
-        word.lower()
-        for word in re.findall(r"[A-Za-z]+", answer)
-        if word.lower() in _DATABASE_VOCABULARY
-    }
-    wiki_databases = _wiki_databases()
-
-    assert named, f"no database name detected in the cached answer: {answer!r}"
-    assert named <= wiki_databases, (
-        f"cache names databases the wiki does not list: {sorted(named - wiki_databases)}; "
-        f"wiki lists {sorted(wiki_databases)}"
-    )
+    _assert_cache_does_not_overstate(answer, _real_wiki_databases())
 
 
+@needs_real_wiki
 def test_cache_answer_names_every_database_the_wiki_lists():
-    """The spoken answer covers the whole wiki claim, so it cannot understate it.
-
-    Omission is how "MySQL, PostgreSQL y SQLite" hid the fact that MongoDB is
-    the third database the wiki actually attributes to him.
-    """
+    """The spoken answer covers the whole wiki claim, so it cannot understate it."""
     answer = get_cached_response("¿Qué sabes de bases de datos?")
     assert answer is not None
-    for database in _wiki_databases():
-        assert database in answer.lower(), f"{database} is in the wiki but not the answer"
+    _assert_cache_does_not_understate(answer, _real_wiki_databases())
 
 
-def test_cache_never_claims_sqlite():
-    """SQLite appears nowhere in the wiki, so it must appear nowhere in the cache."""
+def test_cache_never_claims_sqlite(monkeypatch):
+    """SQLite appears nowhere in the corpus, so it must appear nowhere in the cache.
+
+    Run unconditionally, with the production cache AND with a synthetic one
+    built from the fixture corpus, so the claim is checked on a machine that
+    has never seen the real wiki.
+    """
     offenders = [
         answer for answer in _cached_answers() if "sqlite" in answer.lower()
     ]
-    assert not offenders, f"SQLite claimed by the cache, unsupported by the wiki: {offenders}"
+    assert not offenders, f"SQLite claimed by the cache, unsupported by the corpus: {offenders}"
+
+    synthetic = [
+        {"answer": "Trabajo con MySQL y SQLite en proyectos pequenos.",
+         "keywords": ["sqlite"], "phrases": ["trabajo con mysql"]}
+    ]
+    monkeypatch.setattr(
+        "backend.services.response_cache._CACHED_QUESTIONS", synthetic
+    )
+    assert get_cached_response("¿Y SQLite?") is not None, (
+        "the synthetic cache must be reachable, or the SQLite scan below is "
+        "scanning nothing"
+    )
+    offenders = [
+        answer for answer in _cached_answers() if "sqlite" in answer.lower()
+    ]
+    assert offenders, (
+        "a cache entry naming SQLite must be detected by the scan; the scan "
+        "is not looking where it thinks it is"
+    )
 
 
 def test_pitch_matches_the_wiki_presentation():
@@ -544,10 +648,80 @@ def test_pitch_matches_the_wiki_presentation():
 
     The wiki supersedes it: wiki/faq/presentacion-30-segundos.md (2026-08-28)
     replaced that phrasing with "empecé como frutero, progresé a encargado y
-    terminé como gerente en Mercadona liderando equipos de ~50 personas", and
+    terminó como gerente en Mercadona liderando equipos de ~50 personas", and
     wiki/profile/mikel.md records Gerente B, Mercadona, 2019-Nov 2025.
+
+    This one is NOT a wiki-consistency test: it asserts against text baked into
+    the production cache itself, so it has no external subject and needs no
+    wiki. It is left reading the real cache on purpose — a synthetic cache here
+    would only prove that a string contains another string.
     """
     answer = get_cached_response("Cuéntame sobre ti")
     assert answer is not None
     assert "encargado de supermercado" not in answer.lower()
     assert "gerente" in answer.lower()
+
+
+# ─── The checker itself ─────────────────────────────────────────────────────
+#
+# Two tests, both unconditional, both against the committed fixture corpus. A
+# consistency guard that only runs where the subject happens to exist is a
+# guard nobody can trust, and the failure mode is invisible: delete the wiki and
+# the assertions quietly become dead code that still looks like coverage.
+
+
+def test_the_consistency_checker_catches_an_overstated_answer():
+    """An answer naming a database the corpus does not list must be REJECTED.
+
+    Negative control. The real-wiki check above is an assertion that
+    something is true; this is the proof that the assertion can be false, which
+    is the only way to know it is doing anything.
+    """
+    corpus_databases = _fixture_databases()
+    overstated = "MySQL, PostgreSQL, MongoDB y SQLite."
+    with pytest.raises(AssertionError) as caught:
+        _assert_cache_does_not_overstate(overstated, corpus_databases)
+    message = str(caught.value)
+    assert "sqlite" in message, f"the failure must name the offender: {message!r}"
+    assert "sqlite" not in corpus_databases, (
+        "the fixture corpus lists SQLite, so it cannot be the counterexample. "
+        "Pick a different one, or the control has stopped testing anything."
+    )
+
+
+def test_the_consistency_checker_catches_an_understated_answer():
+    """An answer that omits a database the corpus does list must be REJECTED."""
+    corpus_databases = _fixture_databases()
+    assert len(corpus_databases) >= 2, (
+        f"the control needs a corpus with more than one database to be able to "
+        f"omit one; found {sorted(corpus_databases)}"
+    )
+    understated = "MySQL y PostgreSQL."
+    with pytest.raises(AssertionError) as caught:
+        _assert_cache_does_not_understate(understated, corpus_databases)
+    assert "redis" in str(caught.value).lower(), (
+        f"the failure must name the omitted database: {str(caught.value)!r}"
+    )
+
+
+def test_the_consistency_checker_accepts_a_faithful_answer():
+    """The positive control: a cache that agrees with the corpus must pass."""
+    corpus_databases = _fixture_databases()
+    faithful = (
+        "Trabajo con " + ", ".join(sorted(c.upper() for c in corpus_databases)) + "."
+    )
+    _assert_cache_does_not_overstate(faithful, corpus_databases)
+    _assert_cache_does_not_understate(faithful, corpus_databases)
+
+
+def test_the_fixture_corpus_attributed_databases_are_the_ones_it_lists():
+    """Pin what the fixture attributes, so the controls above stay meaningful.
+
+    If someone edits the corpus and drops Redis, the understated control stops
+    having anything to omit and starts passing for the wrong reason. That is
+    exactly the silent-coverage-loss this section exists to prevent.
+    """
+    assert _fixture_databases() == {"postgresql", "redis"}, (
+        "the fixture corpus's database list changed; the consistency controls "
+        "above are calibrated on {postgresql, redis}"
+    )
