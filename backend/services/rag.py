@@ -400,32 +400,32 @@ class RAGPipeline:
                  cache_dir: Optional[Path] = None, embedding_model: str = "all-MiniLM-L6-v2"):
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
-        # Minimum cosine a chunk needs to be returned at all. MEASURED, on the
-        # real 37-page wiki with real all-MiniLM-L6-v2, over the 49-question
-        # labelled set (tests/test_rag_chunk_size_sweep.py::LABELLED_CASES):
+        # Minimum cosine a chunk needs to be returned at all.
         #
-        #   * 0.30 (here) costs 0 of 49 questions of recall@3.
-        #   * 0.40 also costs 0.  0.45 costs 1.  0.50 costs 3.  0.60 costs 7.
-        #   * It is NOT inert and was never close to inert. Over the 49 x 125
-        #     (question, chunk) matrix it discards 1792 of 6125 pairs — 29% of
-        #     the candidate pool — and the matrix minimum is -0.0906, not the
-        #     0.414 that the best-chunk-per-question statistic suggests.
+        # MEASURED on the corpus this repository's tests actually load --
+        # ``tests/fixtures/retrieval_corpus/`` (121 chunks), the 49 labelled
+        # questions in ``tests/fixture_corpus.py``, real all-MiniLM-L6-v2, real
+        # ``expand_query``: 5929 (question, chunk) pairs, of which 0.30 discards
+        # 1030 -- 17.4% of the candidate pool.
         #
-        # It only looks like a no-op because ``retrieve()`` filters and THEN
-        # slices ``top_k``: on the direct path at least 12 of 125 chunks clear
-        # 0.3 for every question, so any top_k <= 12 is unaffected. On the
-        # PRODUCTION path (``get_context_string``/``get_chunks_with_scores``,
-        # which also apply ``detect_doc_type`` and so pool far fewer
-        # candidates) it does bite: "cuentame sobre ti en treinta segundos"
-        # is detected as ``profile``, leaving 1 survivor at 0.3081 against a
-        # second-best of 0.2252, so the shipped default returns 1 chunk where
-        # an unfiltered run returns 3.
+        # It is not inert, and it is not uneventful. Survivors per question run
+        # from 1 (minimum) through 113 (median), and 3 of the 49 questions have
+        # FEWER THAN THREE survivors, so the filter changes what those three
+        # callers receive. This comment used to claim the opposite -- "at least
+        # 12 of 125 chunks clear 0.3 for every question, so any top_k <= 12 is
+        # unaffected" -- which was the shape of the owner's private wiki and of
+        # no corpus any test measures; ``TestRetrievalThresholdIsHonest``, in
+        # this very repository, documents the opposite for this one.
         #
-        # The margin on that one query is 0.0081, which is why 0.30 is kept and
-        # not tuned: it is the measured-free setting, and a "safer" higher
-        # value trades real recall for nothing. Pinned by
-        # ``TestRetrievalThresholdIsHonest``; re-read that class before
-        # changing this number.
+        # Raising it is not free either, on this corpus: against 0.30, 0.40
+        # costs 4 questions a top-3 slot, 0.45 costs 5 and empties 1, 0.50 costs
+        # 10 and empties 6, 0.60 costs 39 and empties 20.
+        #
+        # 0.30 stays because it is the measured setting, and every floor above
+        # is re-derived rather than trusted.
+        # ``tests/test_rag.py::TestRetrievalThresholdIsHonest`` is the
+        # authority: read it before changing this number, and if you move this
+        # number, re-derive its floors rather than adjusting them.
         self.threshold = threshold
         self.chunks: List[Chunk] = []
         self._embedder = None
@@ -892,10 +892,13 @@ class RAGPipeline:
         discarding 29% of the candidate pool.
 
         Because the filter runs before the ``top_k`` slice, it can only change
-        what a caller receives when fewer than ``top_k`` chunks clear it. On
-        the direct path that never happens (``top_k`` <= 12 is safe on the
-        current corpus); with a ``doc_type`` pre-filter it can, which is the
-        case worth knowing about before raising the threshold.
+        what a caller receives when fewer than ``top_k`` chunks clear it. On the
+        corpus the tests load that happens for 3 of the 49 labelled questions,
+        and with a ``doc_type`` pre-filter the candidate pool is far narrower
+        still -- so the case is the normal case, not an edge to know about
+        before raising the threshold. See ``__init__`` for the measurements and
+        ``tests/test_rag.py::TestRetrievalThresholdIsHonest`` for the floors
+        they are held to.
         """
         if not self.chunks:
             return []
