@@ -158,7 +158,9 @@ class TestMessageEndpoint:
             files={"audio": ("test.webm", b"audio data", "audio/webm")},
         )
         assert response.status_code == 422
-        assert "transcribe" in response.json()["detail"].lower()
+        assert "transcribir" in response.json()["detail"].lower()
+        # The provider's text is server-side only.
+        assert "Could not transcribe" not in response.json()["detail"]
 
     def test_send_message_llm_failure(self, client, mock_services):
         """LLM failure returns 503."""
@@ -172,7 +174,10 @@ class TestMessageEndpoint:
             files={"audio": ("test.webm", b"audio data", "audio/webm")},
         )
         assert response.status_code == 503
-        assert "unavailable" in response.json()["detail"].lower()
+        assert "respuesta" in response.json()["detail"].lower()
+        # The detail used to be the exception prefixed with a fixed phrase, so
+        # a provider failure shipped upstream text to the client.
+        assert "API unavailable" not in response.json()["detail"]
 
 
 class TestContextEndpoint:

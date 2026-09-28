@@ -306,7 +306,10 @@ class TestFarewellTtsFailure:
         errors = [e for e in events if e["event"] == "error"]
         assert len(errors) == 1, f"expected exactly one error event, got {_types(events)}"
         assert errors[0]["data"]["detail"], "error event carries no detail"
-        assert "TTS" in errors[0]["data"]["detail"]
+        # The candidate is told the goodbye was silent, and nothing more: the
+        # provider's own text is server-side only.
+        assert "despedida" in errors[0]["data"]["detail"].lower()
+        assert "edge-tts" not in errors[0]["data"]["detail"]
 
     def test_tts_failure_generator_does_not_raise(self, client, mock_services):
         """A TTS failure is reported over SSE, not as a transport error.

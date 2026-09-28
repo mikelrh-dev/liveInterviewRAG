@@ -28,6 +28,7 @@ from backend.conversation import (
 )
 from backend.prompts.candidate import build_system_prompt, sanitize_for_tts
 from backend.turns.answer_source import LLM, resolve_answer_source
+from backend.turns.errors import LLM_FAILED, STT_FAILED, TTS_FAILED
 
 logger = logging.getLogger(__name__)
 
@@ -48,9 +49,11 @@ async def run_turn(
             container.stt_service().transcribe, temp_audio
         )
     except Exception as e:
-        raise HTTPException(
-            status_code=422, detail=f"Could not transcribe audio: {e}"
-        ) from e
+        # Logged, not returned. FastAPI renders an HTTPException without a
+        # traceback, so before this the provider's failure text was the only
+        # copy that existed -- in the response body.
+        logger.error("Transcription failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=422, detail=STT_FAILED) from e
     _t.append(time.time())
 
     if not user_text.strip():
@@ -90,10 +93,8 @@ async def run_turn(
                 system_prompt=system_prompt,
             )
         except RuntimeError as e:
-            raise HTTPException(
-                status_code=503,
-                detail=f"Response generation temporarily unavailable: {e}",
-            ) from e
+            logger.error("Response generation failed: %s", e, exc_info=True)
+            raise HTTPException(status_code=503, detail=LLM_FAILED) from e
         _t.append(time.time())
 
     # Store-after-success: only fresh LLM answers on first substantive turns
@@ -106,7 +107,8 @@ async def run_turn(
         clean_text = sanitize_for_tts(response_text)
         await container.tts_service().synthesize(clean_text, output_path=output_audio)
     except RuntimeError as e:
-        raise HTTPException(status_code=503, detail=f"TTS synthesis failed: {e}") from e
+        logger.error("TTS synthesis failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=503, detail=TTS_FAILED) from e
     _t.append(time.time())
 
     # Log pipeline timing

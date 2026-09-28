@@ -235,7 +235,13 @@ class TestTerminalEventGuarantee:
         types = [e["event"] for e in events]
 
         assert "error" in types, types
-        assert "RAG exploded" in json.dumps(events), types
+        # The spec is explicit that error payloads carry no internal detail:
+        # the exception text used to be interpolated straight into `detail`,
+        # and this assertion used to *require* that. A real RAG failure leaks
+        # model cache paths; a real LLM failure leaks an upstream body.
+        payload = json.dumps(events, ensure_ascii=False)
+        assert "RAG exploded" not in payload, payload
+        assert "Error inesperado" in payload, payload
         assert _terminal_count(events) == 1, types
 
     def test_llm_stream_error_terminates(self, client, mock_services):

@@ -57,7 +57,11 @@ class STTService:
 
         audio_path = Path(audio_path)
         if not audio_path.exists():
-            raise FileNotFoundError(f"Audio file not found: {audio_path}")
+            # The staged path is a server-side filesystem location, and this
+            # message is copied into the client's error payload. The path goes
+            # in the log instead.
+            logger.error("Staged audio file is missing: %s", audio_path)
+            raise FileNotFoundError("Audio file not found")
 
         try:
             segments, info = self._model.transcribe(
@@ -76,5 +80,6 @@ class STTService:
             return result
 
         except Exception as e:
-            logger.error("Transcription failed: %s", e)
-            raise RuntimeError(f"Could not transcribe audio: {e}") from e
+            # Logged, not carried in the message: see backend/services/tts.py.
+            logger.error("Transcription failed: %s", e, exc_info=True)
+            raise RuntimeError("Could not transcribe audio") from e

@@ -59,6 +59,13 @@ from backend.prompts.candidate import build_system_prompt, sanitize_for_tts
 from backend.services.llm import SentenceBuffer
 from backend.sse import sse_format
 from backend.turns.answer_source import LLM, resolve_answer_source
+from backend.turns.errors import (
+    FAREWELL_TTS_FAILED,
+    LLM_FAILED,
+    TTS_CHUNK_FAILED,
+    TTS_FAILED,
+    UNEXPECTED_ERROR,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +139,7 @@ def build_stream(
                         e,
                         exc_info=True,
                     )
-                    yield sse_format("error", {"detail": f"TTS synthesis failed: {e}"})
+                    yield sse_format("error", {"detail": TTS_FAILED})
                     yield sse_format("done", {})
                     terminal_emitted = True
                     return
@@ -184,9 +191,7 @@ def build_stream(
                     logger.error(
                         "Farewell TTS synthesis failed: %s", e, exc_info=True
                     )
-                    yield sse_format(
-                        "error", {"detail": f"Farewell TTS synthesis failed: {e}"}
-                    )
+                    yield sse_format("error", {"detail": FAREWELL_TTS_FAILED})
 
                 # Queue the audio before the terminal event: once
                 # interview_end tears the session down, queued audio is dropped.
@@ -273,6 +278,10 @@ def build_stream(
                         loop.call_soon_threadsafe(queue.put_nowait, ("sentence", s))
                     loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
                 except Exception as e:
+                    # Logged here, on the thread that still has the exception
+                    # object, because the queue carries a string and the
+                    # traceback would otherwise be lost at the thread boundary.
+                    logger.error("LLM streaming error: %s", e, exc_info=True)
                     loop.call_soon_threadsafe(queue.put_nowait, ("error", str(e)))
 
             loop.run_in_executor(None, run_llm_stream)
@@ -304,10 +313,13 @@ def build_stream(
                             listening_to_llm = False
 
                         elif kind == "error":
+                            # `data` is the provider's failure text. It reached
+                            # this point through an executor thread, where the
+                            # traceback is already gone, so it stays in the log
+                            # (logged in full at the raise site) and never in
+                            # the payload.
                             logger.error("LLM streaming error: %s", data)
-                            yield sse_format(
-                                "error", {"detail": f"Error en respuesta: {data}"}
-                            )
+                            yield sse_format("error", {"detail": LLM_FAILED})
                             # Terminate: a provider that dies mid-generation
                             # leaves nothing to stream, and the frontend needs
                             # a terminal event to hand the mic back.
@@ -340,11 +352,12 @@ def build_stream(
                                     "TTS task creation failed for sentence %d: %s",
                                     sentence_id,
                                     e,
+                                    exc_info=True,
                                 )
                                 yield sse_format(
                                     "error",
                                     {
-                                        "detail": "TTS synthesis failed",
+                                        "detail": TTS_CHUNK_FAILED,
                                         "id": sentence_id,
                                     },
                                 )
@@ -361,11 +374,11 @@ def build_stream(
                                 },
                             )
                         except Exception as e:
-                            logger.error("TTS task %s failed: %s", done, e)
+                            logger.error("TTS task %s failed: %s", done, e, exc_info=True)
                             sid = tts_futures.get(done, -1)
                             yield sse_format(
                                 "error",
-                                {"detail": "TTS synthesis failed", "id": sid},
+                                {"detail": TTS_CHUNK_FAILED, "id": sid},
                             )
                         del tts_futures[done]
 
@@ -412,8 +425,13 @@ def build_stream(
             # coming, so it must arrive as a reported error AND a terminal
             # event. Without the terminal event the browser sees a truncated
             # body, which it reads as a network drop: the mic never restarts.
+            #
+            # The detail is the generic one: this is the broadest catch in the
+            # module, so `e` is whatever the failing library happened to raise
+            # -- sentence-transformers and httpx both put paths in their text.
+            # The traceback above is the record; this is the notice.
             if not terminal_emitted:
-                yield sse_format("error", {"detail": str(e)})
+                yield sse_format("error", {"detail": UNEXPECTED_ERROR})
                 yield sse_format("done", {})
                 terminal_emitted = True
         finally:

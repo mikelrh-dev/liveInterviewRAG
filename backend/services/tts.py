@@ -48,8 +48,11 @@ class TTSService:
             return output_path
 
         except Exception as e:
-            logger.error("TTS synthesis failed: %s", e)
-            raise RuntimeError(f"Could not synthesize speech: {e}") from e
+            # The provider text is logged and kept on the exception chain, but
+            # not carried in the message: this message is copied verbatim into
+            # the client's error payload by backend/turns/.
+            logger.error("TTS synthesis failed: %s", e, exc_info=True)
+            raise RuntimeError("Could not synthesize speech") from e
 
     async def synthesize_sentence(self, text: str, sentence_id: int,
                                     output_dir: Path | None = None) -> tuple[int, Path]:

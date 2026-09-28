@@ -201,7 +201,7 @@ class LLMService:
                     )
                     raise RuntimeError(
                         f"Google AI stream failed after {emitted} token(s) were "
-                        f"already sent; the answer is incomplete: {e}"
+                        "already sent; the answer is incomplete"
                     ) from e
                 # NORMAL PROVIDER SWITCH. Nothing reached the client, so the
                 # fallback is free and the answer is whole.
@@ -268,7 +268,8 @@ class LLMService:
         except RuntimeError:
             raise
         except Exception as e:
-            raise RuntimeError(f"Response generation temporarily unavailable: {e}")
+            logger.error("OpenRouter request failed", exc_info=e)
+            raise RuntimeError("Response generation temporarily unavailable") from e
 
     def _openrouter_generate_stream(self, prompt: str, context: str = "",
                                     system_prompt: str = "") -> Generator[str, None, None]:
@@ -296,11 +297,20 @@ class LLMService:
                 if response.status_code != 200:
                     # Inside client.stream() the body is not buffered:
                     # .text would raise httpx.ResponseNotRead. Read it
-                    # explicitly so the REAL upstream error surfaces.
+                    # explicitly so the REAL upstream error is recorded. It is
+                    # logged, never raised: an upstream body can echo the
+                    # request that produced it, key fragments included.
                     error_body = response.read().decode("utf-8", errors="replace")[:200]
                     if response.status_code == 429:
                         raise RuntimeError("Rate limit exceeded.")
-                    raise RuntimeError(f"OpenRouter streaming error: HTTP {response.status_code} - {error_body}")
+                    logger.error(
+                        "OpenRouter streaming error: HTTP %s -- upstream body: %s",
+                        response.status_code,
+                        error_body,
+                    )
+                    raise RuntimeError(
+                        f"OpenRouter streaming error: HTTP {response.status_code}"
+                    )
 
                 for line in response.iter_lines():
                     line = line.strip()
@@ -322,7 +332,8 @@ class LLMService:
         except RuntimeError:
             raise
         except Exception as e:
-            raise RuntimeError(f"Streaming failed: {e}")
+            logger.error("OpenRouter streaming transport failed", exc_info=e)
+            raise RuntimeError("Streaming failed") from e
 
     # ── Google AI provider ───────────────────────────────────
 
@@ -361,11 +372,17 @@ class LLMService:
             )
 
             if response.status_code != 200:
+                # Logged, never raised: see _openrouter_generate_stream.
                 error_body = response.text[:300]
                 if response.status_code == 429:
                     raise RuntimeError("Google AI rate limit exceeded.")
+                logger.error(
+                    "Google AI generate error: HTTP %s -- upstream body: %s",
+                    response.status_code,
+                    error_body,
+                )
                 raise RuntimeError(
-                    f"Google AI generate error: HTTP {response.status_code} - {error_body}"
+                    f"Google AI generate error: HTTP {response.status_code}"
                 )
 
             data = response.json()
@@ -380,7 +397,8 @@ class LLMService:
         except RuntimeError:
             raise
         except Exception as e:
-            raise RuntimeError(f"Google AI generate failed: {e}")
+            logger.error("Google AI generate transport failed", exc_info=e)
+            raise RuntimeError("Google AI generate failed") from e
 
     def _googleai_generate_stream(self, prompt: str, context: str = "",
                                   system_prompt: str = "") -> Generator[str, None, None]:
@@ -425,12 +443,18 @@ class LLMService:
             ) as response:
 
                 if response.status_code != 200:
-                    # Same as OpenRouter: read() required inside stream().
+                    # Same as OpenRouter: read() required inside stream(), and
+                    # the body is logged rather than raised.
                     error_body = response.read().decode("utf-8", errors="replace")[:300]
                     if response.status_code == 429:
                         raise RuntimeError("Google AI rate limit exceeded.")
+                    logger.error(
+                        "Google AI streaming error: HTTP %s -- upstream body: %s",
+                        response.status_code,
+                        error_body,
+                    )
                     raise RuntimeError(
-                        f"Google AI streaming error: HTTP {response.status_code} - {error_body}"
+                        f"Google AI streaming error: HTTP {response.status_code}"
                     )
 
                 # Google AI SSE: each `data: ` line is a JSON chunk
@@ -461,4 +485,5 @@ class LLMService:
         except RuntimeError:
             raise
         except Exception as e:
-            raise RuntimeError(f"Google AI streaming failed: {e}")
+            logger.error("Google AI streaming transport failed", exc_info=e)
+            raise RuntimeError("Google AI streaming failed") from e
