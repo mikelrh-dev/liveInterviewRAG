@@ -27,7 +27,6 @@ let mediaStream = null;
 // Current MediaStream → analyser source. Reused across startRecording() calls
 // for the same stream; re-created (old one disconnected) when the stream changes.
 let micSourceNode = null;
-let audioBlocked = false;
 
 let selectedMimeType = "";
 
@@ -58,6 +57,12 @@ async function ensureAudioContext() {
 // TTS output analyser — drives fake-sync of talking video
 let ttsAnalyser = null;
 let ttsVolumeBuffer = null;
+// The mic analyser's time-domain buffer, hoisted out of the animation loop for
+// the same reason ttsVolumeBuffer is: it is overwritten before it is read, so
+// reallocating it per frame is pure garbage.
+let micTimeBuffer = null;
+// The last volume handed to the orb, so an unchanged one is not restated.
+let lastBlendVolume = null;
 
 // VAD state (uses same analyser)
 let vadAnimationId = null;
@@ -112,8 +117,6 @@ let turnAborted = false;
 let turnNarrator = createTurnNarrator();
 
 // Typing animation
-const typingIntervals = [];
-
 // ─── Sidebar data population ─────────────────────────────
 
 let sessionStartTime = null;
@@ -727,6 +730,9 @@ async function initAudio() {
         analyserNode = audioContext.createAnalyser();
         analyserNode.fftSize = 64; // 32 frequency bins
         waveformBars = new Uint8Array(analyserNode.frequencyBinCount);
+        // Allocated here, once, where the analyser's fftSize is known. The
+        // animation loop reused it instead of building a new one every frame.
+        micTimeBuffer = new Uint8Array(analyserNode.fftSize);
 
         // Initialize TTS analyser for fake-sync
         if (!ttsAnalyser) {
@@ -738,7 +744,6 @@ async function initAudio() {
         }
     } catch (e) {
         console.warn("AudioContext init failed:", e.message);
-        audioBlocked = true;
         audioOverlay.classList.remove("hidden");
     }
 }
@@ -751,7 +756,6 @@ async function resumeAudioContext() {
         await audioContext.resume();
     }
     if (audioContext && audioContext.state === "running") {
-        audioBlocked = false;
         audioOverlay.classList.add("hidden");
     }
 }
@@ -771,7 +775,11 @@ function initAvatarOrb() {
         if (wrapper) {
             window.AvatarOrb.resize(wrapper.clientWidth, wrapper.clientHeight);
         }
-        startVisualizationLoop();
+        // The visualization loop is NOT started here. It used to be, which armed
+        // a 60fps chain on page load that then ran for the life of the page --
+        // including in the idle state, where there is no audio to visualise and
+        // no state to show. setState() arms it, and stops it on the way back to
+        // idle.
     }
 }
 
@@ -820,70 +828,124 @@ function updateWaveform() {
 
 // ─── Visualization loop ────────────────────────────────
 
+/**
+ * Begin the visualization loop, unless it is already running.
+ *
+ * The guard is the point. This used to declare its own recursive closure and
+ * call it, so there was no handle to test before arming: calling it twice
+ * produced two chains, and every frame's work was then done twice.
+ *
+ * `setState` is what arms and disarms it, so the loop exists exactly while a
+ * turn is in flight. Before, it was armed once on load and ran for the life of
+ * the page -- 60 frames a second in the idle state too, where there is no audio
+ * to visualise and no state to show.
+ */
 function startVisualizationLoop() {
-    function loop() {
-        waveformAnimationId = requestAnimationFrame(loop);
+    if (waveformAnimationId !== null) return;
+    waveformAnimationId = requestAnimationFrame(visualizationFrame);
+}
 
-        // Mic RMS (shared by orb and VU meter)
-        let micVolume = 0;
-        if (analyserNode) {
-            const timeData = new Uint8Array(analyserNode.fftSize);
-            analyserNode.getByteTimeDomainData(timeData);
-            let sum = 0;
-            for (let i = 0; i < timeData.length; i++) {
-                const v = (timeData[i] - 128) / 128;
-                sum += v * v;
-            }
-            const rms = Math.sqrt(sum / timeData.length);
-            micVolume = Math.min(1, (rms / 0.15) ** 0.7);
+/**
+ * Stop the visualization loop.
+ *
+ * `waveformAnimationId` is the single record of whether a chain is running, so
+ * stopping and starting cannot disagree -- which is the failure the previous
+ * shape invited, where the only way to know a chain existed was to have created
+ * it in this call.
+ */
+function stopVisualizationLoop() {
+    if (waveformAnimationId === null) return;
+    cancelAnimationFrame(waveformAnimationId);
+    waveformAnimationId = null;
+    // The next run has to state the blend again rather than assume the orb
+    // already holds it.
+    lastBlendVolume = null;
+}
 
-            // Update orb
-            if (window.AvatarOrb && window.AvatarOrb.isInitialized()) {
-                window.AvatarOrb.setVolume(micVolume);
-            }
+/**
+ * One frame, then the next.
+ *
+ * A named declaration rather than a closure inside startVisualizationLoop, so
+ * the re-arm is a normal function reference the guard above can reason about.
+ */
+function visualizationFrame() {
+    // Mic RMS (shared by orb and VU meter)
+    let micVolume = 0;
+    if (analyserNode) {
+        // The buffer is hoisted, allocated once in initAudio beside the other
+        // analyser buffers. It used to be `new Uint8Array(analyserNode.fftSize)`
+        // on every frame: sixty allocations a second of a buffer that is
+        // overwritten from the analyser before anything reads it, so the
+        // allocation bought nothing and cost a young generation each frame.
+        if (!micTimeBuffer) micTimeBuffer = new Uint8Array(analyserNode.fftSize);
+        analyserNode.getByteTimeDomainData(micTimeBuffer);
+        let sum = 0;
+        for (let i = 0; i < micTimeBuffer.length; i++) {
+            const v = (micTimeBuffer[i] - 128) / 128;
+            sum += v * v;
         }
+        const rms = Math.sqrt(sum / micTimeBuffer.length);
+        micVolume = Math.min(1, (rms / 0.15) ** 0.7);
 
-        // TTS RMS (for fake-sync)
-        let ttsVolume = 0;
-        if (ttsAnalyser) {
-            ttsAnalyser.getByteTimeDomainData(ttsVolumeBuffer);
-            let sum = 0;
-            for (let i = 0; i < ttsVolumeBuffer.length; i++) {
-                const v = (ttsVolumeBuffer[i] - 128) / 128;
-                sum += v * v;
-            }
-            const rms = Math.sqrt(sum / ttsVolumeBuffer.length);
-            ttsVolume = Math.min(1, (rms / 0.1) ** 0.7);
+        // Update orb
+        if (window.AvatarOrb && window.AvatarOrb.isInitialized()) {
+            window.AvatarOrb.setVolume(micVolume);
         }
-
-        // Drive video crossfade from TTS volume — continuous blend, no hard cut
-        if (
-            window.AvatarOrb &&
-            typeof window.AvatarOrb.setBlend === "function"
-        ) {
-            window.AvatarOrb.setBlend(ttsVolume);
-        }
-
-        // Drive talking video playback rate (new)
-        if (avatarTalkingVideo && currentState === "speaking") {
-            // Map TTS volume to playback rate: 0.7x (silent) to 1.6x (loud)
-            avatarTalkingVideo.playbackRate = 0.7 + ttsVolume * 0.9;
-        }
-
-        // Update waveform
-        updateWaveform();
-
-        // Update sidebar VU meter from mic volume
-        updateVuMeter(micVolume);
     }
 
-    loop();
+    // TTS RMS (for fake-sync)
+    let ttsVolume = 0;
+    if (ttsAnalyser && ttsVolumeBuffer) {
+        ttsAnalyser.getByteTimeDomainData(ttsVolumeBuffer);
+        let sum = 0;
+        for (let i = 0; i < ttsVolumeBuffer.length; i++) {
+            const v = (ttsVolumeBuffer[i] - 128) / 128;
+            sum += v * v;
+        }
+        const rms = Math.sqrt(sum / ttsVolumeBuffer.length);
+        ttsVolume = Math.min(1, (rms / 0.1) ** 0.7);
+    }
+
+    // Drive video crossfade from TTS volume — continuous blend, no hard cut
+    if (
+        window.AvatarOrb &&
+        typeof window.AvatarOrb.setBlend === "function"
+    ) {
+        // Only when it moved. setBlend writes a CSS custom property on
+        // `#portal-ring`, and every write invalidates style for that element --
+        // so restating an unchanged blend sixty times a second was sixty style
+        // invalidations a second to express a value that, in silence, had not
+        // moved at all. Rounded before comparing, because the raw float drifts
+        // in the last bits and would re-arm the write on every frame anyway.
+        const blend = Math.round(ttsVolume * 1000) / 1000;
+        if (blend !== lastBlendVolume) {
+            lastBlendVolume = blend;
+            window.AvatarOrb.setBlend(ttsVolume);
+        }
+    }
+
+    // Drive talking video playback rate (new)
+    if (avatarTalkingVideo && currentState === "speaking") {
+        // Map TTS volume to playback rate: 0.7x (silent) to 1.6x (loud)
+        avatarTalkingVideo.playbackRate = 0.7 + ttsVolume * 0.9;
+    }
+
+    // Update waveform
+    updateWaveform();
+
+    // Update sidebar VU meter from mic volume
+    updateVuMeter(micVolume);
+
+    waveformAnimationId = requestAnimationFrame(visualizationFrame);
 }
 
 // ─── State machine ─────────────────────────────────────
 
 function setState(state) {
     document.body.dataset.state = state;
+    // Read before the assignment: this is what makes the video seek happen on
+    // the way INTO speaking and not on every chunk of a turn.
+    const wasSpeaking = currentState === "speaking";
     currentState = state;
 
     // Update ring
@@ -912,10 +974,25 @@ function setState(state) {
     // applied -- see applyStatusClasses().
     applyStatusClasses(state, statusIsError);
 
+    // The visualization loop exists exactly while a turn is in flight. Idle is
+    // most of this page's life, and a 60fps chain with nothing to draw is a
+    // battery spent for no image.
+    if (state === "idle") {
+        stopVisualizationLoop();
+    } else {
+        startVisualizationLoop();
+    }
+
     // Avatar video crossfade: show talking when speaking, neutral otherwise
     if (avatarTalkingVideo) {
         if (state === "speaking") {
-            avatarTalkingVideo.currentTime = 0.3;
+            // Only on the way in. `setState("speaking")` is called by
+            // tryPlayNextChunk -- once per TTS chunk, not once per turn -- so
+            // seeking every time rewound the mouth to the same 0.3s frame at the
+            // start of every sentence, which is what it did.
+            if (!wasSpeaking) {
+                avatarTalkingVideo.currentTime = 0.3;
+            }
             avatarTalkingVideo.play().catch(() => {});
             avatarTalkingVideo.classList.add("active");
         } else {
@@ -1400,17 +1477,17 @@ function abandonCurrentChunk() {
 /**
  * Say that the audio is blocked, through the control that can unblock it.
  *
- * `audioBlocked` was written in two places and read in none, so the flag was a
- * note to self that nothing could act on. It is read here, and cleared again
- * by `resumeAudioContext` -- the overlay's own click handler -- which is what
- * makes the flag a statement about the page rather than a comment about it.
+ * There was an `audioBlocked` flag here, written in three places and read in
+ * none -- a note to self that nothing could act on. It is deleted rather than
+ * wired up, because the overlay it shadowed is already the state: whether the
+ * audio is blocked is exactly whether `#audio-blocked-overlay` is showing, and
+ * two representations of one fact is how they drift.
  *
  * Showing the overlay is the whole point: a candidate told nothing has no way to
  * recover except a reload, and the one recovery the platform offers is sitting
  * right there in the markup.
  */
 function reportAudioBlocked() {
-    audioBlocked = true;
     if (audioOverlay) audioOverlay.classList.remove("hidden");
 }
 
@@ -2528,7 +2605,16 @@ function showTyping() {
     // #conversation is a polite live region, so everything appended into it is
     // announced. This one is three empty dots in a decorative avatar: it has no
     // text to read, and it says nothing #status has not already said one line
-    // above. Hidden from the region, not from the screen.
+    // above. Left live, it adds an announcement with no content to every turn.
+    //
+    // `aria-hidden="true"` removes the element from the accessibility tree
+    // ENTIRELY -- not from the live region while remaining visible to a screen
+    // reader, which is what this comment used to claim. It is still the right
+    // tool: the alternative is an announcement with nothing in it. The cost is
+    // that the element is also absent from the accessibility tree for anyone
+    // exploring it, which costs nothing for a decorative ellipsis that says
+    // nothing. Anything that puts real text in here has to be reconsidered --
+    // see tests/frontend/announcements.test.mjs.
     div.setAttribute("aria-hidden", "true");
     div.innerHTML = `
         <div class="avatar">

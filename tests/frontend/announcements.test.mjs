@@ -232,14 +232,39 @@ test("the typing indicator is not announced", () => {
     // decorative avatar -- there is no text in it to announce -- and it says
     // nothing that #status has not already said out loud one line earlier. Left
     // live, it adds an announcement with no content to every single turn.
-    const show = extractFunction("showTyping", appJs);
+    //
+    // This was a regex over showTyping's source. It is now the real element,
+    // because the attribute's EFFECT was the thing in question and the old
+    // comment about it was wrong: `aria-hidden="true"` does not hide an element
+    // "from the region, not from the screen". It removes it from the
+    // accessibility tree entirely, which is a stronger claim than the one the
+    // comment made and the correct one for a decorative ellipsis.
+    const env = createDom();
+    const fn = env.loadApp(["showTyping", "scrollToBottom"]);
 
-    assert.match(
-        show,
-        /setAttribute\(\s*"aria-hidden",\s*"true"/,
-        "the typing indicator is added inside the live transcript and is not " +
-            "hidden from it, so it is announced on every turn with nothing to say",
+    fn.showTyping();
+    const indicator = env.document.querySelector(".typing-indicator");
+
+    assert.ok(indicator, "showTyping() added nothing to the transcript");
+    assert.equal(
+        indicator.getAttribute("aria-hidden"),
+        "true",
+        "the typing indicator is inside the live region and is not hidden from " +
+            "the accessibility tree, so it is announced on every turn with " +
+            "nothing to say",
     );
+    // The reason hiding it entirely is the right call rather than a loss: there
+    // is genuinely nothing in it. If a future edit puts text here, the
+    // announcement is suppressed and this fails.
+    assert.equal(
+        indicator.textContent.replace(/\s/g, ""),
+        "",
+        `the typing indicator now contains text ("${indicator.textContent.trim()}"). ` +
+            "aria-hidden would suppress a real announcement; it exists to hide a " +
+            "decorative element, so adding content to it is a defect this test " +
+            "should catch",
+    );
+    env.close();
 });
 
 // ─── 3. The mic names the action it performs ───────────────────────────────

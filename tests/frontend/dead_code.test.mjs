@@ -50,3 +50,52 @@ test("no particles library creeps back into the page", () => {
         "index.html loads a particles library that no code configures",
     );
 });
+
+test("the typing-interval registry is gone", () => {
+    // `const typingIntervals = []` was declared and never read or written. The
+    // typing animation it looks like it tracks is driven by the live region:
+    // the answer is appended to as tokens arrive, and `finalizeAnswer` re-commits
+    // the text and removes the cursor. There is no interval to cancel, so the
+    // array was a container for nothing -- 38 lines of nothing is still
+    // something to read, reason about and keep in sync.
+    //
+    // This is the one assertion in the file that is about a name rather than
+    // about behaviour, and it stays that way deliberately: "this variable does
+    // not exist" is not a behaviour. What guards the behaviour is
+    // tests/frontend/announcements.test.mjs, which drives showTyping and
+    // finalizeAnswer in a real document.
+    assert.doesNotMatch(
+        appJs,
+        /typingIntervals/,
+        "app.js declares a typing-interval registry that nothing reads or writes. " +
+            "Either the typing animation needs cancelling -- in which case there " +
+            "is a leak -- or the declaration is dead and should be deleted",
+    );
+});
+
+test("there is no audio-blocked flag shadowing the overlay", () => {
+    // `let audioBlocked` was written in three places and read in none. It could
+    // not be "used" without inventing a reader: whether the audio is blocked is
+    // already exactly whether `#audio-blocked-overlay` is showing, and a second
+    // representation of that fact is a second thing to keep in step with the
+    // first. So it was deleted rather than wired up, and this is what stops it
+    // being re-added as a note to self.
+    assert.doesNotMatch(
+        stripComments(appJs),
+        /\baudioBlocked\b/,
+        "app.js has an audioBlocked flag again. It is written in several places " +
+            "and read in none, and the overlay's own class is the state it would " +
+            "duplicate",
+    );
+});
+
+/**
+ * The source with its comments removed.
+ *
+ * Needed because a comment that explains why a name was deleted still contains
+ * the name, and a test for its absence has to be about the code. Same reason
+ * evidence_pills.test.mjs strips comments before reading the stylesheet.
+ */
+function stripComments(source) {
+    return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+}

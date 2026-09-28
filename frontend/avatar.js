@@ -45,6 +45,18 @@
                 throw new Error('Three.js not loaded');
             }
 
+            // The canvas, checked before anything builds against it.
+            //
+            // It used to be read once at module scope and never checked, so a
+            // page without #orb-canvas -- a template edit, a partial render, an
+            // element the browser dropped -- carried a null into the renderer,
+            // and then into showFallback(), which is the function that
+            // dereferences it. The degradation path threw on the way out of
+            // init(), at the one caller that is written to expect a boolean.
+            if (!canvas) {
+                throw new Error('orb canvas #orb-canvas not found in the page');
+            }
+
             // Check WebGL support
             const testCanvas = document.createElement('canvas');
             const gl = testCanvas.getContext('webgl') || testCanvas.getContext('experimental-webgl');
@@ -121,9 +133,15 @@
 
     /**
      * Graceful fallback — hides the canvas, the image is always visible.
+     *
+     * Guarded, because this runs from init()'s catch and the most likely reason
+     * to be there is that the canvas was never found. Dereferencing it
+     * unconditionally is what made the failure path the one path that throws:
+     * the function written to keep a broken GPU from taking the page down was
+     * the thing that took the page down.
      */
     function showFallback() {
-        canvas.classList.add('hidden');
+        if (canvas) canvas.classList.add('hidden');
     }
 
     /**

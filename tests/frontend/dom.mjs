@@ -109,6 +109,8 @@ export function baseState(overrides = {}) {
         selectedMimeType: "",
         ttsAnalyser: null,
         ttsVolumeBuffer: null,
+        micTimeBuffer: null,
+        lastBlendVolume: null,
         vadAnimationId: null,
         silenceStart: null,
         hasSpoken: false,
@@ -354,15 +356,72 @@ function installClock(window) {
 }
 
 /**
+ * A controllable requestAnimationFrame.
+ *
+ * jsdom's rAF fires on a real timer, which makes "how many frames did this loop
+ * ask for" a race rather than an observation -- and that is the whole question
+ * for a loop that is supposed to stop when there is nothing to animate. Here
+ * the loop's request is counted and only fires when the test says so, so
+ * "it stopped" and "it is still going" are both decidable.
+ */
+function installRaf(window) {
+    const queue = new Map();
+    let nextId = 1;
+    let requested = 0;
+
+    window.requestAnimationFrame = (fn) => {
+        requested++;
+        const id = nextId++;
+        queue.set(id, fn);
+        return id;
+    };
+    window.cancelAnimationFrame = (id) => {
+        queue.delete(id);
+    };
+
+    return {
+        /** How many frames have been requested since the counter was last read. */
+        get requested() {
+            return requested;
+        },
+        resetCounters() {
+            requested = 0;
+        },
+        /** Frames waiting to run. */
+        get pending() {
+            return queue.size;
+        },
+        /** Run one pending frame, if there is one. @returns whether one ran */
+        step() {
+            const entry = [...queue.entries()][0];
+            if (!entry) return false;
+            queue.delete(entry[0]);
+            entry[1](performance.now());
+            return true;
+        },
+        /** Run n frames, or until there is nothing left to run. */
+        stepTimes(n) {
+            let ran = 0;
+            for (let i = 0; i < n; i++) {
+                if (!this.step()) break;
+                ran++;
+            }
+            return ran;
+        },
+    };
+}
+
+/**
  * Build a window with the real markup and the APIs jsdom omits.
  *
  * @param {object} [options]
  * @param {string}  [options.html]   markup to parse (defaults to the shipped index.html)
  * @param {boolean} [options.visual] enable requestAnimationFrame (default true)
  * @param {boolean} [options.clock]  replace the timers and Date with a controllable clock
+ * @param {boolean} [options.raf]    replace requestAnimationFrame with a steppable one
  */
 export function createDom(options = {}) {
-    const { html = readIndexHtml(), visual = true, clock = false } = options;
+    const { html = readIndexHtml(), visual = true, clock = false, raf = false } = options;
     /** Anything jsdom reported as an error, for a test to assert on or read. */
     const envErrors = [];
 
@@ -504,6 +563,8 @@ export function createDom(options = {}) {
         document,
         /** Present only when `clock: true`; undefined otherwise. */
         clock: clock ? installClock(window) : undefined,
+        /** Present only when `raf: true`; undefined otherwise. */
+        raf: raf ? installRaf(window) : undefined,
         media,
         audios,
         fetches: calls,
