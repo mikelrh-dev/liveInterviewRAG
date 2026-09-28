@@ -6,6 +6,11 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+#: Coarsest sweep interval that is still an interval, in minutes. Exported
+#: because the floor is a policy statement and the test that holds it should
+#: quote the same constant the code applies, not restate the number.
+MIN_AUDIO_CLEANUP_INTERVAL_MIN = 1
+
 
 def _env_int(name: str, default: str) -> int:
     """Read an integer env var; fail fast naming the offending variable."""
@@ -26,6 +31,20 @@ def _env_float(name: str, default: str) -> float:
 def _env_bool(name: str, default: str) -> bool:
     """Read a boolean env var ("1"/"true"/"yes"/"on" are truthy)."""
     return os.getenv(name, default).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _env_origin_list(name: str, default: str) -> list[str]:
+    """Read a comma-separated env var as a clean list of origins.
+
+    An empty value falls back to ``default`` rather than yielding ``[]``. Those
+    are different intentions: an operator who has not filled the variable in yet
+    is not an operator who wants every origin rejected, and silently
+    distinguishing them by looking at whether the line is blank is not something
+    a reader of a shell file can do.
+    """
+    raw = os.getenv(name, default)
+    origins = [item.strip() for item in raw.split(",")]
+    return [origin for origin in origins if origin] or [default]
 
 
 class Config:
@@ -90,14 +109,24 @@ class Config:
         # cache in front of the LLM.
 
         # Server
-        # The bind address is NOT read from here. It is a process-level concern
-        # owned by the unit file, which runs uvicorn with `--host 127.0.0.1` so
-        # the API is only reachable through the local reverse proxy. Keeping a
-        # second copy of that decision in config is how the two drifted apart:
-        # this value used to default to 0.0.0.0 with a comment asserting that
-        # was intentional, while the hardened unit file bound to loopback.
+        # The bind address is NOT read from here, and neither is the port. Both
+        # are process-level concerns owned by the unit file, which runs uvicorn
+        # with `--host 127.0.0.1 --port 8000` so the API is only reachable
+        # through the local reverse proxy. The two places that decide it are:
+        #
+        #   deployment/interviewtts.service:24  the deployed service
+        #   RUNBOOK.md:18                       local development
+        #
+        # Keeping a second copy of that decision in config is how the two drifted
+        # apart: HOST used to default to 0.0.0.0 here with a comment asserting
+        # that was intentional, while the hardened unit file bound to loopback --
+        # and .env.example declared HOST=0.0.0.0 on top, so an operator reading
+        # the example believed they had configured an exposure that the process
+        # never honoured. PORT was the same shape one field over: read into
+        # config.PORT and then never read again by anything, including /api/config.
+        #
+        # To change either, change the command line, not this file.
         # pi-lens-ignore: B104
-        self.PORT: int = _env_int("PORT", "8000")
 
         # Rate limiting
         self.RATE_LIMIT_PER_MINUTE: int = _env_int("RATE_LIMIT_PER_MINUTE", "10")
@@ -111,9 +140,39 @@ class Config:
             raw_ttl = 2.0
         self.SESSION_TTL_HOURS: float = raw_ttl
 
-        # Periodic audio cleanup interval in minutes
-        self.AUDIO_CLEANUP_INTERVAL_MIN: int = _env_int(
-            "AUDIO_CLEANUP_INTERVAL_MIN", "30"
+        # Periodic audio cleanup interval in minutes (floor 1)
+        #
+        # The floor is not a nicety, and it is the same rule SESSION_TTL_HOURS
+        # got: this value is multiplied by 60 in main.py and handed to
+        # periodic_cleanup, whose tick ends with `await asyncio.sleep(interval)`.
+        # asyncio.sleep returns immediately for any value at or below zero, so an
+        # interval of 0 does not mean "sweep constantly" -- it means a loop that
+        # never yields, re-running the whole sweep body (an rglob over the audio
+        # tree, a report prune, four SQLite statements) at full speed for as long
+        # as the process lives. One minute is the coarsest interval that is still
+        # an interval.
+        raw_interval = _env_int("AUDIO_CLEANUP_INTERVAL_MIN", "30")
+        if raw_interval < MIN_AUDIO_CLEANUP_INTERVAL_MIN:
+            logger.warning(
+                "AUDIO_CLEANUP_INTERVAL_MIN=%s is below floor of %d; defaulting to 30",
+                raw_interval,
+                MIN_AUDIO_CLEANUP_INTERVAL_MIN,
+            )
+            raw_interval = 30
+        self.AUDIO_CLEANUP_INTERVAL_MIN: int = raw_interval
+
+        # CORS origins, as the list the middleware is given.
+        #
+        # Parsed here rather than in main.py, which read the variable with
+        # os.getenv and handed `.split(",")` straight to CORSMiddleware. Two
+        # consequences: the padding around a comma-separated value survived, and
+        # an origin like " https://site " never matches the Origin header a
+        # browser actually sends -- so the request fails CORS and the operator
+        # is looking at a policy problem while the cause is a stray space.
+        # Reading it here also makes the value constructible in a test without
+        # mutating the process environment.
+        self.CORS_ORIGINS: list[str] = _env_origin_list(
+            "CORS_ORIGINS", "http://localhost:8000"
         )
 
         # Audio limits

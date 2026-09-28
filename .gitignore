@@ -62,6 +62,13 @@ nul
 # RAG embedding cache
 .rag_cache/
 
+# Node dependencies. package-lock.json stays tracked on purpose: it is what makes
+# `npm ci` reproducible, and an unpinned install is not. The tree itself is a build
+# artifact -- 1234 files and 12.6 MB that git collapses into one untracked entry, so
+# an unreviewed `git add -A` stages all of it in a single step and buries whatever
+# change was actually being made.
+node_modules/
+
 # Local env overrides
 *.local
 
