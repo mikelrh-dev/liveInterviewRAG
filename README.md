@@ -288,7 +288,19 @@ Notes:
 
 - `wiki/index.md` is **AUTO-GENERATED** by `scripts/wiki/generate_index.py` — never hand-edit it.
 - `deploy.sh` keeps one rollback copy on the VPS at `candidate.prev/`. Roll back with:
-  `ssh <host> 'mv candidate candidate.broken && mv candidate.prev candidate && sudo systemctl restart interviewtts.service'`
+
+  ```bash
+  VPS_HOST=your-host VPS_USER=deploy ./scripts/deploy.sh rollback
+  ```
+
+  This is a subcommand rather than a pasted one-liner because the obvious
+  one-liner is destructive. `mv candidate candidate.broken && mv candidate.prev
+  candidate` looks guarded and is not: if `candidate.prev` is absent the first
+  `mv` still succeeds and the second then fails, so the command has renamed the
+  live content out of the way and then reported failure. The subcommand checks
+  both directories exist — in its own round trip, before anything moves — and
+  puts the live tree back if the swap fails partway. The tree that was live
+  before the rollback is kept at `candidate.broken/`.
 - Further rollback anchors: git tag `pre/wiki-pipeline` (last pre-change commit) and an out-of-repo zip snapshot of `candidate/` taken before the change.
 
 #### Backing up `wiki/` (manual, private repo)
