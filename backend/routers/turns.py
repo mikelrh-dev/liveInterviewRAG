@@ -24,17 +24,17 @@ router = APIRouter()
 @router.post("/api/conversation/{conversation_id}/message")
 async def send_message(conversation_id: str, audio: UploadFile = File(...)):
     """Process a voice message through the full pipeline: STT → RAG → LLM → TTS."""
-    # Validate conversation exists (hydrates from DB on memory miss)
-    conversation = await get_conversation_or_hydrate(conversation_id)
-    # First-substantive-turn rule (design D10): evaluated post-hydration,
-    # pre-generation. Turns are appended post-generation, so only the
-    # recruiter's opening question is ever looked up or stored.
-    is_first_substantive = len(conversation.get("turns", [])) == 0
+    # Validate the conversation exists, and hydrate it from the DB on a memory
+    # miss. The call is for its effect on the store, not for a return value: the
+    # first-substantive-turn rule (design D10) used to read the hydrated turns
+    # here, but it gated the semantic answer cache, and that cache is gone.
+    # Nothing consults the flag now, so nothing derives it.
+    await get_conversation_or_hydrate(conversation_id)
 
     temp_audio = await stage_upload(conversation_id, audio)
 
     try:
-        return await run_turn(conversation_id, temp_audio, is_first_substantive)
+        return await run_turn(conversation_id, temp_audio)
     finally:
         # Clean up temp audio
         if temp_audio.exists():

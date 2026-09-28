@@ -33,20 +33,11 @@ from backend.turns.errors import LLM_FAILED, STT_FAILED, TTS_FAILED
 logger = logging.getLogger(__name__)
 
 
-async def run_turn(
-    conversation_id: str, temp_audio: Path, is_first_substantive: bool
-) -> dict:
+async def run_turn(conversation_id: str, temp_audio: Path) -> dict:
     """Run one full turn on a staged recording and return the JSON body.
 
     ``temp_audio`` is already validated and written by ``uploads.stage_upload``;
     the caller deletes it when this returns.
-
-    ``is_first_substantive`` is retained but no longer read. It existed to gate
-    the semantic answer cache, which is removed; nothing else consulted it.
-    Removing the parameter also means editing ``routers/turns.py``, which is
-    outside the change set this removal was made in, so it is kept here rather
-    than left as an unexplained leftover. Deleting it is a one-line follow-up
-    at the call site plus this signature.
     """
     _t = [time.time()]  # t0
 
