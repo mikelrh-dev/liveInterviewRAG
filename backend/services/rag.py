@@ -426,9 +426,12 @@ class RAGPipeline:
     def embedder(self):
         """Active sentence-transformer embedder, or None when unusable.
 
-        Returns None before initialization and in TF-IDF fallback mode:
-        TF-IDF vectors are unstable across restarts, so the semantic answer
-        cache must never store or serve them (design D8).
+        Returns None before initialization and in TF-IDF fallback mode. The
+        fallback is reported as None rather than as a vector because the two
+        are not comparable: a TF-IDF space is rebuilt on every ingest, so
+        vectors from two runs do not share a geometry. Callers that need a
+        readiness check (the retrieval sweeps, the packaging guard) read this
+        instead of ``_embedder`` so the fallback stays visible.
         """
         if not self._initialized or self._use_tfidf:
             return None
@@ -878,3 +881,4 @@ class RAGPipeline:
             {"text": chunk.content, "score": round(score, 3), "source": chunk.source}
             for chunk, score in results
         ]
+

@@ -2071,7 +2071,14 @@ class TestRetrievalThresholdIsHonest:
 
 
 class TestEmbedderProperty:
-    """Read-only embedder exposure for the semantic answer cache (design D8)."""
+    """Read-only embedder exposure, and the TF-IDF-fallback guard behind it.
+
+    Kept, not deleted with the semantic answer cache that first needed it: the
+    property still has three other readers, which use it as a readiness check
+    ("is there a real sentence embedder, or did this run fall back to TF-IDF?").
+    Only the rationale in its docstring was stale.
+    """
+
 
     def test_embedder_none_before_initialization(self):
         """Property returns None while the pipeline has never been initialized."""
@@ -2093,3 +2100,169 @@ class TestEmbedderProperty:
         sentinel = object()
         rag._embedder = sentinel
         assert rag.embedder is sentinel
+
+class TestSemanticAnswerCacheWasNotViable:
+    """Why there is no semantic answer cache, measured rather than asserted.
+
+    A similarity cache in front of the LLM was built, configured, shipped and
+    unit-tested, and could never once return a hit. It was removed; this class
+    is what remains, so the decision is a measurement someone can re-check
+    instead of a story in a commit message.
+
+    It is also the answer to "why did the tests not catch this". The old suite
+    drove the cache with a ``FakeEmbedder`` whose fallback vectors were
+    MD5-seeded random numbers, which makes unrelated texts near-orthogonal.
+    Every threshold looked correct against that, including the one that was
+    unreachable against the real model. A calibration validated against a stub
+    is worse than no calibration, because it is read as evidence.
+
+    Everything below uses the real ``all-MiniLM-L6-v2`` over the real Spanish
+    question surface. If these tests start failing, the embedder changed, and a
+    paraphrase cache may have become viable -- re-measure before adding one.
+    Do not simply lower the threshold; the overlap is the finding, not the
+    threshold's fault.
+
+    Scope note: the population is a small hand-built set, not a corpus, so
+    these are structural claims ("the classes overlap") rather than a recall
+    figure to quote. A larger set moves the numbers, not the overlap.
+    """
+
+    #: Base question plus two things a recruiter actually says instead of it.
+    GROUPS = (
+        ("¿Puedes presentarte brevemente?",
+         "Háblame un poco de ti, por favor.",
+         "Preséntate ante mí en un minuto."),
+        ("¿Por qué quieres trabajar con nosotros?",
+         "¿Qué te atrae de esta empresa?",
+         "Dime por qué deberíamos contratarte."),
+        ("¿Cómo manejas la presión o los plazos cerrados?",
+         "Cuando tienes mucho trabajo, ¿qué haces?",
+         "¿Cómo trabajas bajo estrés?"),
+        ("¿Has trabajado en equipo? Cuéntanos un ejemplo.",
+         "¿Cómo te llevas con tus compañeros?",
+         "Ejemplifica una vez que colaboraste con un equipo."),
+        ("¿Qué herramientas o tecnologías dominas?",
+         "¿Con qué programas trabajas mejor?",
+         "Dime tus habilidades técnicas."),
+        ("¿Qué idiomas hablas?",
+         "¿Hablas inglés u otro idioma?",
+         "Dime tus niveles de idiomas."),
+        ("¿Qué salario esperas para este puesto?",
+         "¿Cuánto quieres cobrar?",
+         "¿Expectativas salariales para el puesto?"),
+        ("¿Por qué cambiaste de trabajo anteriormente?",
+         "¿A qué se debe tu cambio de empresa?",
+         "Cuéntanos por qué te fuiste del último trabajo."),
+        ("¿Qué harías si un cliente se queja?",
+         "¿Cómo actúas ante una queja?",
+         "Cuéntanos cómo resuelves un problema con un cliente."),
+        ("¿Por qué deberíamos contratarte?",
+         "¿Qué te hace ser el candidato adecuado?",
+         "Dame tres razones para contratarte."),
+    )
+
+    #: The threshold the module shipped with. Named here so the value under
+    #: test is the value that was actually in config.py, not a round number.
+    SHIPPED_THRESHOLD = 0.93
+
+    @classmethod
+    @pytest.fixture(scope="class")
+    def similarities(cls):
+        """(positives, negatives) cosine over the raw question, L2-normalised.
+
+        Raw, not ``expand_query``: that is what the cache scored, and
+        expansion is retrieval-oriented and would skew question-to-question
+        similarity.
+        """
+        rag = build_pipeline()
+        if rag._use_tfidf:
+            pytest.skip("TF-IDF fallback active: the measurement needs a real embedder")
+        model = rag.embedder
+
+        base = [g[0] for g in cls.GROUPS]
+        paras = [p for g in cls.GROUPS for p in g[1:]]
+        vecs = model.encode(base + paras, show_progress_bar=False)
+        vecs = np.asarray(vecs, dtype=np.float32)
+        vecs /= np.linalg.norm(vecs, axis=1, keepdims=True)
+
+        b, p = vecs[: len(base)], vecs[len(base):]
+        positives = [float(b[i] @ p[2 * i + j]) for i in range(len(base)) for j in (0, 1)]
+        negatives = [
+            float(b[i] @ p[k])
+            for i in range(len(base))
+            for k in range(len(p))
+            if k // 2 != i
+        ]
+        return positives, negatives
+
+
+    def test_no_paraphrase_reaches_the_shipped_threshold(self, similarities):
+        """Recall at the shipped threshold is zero, so the cache never hit."""
+        positives, _ = similarities
+        hits = [s for s in positives if s >= self.SHIPPED_THRESHOLD]
+        assert hits == [], (
+            f"{len(hits)}/{len(positives)} paraphrases now clear "
+            f"{self.SHIPPED_THRESHOLD} (max {max(positives):.4f}). The embedder "
+            "or the question set changed -- re-measure before reintroducing a "
+            "paraphrase cache."
+        )
+
+    def test_the_two_classes_overlap(self, similarities):
+        """The distributions are not separable, which is the real finding.
+
+        A threshold is only usable if it sits above every negative (no false
+        positives) and below the typical positive. This asserts it is not,
+        directly, so the reason the cache was retired survives any later
+        tuning of the threshold.
+        """
+        positives, negatives = similarities
+        assert min(positives) < max(negatives), (
+            "now separable: every paraphrase scores above the closest "
+            "different question. That is the precondition for a cache like "
+            "this, so re-measure it rather than assuming."
+        )
+        assert np.median(positives) < max(negatives), (
+            f"positive median {np.median(positives):.4f} is below negative max "
+            f"{max(negatives):.4f}: the classes overlap, so any threshold that "
+            "catches paraphrases also catches unrelated questions."
+        )
+
+    def test_the_zero_false_positive_floor_is_useless(self, similarities):
+        """Even the safest possible threshold would serve almost nothing.
+
+        This is the number that closes the question. Lowering the threshold to
+        the highest negative is the best a paraphrase cache could do without
+        risking a confidently-wrong answer, and the answer is a handful of
+        pairs -- for a table of retained raw questions.
+        """
+        positives, negatives = similarities
+        floor = max(negatives)
+        served = [s for s in positives if s >= floor]
+        assert len(served) < len(positives) * 0.25, (
+            f"the zero-false-positive floor {floor:.4f} now serves "
+            f"{len(served)}/{len(positives)} paraphrases. If that is high "
+            "enough to be worth a cache, this decision should be revisited."
+        )
+
+    def test_the_module_and_its_configuration_are_gone(self):
+        """Nothing in the service graph or config still refers to the cache.
+
+        A retirement that leaves the config keys behind is a retirement a
+        future reader can undo by accident, and one that leaves a table behind
+        keeps storing nothing about everyone for no reason.
+        """
+        import importlib
+
+        with pytest.raises(ModuleNotFoundError):
+            importlib.import_module("backend.services.semantic_cache")
+
+        from backend import container, config as config_module
+
+        assert not hasattr(container, "semantic_cache")
+        assert not hasattr(config_module.config, "SEMANTIC_CACHE_ENABLED")
+        for key in ("TTL_DAYS", "MAX_ROWS", "THRESHOLD"):
+            assert not hasattr(config_module.config, f"SEMANTIC_CACHE_{key}")
+
+        import backend.main as main_mod
+
+        assert not hasattr(main_mod, "semantic_cache")

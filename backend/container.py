@@ -55,7 +55,7 @@ def tts_service():
 
 
 def rag_pipeline():
-    """Document retrieval pipeline; also the semantic cache's embedder."""
+    """Document retrieval pipeline, and the owner of the only embedder."""
     return _root().rag_pipeline
 
 
@@ -72,11 +72,6 @@ def report_service():
 def persistence():
     """Write-through SQLite store."""
     return _root().persistence
-
-
-def semantic_cache():
-    """Paraphrase answer cache, gated on the first substantive turn."""
-    return _root().semantic_cache
 
 
 def cleanup_stale_audio():

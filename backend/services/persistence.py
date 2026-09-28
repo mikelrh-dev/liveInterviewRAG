@@ -48,14 +48,6 @@ CREATE TABLE IF NOT EXISTS reports (
     path TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS semantic_cache (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    question TEXT NOT NULL,
-    embedding BLOB NOT NULL,
-    answer TEXT NOT NULL,
-    hit_count INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL
-);
 """
 
 

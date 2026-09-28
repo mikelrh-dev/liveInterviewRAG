@@ -82,13 +82,12 @@ class Config:
             os.getenv("DB_PATH", str(self.BASE_DIR / "data" / "interviewtts.db"))
         )
 
-        # Semantic answer cache (Cap-3): instant paraphrase answers
-        self.SEMANTIC_CACHE_ENABLED: bool = _env_bool("SEMANTIC_CACHE_ENABLED", "true")
-        self.SEMANTIC_CACHE_TTL_DAYS: int = _env_int("SEMANTIC_CACHE_TTL_DAYS", "14")
-        self.SEMANTIC_CACHE_MAX_ROWS: int = _env_int("SEMANTIC_CACHE_MAX_ROWS", "500")
-        self.SEMANTIC_CACHE_THRESHOLD: float = _env_float(
-            "SEMANTIC_CACHE_THRESHOLD", "0.93"
-        )
+        # The semantic answer cache (Cap-3) used to live here, as four
+        # SEMANTIC_CACHE_* keys. It was removed because the shipped embedder
+        # cannot tell a Spanish paraphrase from a different Spanish question --
+        # see tests/test_rag.py::TestSemanticAnswerCacheWasNotViable. The keys
+        # are not honoured any more; the FAQ literal cache below is the only
+        # cache in front of the LLM.
 
         # Server
         # The bind address is NOT read from here. It is a process-level concern

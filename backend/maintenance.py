@@ -104,10 +104,4 @@ async def periodic_cleanup(interval_seconds: int) -> None:
                 logger.info("Pruned %d stale conversations from the store", pruned_convs)
         except Exception as e:
             logger.error("Conversation pruning failed: %s", e)
-        try:
-            swept = container.semantic_cache().sweep_expired()
-            if swept:
-                logger.info("Swept %d expired semantic-cache rows", swept)
-        except Exception as e:
-            logger.error("Semantic cache sweep failed: %s", e)
         await asyncio.sleep(interval_seconds)

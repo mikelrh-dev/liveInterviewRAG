@@ -342,7 +342,7 @@ class TestRedirectionWiring:
     def test_audio_reports_and_database_are_outside_the_project_tree(
         self, isolated_write_targets
     ):
-        from backend.main import persistence, report_service, semantic_cache, tts_service
+        from backend.main import persistence, report_service, tts_service
 
         targets = {
             "config.AUDIO_DIR": config.AUDIO_DIR,
@@ -351,8 +351,8 @@ class TestRedirectionWiring:
             "tts_service.output_dir": tts_service.output_dir,
             "report_service.output_dir": report_service.output_dir,
             "persistence.db_path": persistence.db_path,
-            "semantic_cache.db_path": semantic_cache.db_path,
         }
+
         for name, target in targets.items():
             resolved = Path(target).resolve()
             assert not resolved.is_relative_to(config.BASE_DIR), (

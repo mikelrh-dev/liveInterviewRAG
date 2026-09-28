@@ -63,7 +63,17 @@ class TestSchemaAndPragmas:
             }
         finally:
             con.close()
-        assert {"conversations", "turns", "messages", "reports", "semantic_cache"} <= tables
+        assert {"conversations", "turns", "messages", "reports"} <= tables
+        # The semantic_cache table is deliberately absent. It was the DDL half
+        # of a cache that could never return a hit; leaving the table behind
+        # would keep creating a store for data nothing reads or writes. This
+        # assertion is what makes that removal stick.
+        assert "semantic_cache" not in tables, (
+            "the semantic_cache table is back in the schema -- if a cache that "
+            "stores raw recruiter questions is being reintroduced, re-measure "
+            "it first (see test_rag.py::TestSemanticAnswerCacheWasNotViable)"
+        )
+
 
     def test_wal_fk_busy_timeout_pragmas_active(self, tmp_path):
         svc = _make_service(tmp_path)
@@ -587,6 +597,8 @@ class TestHydrationWiring:
             mock_rag.get_context_string.return_value = "Built InterviewTTS with Python."
             mock_rag.get_chunks_with_scores.return_value = []
             mock_rag.chunks = [MagicMock()]
+
+
             mock_llm.generate.return_value = "Second answer."
 
             async def fake_synth(text, output_path=None):

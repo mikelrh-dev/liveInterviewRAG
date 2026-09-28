@@ -40,6 +40,13 @@ async def run_turn(
 
     ``temp_audio`` is already validated and written by ``uploads.stage_upload``;
     the caller deletes it when this returns.
+
+    ``is_first_substantive`` is retained but no longer read. It existed to gate
+    the semantic answer cache, which is removed; nothing else consulted it.
+    Removing the parameter also means editing ``routers/turns.py``, which is
+    outside the change set this removal was made in, so it is kept here rather
+    than left as an unexplained leftover. Deleting it is a one-line follow-up
+    at the call site plus this signature.
     """
     _t = [time.time()]  # t0
 
@@ -59,10 +66,8 @@ async def run_turn(
     if not user_text.strip():
         raise HTTPException(status_code=422, detail="No speech detected in audio")
 
-    # Step 2: cache precedence (FAQ literal, then semantic paraphrase).
-    source, response_text = resolve_answer_source(
-        user_text, is_first_substantive=is_first_substantive
-    )
+    # Step 2: cache precedence (FAQ literal, then the LLM).
+    source, response_text = resolve_answer_source(user_text)
 
     if source != LLM:
         # A cache hit is already final text, so it skips straight to TTS. The
@@ -96,9 +101,6 @@ async def run_turn(
             logger.error("Response generation failed: %s", e, exc_info=True)
             raise HTTPException(status_code=503, detail=LLM_FAILED) from e
         _t.append(time.time())
-
-    # Store-after-success: only fresh LLM answers on first substantive turns
-    store_in_semantic_cache = is_first_substantive and source == LLM
 
     # Step 4: TTS — synthesize audio response
     message_id = uuid.uuid4().hex
@@ -143,11 +145,6 @@ async def run_turn(
     # Write-through: persist turn + message + activity atomically, then let
     # the committed n decide what memory keeps.
     await persist_turn(conversation_id, new_turn, new_message)
-    # Cache the fresh answer for future paraphrased first questions
-    if store_in_semantic_cache:
-        await asyncio.to_thread(
-            container.semantic_cache().store, user_text, response_text
-        )
 
     return {
         "user_text": user_text,

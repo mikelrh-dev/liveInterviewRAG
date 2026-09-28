@@ -120,15 +120,8 @@ def build_stream(
                 terminal_emitted = True
                 return
 
-            # First-substantive-turn rule (design D10): evaluated post-hydration,
-            # pre-generation. Only the recruiter's opening question is ever
-            # looked up or stored in the semantic cache.
-            is_first_substantive = len(
-                conversations[conversation_id].get("turns", [])
-            ) == 0
-
             async def emit_cached_answer(response_text: str):
-                """Shared FAQ/semantic hit contract (verbatim token, single-file
+                """Shared FAQ hit contract (verbatim token, single-file
                 TTS, chunks tracked for the panel, memory + DB write-through,
                 audio_url + done). On TTS failure it reports the error, stores
                 nothing, and still terminates the stream with `done`.
@@ -272,10 +265,9 @@ def build_stream(
                     )
                 return
 
-            # ── Step 2: cache precedence (FAQ literal, then semantic) ──
+            # ── Step 2: cache precedence (FAQ literal, then the LLM) ──
             source, cached_text = resolve_answer_source(
                 user_text,
-                is_first_substantive=is_first_substantive,
                 path_label=" (streaming)",
             )
             if source != LLM:
@@ -448,11 +440,6 @@ def build_stream(
             # Write-through: persist turn + message + activity atomically, then
             # let the committed n decide what memory keeps.
             committed = await persist_turn(conversation_id, new_turn, new_message)
-            # Cache the fresh answer for future paraphrased first questions
-            if is_first_substantive:
-                await asyncio.to_thread(
-                    container.semantic_cache().store, user_text, full_response
-                )
 
             yield sse_format("done", turn_done_payload(committed))
             terminal_emitted = True

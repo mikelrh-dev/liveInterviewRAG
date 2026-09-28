@@ -104,17 +104,15 @@ def isolated_write_targets(tmp_path, monkeypatch):
     monkeypatch.setattr(main_mod.tts_service, "output_dir", audio)
     monkeypatch.setattr(main_mod.report_service, "output_dir", reports)
     monkeypatch.setattr(main_mod.persistence, "db_path", database)
-    monkeypatch.setattr(main_mod.semantic_cache, "db_path", database)
 
-    # Both stores cache "I have applied the DDL" as a per-instance flag, and
-    # they set it against the *previous* path while the app was starting up.
+    # The store caches "I have applied the DDL" as a per-instance flag, and
+    # it set it against the *previous* path while the app was starting up.
     # Repointing ``db_path`` without clearing it hands every write a fresh file
     # with no tables in it, and the failure surfaces as
     # ``no such table: conversations`` -- which reads like a product defect
     # rather than like a mis-pointed test. Clearing the flag lets the lazy
     # ``_ensure_schema`` on the next write build the new file.
     monkeypatch.setattr(main_mod.persistence, "_schema_ready", False)
-    monkeypatch.setattr(main_mod.semantic_cache, "_schema_ready", False)
 
     return SimpleNamespace(
         root=tmp_path, audio=audio, reports=reports, data=data, db=database

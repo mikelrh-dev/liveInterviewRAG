@@ -68,7 +68,6 @@ from backend.services.llm import LLMService
 from backend.services.persistence import PersistenceService
 from backend.services.rag import RAGPipeline
 from backend.services.report import ReportService
-from backend.services.semantic_cache import SemanticAnswerCache
 from backend.services.stt import STTService
 from backend.services.tts import TTSService
 from backend.uploads import MAX_AUDIO_SIZE  # noqa: F401  (re-exported)
@@ -124,33 +123,15 @@ report_service = ReportService(
 # logged and swallowed inside the service — never surfaced to the pipeline.
 persistence = PersistenceService(config.DB_PATH, enabled=config.PERSISTENCE_ENABLED)
 
-# Semantic answer cache (Cap-3): reuses the RAG embedder via a provider — no
-# second model load. Shares the same SQLite DB; schema is ensured lazily.
-#
-# MEASURED: at SEMANTIC_CACHE_THRESHOLD=0.93 this cache cannot return a hit.
-# Embedding 20 Spanish recruiter questions (60 phrasings, the population the
-# FAQ literal cache does not intercept) with the real all-MiniLM-L6-v2 gives
-# paraphrase pairs a median cosine of 0.537 and a maximum of 0.855, so 0 of 60
-# clear 0.93. Cross-question pairs — the false positives a hit would cause —
-# peak at 0.779. So the lowest threshold with zero false positives is 0.779, and
-# it still catches only 6.7% of paraphrases. There is no value that both serves
-# paraphrases and rejects a different question: the distributions overlap.
-# Meanwhile every first-substantive turn pays an encode() plus a SELECT for that
-# guaranteed miss, so the cost is real and the benefit is currently nil.
-# The threshold was never measured: tests/test_semantic_cache.py drives it with
-# a FakeEmbedder whose fallback vectors are MD5-seeded random, which makes
-# unrelated texts near-orthogonal and never exercises the band at all.
-# Not changed here — the fix is a multilingual embedder or retiring the cache,
-# not a number, and config.py is out of scope. Startup logs the warning so the
-# cost is visible rather than inferred.
-semantic_cache = SemanticAnswerCache(
-    config.DB_PATH,
-    lambda: rag_pipeline.embedder,
-    enabled=config.SEMANTIC_CACHE_ENABLED,
-    ttl_days=config.SEMANTIC_CACHE_TTL_DAYS,
-    max_rows=config.SEMANTIC_CACHE_MAX_ROWS,
-    threshold=config.SEMANTIC_CACHE_THRESHOLD,
-)
+# The semantic answer cache (Cap-3) used to be constructed here, sharing this
+# module's DB and reusing the RAG embedder. It is gone: measured with the real
+# all-MiniLM-L6-v2, the shipped threshold could not be reached by any paraphrase
+# and lowering it to a zero-false-positive floor still served ~7% of them,
+# because an English-only embedder cannot separate a Spanish paraphrase from a
+# different Spanish question. It also retained the recruiter's raw question for
+# 14 days while the transcript expires in 2. The measurement is kept, and kept
+# honest, in tests/test_rag.py::TestSemanticAnswerCacheWasNotViable. The FAQ
+# literal cache (services/response_cache.py) is unaffected and still works.
 
 
 @asynccontextmanager
@@ -190,12 +171,6 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("Persistence initialization failed at startup: %s", e)
 
-    # Warm the semantic cache (Cap-3) and drop rows expired since last run
-    try:
-        await asyncio.to_thread(semantic_cache.sweep_expired)
-    except Exception as e:
-        logger.warning("Semantic cache startup sweep failed: %s", e)
-
     # Clean up stale audio files from previous runs
     cleanup_stale_audio()
 
@@ -205,15 +180,6 @@ async def lifespan(app: FastAPI):
         report_service.cleanup_expired()
     except Exception as e:
         logger.warning("Report dir/cleanup failed at startup: %s", e)
-
-    if semantic_cache.enabled:
-        logger.warning(
-            "Semantic answer cache is ON with threshold %.2f, which measurement "
-            "shows can never hit: each first-substantive turn pays an embedding "
-            "plus a SELECT for a guaranteed miss. Set SEMANTIC_CACHE_ENABLED=false "
-            "until the embedder or the threshold is revisited.",
-            semantic_cache.threshold,
-        )
 
     # Spawn periodic cleanup task
     cleanup_interval = config.AUDIO_CLEANUP_INTERVAL_MIN * 60

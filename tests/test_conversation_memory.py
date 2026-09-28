@@ -514,17 +514,20 @@ class SweepRun:
         Replacement, not per-tick reach: a sweep that grew a new call site
         would still be isolated, because the isolation is a property of what
         the container hands out rather than of how many times each double was
-        called. The four stubs that run on *every* tick are also asserted as
+        called. The stubs that run on *every* tick are also asserted as
         consulted, which is what proves the tick really executed the code under
         test instead of short-circuiting past it.
+
+        The semantic cache is not in this list because it no longer exists. It
+        used to be a fourth per-tick target, and its presence here is what made
+        a new call site in ``periodic_cleanup`` visible: the count of stubs and
+        the count of real targets have to move together.
         """
         from backend import container
 
         assert container.report_service() is self.services.report
         assert container.persistence() is self.services.store
-        assert container.semantic_cache() is self.services.cache
         self.services.report.cleanup_expired.assert_called()
-        self.services.cache.sweep_expired.assert_called()
         self.services.store.prune_reports.assert_called()
         self.services.store.prune_conversations.assert_called()
 
@@ -582,11 +585,10 @@ def sweep(monkeypatch):
     from backend.conversation import _rate_limit_store
     from backend.maintenance import periodic_cleanup
 
-    # ── Isolation: the four services the sweep reaches ─────────────
+    # ── Isolation: the services the sweep reaches ──────────────────
     services = MagicMock()
     services.report.generate.return_value = None  # no report file is written
     services.report.cleanup_expired.return_value = 0
-    services.cache.sweep_expired.return_value = 0
     services.store.prune_reports.return_value = 0
 
     ttl_seen = []
@@ -604,7 +606,6 @@ def sweep(monkeypatch):
 
     monkeypatch.setattr(container, "report_service", lambda: services.report)
     monkeypatch.setattr(container, "persistence", lambda: services.store)
-    monkeypatch.setattr(container, "semantic_cache", lambda: services.cache)
     # The sweep calls `container.cleanup_stale_audio()()`, i.e. it resolves a
     # factory and then calls what the factory returned. That is the indirection
     # that keeps the real audio directory out of the test's reach.
