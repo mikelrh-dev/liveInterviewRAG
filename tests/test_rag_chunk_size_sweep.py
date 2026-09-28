@@ -123,6 +123,7 @@ THREE FIGURES FROM THE ORIGINAL BRIEF THAT DID NOT SURVIVE MEASUREMENT
    ``test_duplicated_top_k_slots_are_a_symptom_not_the_cause``.
 """
 
+import os
 import re
 import statistics
 from dataclasses import dataclass
@@ -231,6 +232,23 @@ class Metrics:
 def _norm(source: str) -> str:
     """Document keys are ``str(Path.relative_to(...))``, so separators vary."""
     return source.replace("\\", "/")
+
+
+def _norm_documents(documents: Dict[str, str]) -> Dict[str, str]:
+    """``documents`` re-keyed to forward slashes, whatever the platform emits.
+
+    The production loader keys by ``str(Path.relative_to(...))``, which is
+    backslash-separated on Windows and slash-separated on POSIX -- the same
+    convention ``tests/test_rag.py`` normalises around, and the same one the
+    labelled cases in ``tests/fixture_corpus.py`` are already written in. Every
+    lookup in this module goes through here so that no test in it has to know
+    which platform it is running on.
+
+    The reason this helper exists: the one test that did NOT use it built a
+    backslash key by hand, which happened to be right on Windows and raised
+    ``KeyError`` on every POSIX checkout, including ``ubuntu-latest``.
+    """
+    return {_norm(key): value for key, value in documents.items()}
 
 
 def _body_of(chunk_text: str) -> str:
@@ -574,6 +592,55 @@ FAQ_REGRESSION_PAGE = "faq/presentacion-30-segundos.md"
 FAQ_REGRESSION_QUERY = "cuentame sobre ti en treinta segundos"
 
 
+def test_document_keys_are_platform_independent(real_wiki_documents):
+    """No lookup in this module may depend on the host's path separator.
+
+    The production loader keys documents by ``str(Path.relative_to(...))``:
+    backslashes on Windows, forward slashes on POSIX. The labelled cases in
+    ``tests/fixture_corpus.py`` and the chunk ``source`` values here are all
+    written with forward slashes, so a raw ``documents[...]`` lookup is only
+    correct on whichever platform happens to match.
+
+    This test was added after exactly that: one test built a backslash key by
+    hand, passed on Windows, and raised ``KeyError`` on ``ubuntu-latest`` --
+    where the whole Python suite would have died before a single assertion ran.
+
+    What it actually guards, precisely: ``_norm_documents`` (a change to it
+    that stopped normalising, or started dropping keys, fails here) and the
+    claim that every labelled page is reachable through it. What it does NOT
+    guard, stated plainly rather than implied: a future direct
+    ``real_wiki_documents["a/b.md"]`` somewhere in this module. That would
+    still be a platform-dependent lookup, and only that call site would fail.
+    The last assertion below exists to keep the platform dependency visible
+    rather than assumed away.
+    """
+    normalised = _norm_documents(real_wiki_documents)
+
+    # Lossless: normalisation re-keys, it never drops or merges a document.
+    assert len(normalised) == len(real_wiki_documents), (
+        f"normalising collapsed {len(real_wiki_documents)} documents into "
+        f"{len(normalised)} -- two distinct keys now collide"
+    )
+
+    # Every page the labelled cases are written against is reachable under the
+    # forward-slash form they use, on either platform's separator.
+    for case in LABELLED_CASES:
+        for page in (case.primary, *sorted(case.also)):
+            assert page in normalised, f"{page} missing after normalisation"
+
+    # And the page this module singles out by name is reachable too.
+    assert FAQ_REGRESSION_PAGE in normalised
+
+    # The loader's keys follow os.sep, so a forward-slash constant indexes the
+    # RAW dict on POSIX and raises KeyError on Windows. Pinning that here is
+    # what keeps "just index the raw dict" visibly wrong on the platform where
+    # it happens to be right.
+    assert (FAQ_REGRESSION_PAGE in real_wiki_documents) is (os.sep == "/"), (
+        "document keys no longer follow os.sep; re-check every lookup in this "
+        "module before assuming which separator the loader emits"
+    )
+
+
 def test_the_faq_regression_page_is_untouched_by_the_entire_grid(real_wiki_documents):
     """The page blamed on chunk sizing is smaller than the SMALLEST cell.
 
@@ -597,8 +664,7 @@ def test_the_faq_regression_page_is_untouched_by_the_entire_grid(real_wiki_docum
         strip_placeholders,
     )
 
-    key = FAQ_REGRESSION_PAGE.replace("/", "\\")
-    metadata, body = parse_frontmatter(real_wiki_documents[key])
+    metadata, body = parse_frontmatter(_norm_documents(real_wiki_documents)[FAQ_REGRESSION_PAGE])
     assert str(metadata.get("confidence", "")).lower() != "low", "page was dropped as a draft"
     body, _ = strip_placeholders(body)
     sections = [s.strip() for s in split_sections(body) if not is_wikilink_reference(s.strip())]
