@@ -1,3 +1,22 @@
+[build-system]
+# Present because the `dev` extra below has to be installable at all:
+# `pip install -e ".[dev]"` is how CI installs the test runner, so that what CI
+# uses is what the project declares. Without this table, pip falls back to
+# setuptools defaults, and setuptools' flat-layout auto-discovery ABORTS on this
+# repository -- it finds 13 top-level directories (data, wiki, audio, nginx,
+# avatar, RAGraw, backend, reports, frontend, openspec, wikiDocs, auditoria,
+# candidate, deployment) and refuses to guess which are packages. The declared
+# dev extra was, as a direct consequence, uninstallable.
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+# Explicit, because the layout is flat and the auto-discovery above is not usable.
+# `backend` is the only importable package in the repository: `tests` is never
+# installed (it is collected from the checkout by pytest, not imported from
+# site-packages) and the rest are data or tooling directories.
+include = ["backend", "backend.*"]
+
 [project]
 name = "interviewtts"
 version = "0.1.0"

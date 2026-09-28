@@ -118,11 +118,39 @@ jobs:
           # Declared runtime.
           pip install -r backend/requirements.txt
 
-          # Declared test runner: the `dev` extra from pyproject.toml.
-          # pytest-asyncio is not optional here -- pyproject.toml sets
+          # Declared test runner: the `dev` extra from pyproject.toml, installed
+          # as the project declares it rather than hand-listed here. This line
+          # used to be
+          #     pip install "pytest>=7.4.0" "pytest-asyncio>=0.21.0" "httpx>=0.28.0"
+          # which is a hand-written COPY of part of that extra, and a copy is
+          # not a declaration. It could only ever describe the day it was
+          # written: adding a dev dependency, or moving a floor, left CI
+          # installing the old set, and the environment the packaging guard was
+          # exercised in stopped being the one the project describes.
+          #
+          # It was also green by coincidence. `tomli` -- which
+          # tests/test_packaging.py needs on 3.10, where tomllib is not stdlib,
+          # and which pyproject.toml therefore declares in this extra -- was
+          # not named by that hand-written line. It arrived only as a
+          # transitive of `pytest>=7.4.0` resolving to pytest 9.x, whose own
+          # metadata says `tomli>=1; python_version < "3.11"`. That is exactly
+          # the failure mode tests/test_packaging.py was written to stop
+          # trusting: a dependency present by accident, gone the day upstream
+          # re-extras it. Nothing pinned pytest to a major version, so nothing
+          # would have failed loudly first. Measured in a throwaway 3.10 venv:
+          # that hand-written line does install tomli 2.4.1 -- by luck, not by
+          # declaration.
+          #
+          # -e, not a plain install: a plain install would copy `backend` into
+          # site-packages, giving the suite a second copy of the code to import
+          # and making "which copy did the test run against" a path-ordering
+          # accident. Editable points at the checkout, so the suite can only
+          # ever test the tree that was committed.
+          #
+          # pytest-asyncio is not optional in that extra: pyproject.toml sets
           # asyncio_mode = "auto", and without the plugin the async tests are
-          # not collected correctly.
-          pip install "pytest>=7.4.0" "pytest-asyncio>=0.21.0" "httpx>=0.28.0"
+          # not collected correctly (see trap 1 in the header).
+          pip install -e ".[dev]"
 
           # There is deliberately no `pip install "pyyaml>=6.0"
           # "scikit-learn>=1.3"` line here any more. It used to be here, and it
