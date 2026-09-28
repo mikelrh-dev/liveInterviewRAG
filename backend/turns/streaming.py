@@ -48,6 +48,7 @@ into a refactor.
 import asyncio
 import logging
 import sys
+import threading
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -97,9 +98,27 @@ def build_stream(
         full_response = ""
         _t_start = time.time()
         # Terminal-event contract: exactly one `done` or `interview_end` per
-        # stream. Set at each terminal yield and asserted in the finally block,
-        # so a new early return cannot silently truncate the stream.
+        # stream. Assigned IMMEDIATELY BEFORE the terminal sequence is yielded,
+        # never after, and asserted in the finally block so a new early return
+        # cannot silently truncate the stream.
+        #
+        # "Before", not "after", is the whole point. A cancellation delivered at
+        # a yield -- a client that closes the tab while the last event is being
+        # written -- lands inside this generator with the flag still False, and
+        # the finally then reports a stream that ended without a terminal event.
+        # That is the exact line the two-branch split exists to avoid writing,
+        # and it fires on every ordinary disconnect that happens to arrive at one
+        # of these yields. Once the terminal sequence has been entered the stream
+        # is over; nothing after it can be a defect in the stream's shape.
         terminal_emitted = False
+        # Synthesis in flight for this turn. Declared here, not at its first use
+        # below, because the `finally` that settles them runs on paths that never
+        # reach that line.
+        tts_futures: dict[asyncio.Task, int] = {}  # task → sentence_id
+        # Cooperative stop for the LLM executor thread. A thread already running
+        # cannot be cancelled or joined from the event loop, so the only honest
+        # handle is a flag the thread itself checks between tokens.
+        llm_stop = threading.Event()
 
         try:
             # ── Step 1: STT ──────────────────────────────────────
@@ -115,9 +134,9 @@ def build_stream(
                 # report it and terminate so the frontend can hand the mic
                 # back. Without a terminal event the stream just stops, which
                 # the browser cannot distinguish from a network drop.
+                terminal_emitted = True
                 yield sse_format("error", {"detail": "No se detectó voz en el audio"})
                 yield sse_format("done", {})
-                terminal_emitted = True
                 return
 
             async def emit_cached_answer(response_text: str):
@@ -143,9 +162,9 @@ def build_stream(
                         e,
                         exc_info=True,
                     )
+                    terminal_emitted = True
                     yield sse_format("error", {"detail": TTS_FAILED})
                     yield sse_format("done", {})
-                    terminal_emitted = True
                     return
 
                 # Retrieve chunks for context tracking (same as LLM path)
@@ -167,8 +186,8 @@ def build_stream(
                 )
 
                 yield sse_format("audio_url", {"url": audio_url})
-                yield sse_format("done", turn_done_payload(committed))
                 terminal_emitted = True
+                yield sse_format("done", turn_done_payload(committed))
 
             # ── Farewell check ──────────────────────────────────
             if detect_farewell(user_text):
@@ -242,11 +261,11 @@ def build_stream(
                 # goodbye text it always carried. A failed or empty write
                 # contributes no turn-number fields, which the client reads as
                 # "nothing was stored" rather than as a number to guess.
+                terminal_emitted = True
                 yield sse_format(
                     "interview_end",
                     {"message": farewell, **turn_done_payload(committed)},
                 )
-                terminal_emitted = True
 
                 # Post-hoc report — must never break the SSE stream. Memory was
                 # reconciled by the write above, so the report describes exactly
@@ -298,7 +317,6 @@ def build_stream(
             )
             loop = asyncio.get_running_loop()
             sentence_buf = SentenceBuffer()
-            tts_futures: dict[asyncio.Task, int] = {}  # task → sentence_id
             sentence_id = 0
             listening_to_llm = True
 
@@ -310,6 +328,15 @@ def build_stream(
                         system_prompt=system_prompt,
                         context_chunks=context_chunks,
                     )[0]:
+                        # Checked per token, not once: the thread is the only
+                        # thing that can stop this pull, and the queue it fills
+                        # has no reader once the stream is over.
+                        if llm_stop.is_set():
+                            logger.info(
+                                "LLM thread for %s stopping: the stream is over",
+                                conversation_id,
+                            )
+                            return
                         loop.call_soon_threadsafe(queue.put_nowait, ("token", token))
                         sentences = sentence_buf.add_token(token)
                         for s in sentences:
@@ -324,7 +351,12 @@ def build_stream(
                     logger.error("LLM streaming error: %s", e, exc_info=True)
                     loop.call_soon_threadsafe(queue.put_nowait, ("error", str(e)))
 
-            loop.run_in_executor(None, run_llm_stream)
+            # Held, not discarded. `run_in_executor` hands back a future that
+            # reports the thread's outcome; dropping it on the floor means the
+            # only thing that ever hears about this thread finishing is nothing.
+            # It cannot be joined -- a thread already running is not the event
+            # loop's to wait on -- so `llm_stop` is what actually ends the pull.
+            llm_future = loop.run_in_executor(None, run_llm_stream)
 
             # ── Step 5: Event loop — LLM tokens + TTS completions ──
             queue_task = None
@@ -336,13 +368,11 @@ def build_stream(
                         queue_task = asyncio.create_task(queue.get())
                     pending.append(queue_task)
 
-                if not pending:
-                    break
-
                 done_set, _ = await asyncio.wait(
                     pending,
                     return_when=asyncio.FIRST_COMPLETED,
                 )
+
 
                 for done in done_set:
                     if listening_to_llm and done is queue_task:
@@ -359,12 +389,15 @@ def build_stream(
                             # (logged in full at the raise site) and never in
                             # the payload.
                             logger.error("LLM streaming error: %s", data)
-                            yield sse_format("error", {"detail": LLM_FAILED})
                             # Terminate: a provider that dies mid-generation
                             # leaves nothing to stream, and the frontend needs
-                            # a terminal event to hand the mic back.
-                            yield sse_format("done", {})
+                            # a terminal event to hand the mic back. Any
+                            # synthesis still in flight is settled by the
+                            # finally, which is the only place all three exits
+                            # converge.
                             terminal_emitted = True
+                            yield sse_format("error", {"detail": LLM_FAILED})
+                            yield sse_format("done", {})
                             return
 
                         elif kind == "token":
@@ -445,8 +478,8 @@ def build_stream(
             # let the committed n decide what memory keeps.
             committed = await persist_turn(conversation_id, new_turn, new_message)
 
-            yield sse_format("done", turn_done_payload(committed))
             terminal_emitted = True
+            yield sse_format("done", turn_done_payload(committed))
 
         except HTTPException:
             # Deliberate escape hatch: re-raise rather than report a
@@ -466,10 +499,39 @@ def build_stream(
             # -- sentence-transformers and httpx both put paths in their text.
             # The traceback above is the record; this is the notice.
             if not terminal_emitted:
+                terminal_emitted = True
                 yield sse_format("error", {"detail": UNEXPECTED_ERROR})
                 yield sse_format("done", {})
-                terminal_emitted = True
         finally:
+            # Every exit converges here: the happy path (with an empty dict),
+            # the mid-stream LLM failure, the client disconnect, the broad
+            # handler, and a cancelled task. Whatever synthesis is still in
+            # flight is settled now, because after this the dict goes out of
+            # scope with nothing awaiting it and no result retrieved -- the
+            # tasks finish on their own, write audio files under the
+            # conversation's directory that nothing references, and hold an
+            # outbound provider call for its whole timeout. Under a provider
+            # outage, which is exactly when this path fires, that multiplies.
+            llm_stop.set()
+            outstanding = list(tts_futures)
+            for task in outstanding:
+                task.cancel()
+            if outstanding:
+                try:
+                    # Cancelling `synthesize_sentence` aborts it at its await,
+                    # so this really does stop the outbound call rather than
+                    # merely forgetting about it. `return_exceptions=True`
+                    # because every one of these is now expected to raise.
+                    await asyncio.gather(*outstanding, return_exceptions=True)
+                except asyncio.CancelledError:
+                    # This turn is itself being cancelled, so the loop will not
+                    # run the reap. The cancels above are already delivered; the
+                    # task's death is the only thing that could report otherwise.
+                    logger.debug(
+                        "Turn %s torn down mid-teardown with %d synthesis "
+                        "task(s) cancelled but not reaped",
+                        conversation_id, len(outstanding),
+                    )
             if not terminal_emitted:
                 # Two very different situations land here and must not share a
                 # log level, or every ordinary disconnect drowns the real bugs.
