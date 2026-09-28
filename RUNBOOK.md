@@ -41,8 +41,8 @@ Usa siempre el intérprete del venv. El Python global no tiene `pydantic`.
 
 > **Trampa del entorno.** Si en una terminal anterior se exportó
 > `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`, el plugin `pytest-asyncio` deja de
-> cargarse y 8 tests async fallan de forma falsa. Límpialo antes de correr la
-> suite:
+> cargarse y los 25 tests async fallan de forma falsa. Límpialo antes de correr
+> la suite:
 >
 > ```powershell
 > Remove-Item Env:PYTEST_DISABLE_PLUGIN_AUTOLOAD -ErrorAction SilentlyContinue
