@@ -232,9 +232,15 @@ the `backend` package, not to a fixed directory name.
 ```bash
 cp .env.example .env
 
-# Edit .env with your API keys:
-# Required: OPENROUTER_API_KEY (fallback LLM)
-# Optional: GOOGLE_API_KEY (enables Google AI as primary LLM)
+# Edit .env. You need at least one LLM key for the digital twin to answer:
+#   GOOGLE_API_KEY      enables Google AI (Gemini), which is tried FIRST
+#   OPENROUTER_API_KEY  the fallback provider, used when Google AI is
+#                       absent or raises
+# Neither is validated at startup (both default to empty, backend/config.py:55-56),
+# so a missing or wrong key surfaces as a failed turn, not a boot error.
+#
+# TTS_VOICE selects the Edge TTS voice; it defaults to es-ES-AlvaroNeural.
+# There is deliberately no HOST key -- see "Running" below.
 ```
 
 ### Running
@@ -434,17 +440,25 @@ validate → compile → deploy loop and the rollback.
 ## Project structure
 
 ```
-InterviewTTS/
+<repo>/                      # Cloned as liveInterviewRAG; the name is not load-bearing
 ├── backend/
 │   ├── main.py              # FastAPI application
 │   ├── config.py            # Configuration management
+│   ├── container.py         # Service wiring / injection point
+│   ├── middleware.py        # Body-size limit + per-IP rate limit
+│   ├── client_ip.py         # Trusted-proxy client address resolution
+│   ├── sse.py               # SSE framing and keep-alive
 │   ├── services/
 │   │   ├── stt.py           # Speech-to-Text (Faster Whisper)
-│   │   ├── llm.py           # LLM client (OpenRouter + Google AI)
-│   │   ├── tts.py           # Text-to-Speech (Pocket TTS + Edge TTS)
+│   │   ├── llm.py           # LLM client (Google AI first, OpenRouter fallback)
+│   │   ├── tts.py           # Text-to-Speech (Edge TTS only — the sole engine)
 │   │   ├── rag.py           # RAG pipeline with embedding persistence
 │   │   ├── candidate.py     # Candidate profile loader (wiki/ source)
+│   │   ├── persistence.py   # SQLite write-through store
+│   │   ├── report.py        # Markdown transcript generation
 │   │   └── response_cache.py # FAQ response cache for instant answers
+│   ├── routers/             # HTTP transport: conversations, turns, system
+│   ├── turns/               # The turn itself: blocking, streaming, answer source
 │   └── prompts/
 │       └── candidate.py     # System prompt template
 ├── candidate/               # Profile data (RAG input)
@@ -465,13 +479,14 @@ InterviewTTS/
 │   ├── app.js               # Voice chat logic
 │   ├── avatar.js            # 3D avatar controller
 │   └── assets/              # Avatar video files
-├── tests/                   # 155+ tests, strict TDD
+├── tests/                   # 690 Python tests + 263 Node tests, strict TDD
 ├── docs/                    # Internal docs (optimization plans, superpowers specs)
 ├── openspec/                # Change management artifacts
 │   ├── specs/               # Current capability specs
 │   └── changes/             # In-flight and archived changes
-├── nginx/                   # Nginx configuration
-├── deployment/              # Systemd service files
+├── nginx/                   # Nginx configuration (interview.conf)
+├── deployment/              # Systemd unit file (interviewtts.service)
+├── scripts/                 # Wiki validate/compile/index + deploy.sh
 ├── .env.example             # Environment template
 ├── pyproject.toml
 ├── PLAN.md                  # Local planning doc (gitignored)
