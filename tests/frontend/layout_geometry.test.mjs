@@ -61,6 +61,7 @@ function parseTree(source) {
             id,
             tag,
             parent: stack[stack.length - 1]?.node ?? null,
+            openStart: match.index,
             innerStart: TAG.lastIndex,
             innerEnd: source.length,
         };
@@ -74,13 +75,14 @@ function parseTree(source) {
 
 const tree = parseTree(markup);
 
-/** `{ tag, parentTag, inner }` for the element carrying this id. */
+/** `{ tag, parentTag, openTag, inner }` for the element carrying this id. */
 function elementById(id) {
     const node = tree.get(id);
     assert.ok(node, `#${id} not found in frontend/index.html`);
     return {
         tag: node.tag,
         parentTag: node.parent ? `${node.parent.tag}#${node.parent.id}` : null,
+        openTag: markup.slice(node.openStart, node.innerStart),
         inner: markup.slice(node.innerStart, node.innerEnd),
     };
 }
@@ -185,3 +187,236 @@ test("the avatar stays square whatever the width resolves to", () => {
 function width_under_test(rule) {
     return (rule.match(/(?<!-)\bwidth:\s*([^;]+);/) || [])[1];
 }
+
+
+// ─── A1: every header control is reachable on a phone ──────────────────────
+
+/**
+ * The body of the first `@media (max-width: 768px)` block, by brace count.
+ *
+ * There are two such blocks — the main one and the `100dvh` fallback nested in
+ * `@supports` — and only the first carries layout rules, so this takes the
+ * first occurrence rather than concatenating them.
+ */
+function mobileBlock() {
+    const at = css.indexOf("@media (max-width: 768px)");
+    assert.notEqual(at, -1, "no @media (max-width: 768px) block in style.css");
+
+    const brace = css.indexOf("{", at);
+    let depth = 0;
+    for (let i = brace; i < css.length; i++) {
+        if (css[i] === "{") depth++;
+        else if (css[i] === "}") {
+            depth--;
+            if (depth === 0) return css.slice(brace + 1, i);
+        }
+    }
+    throw new Error("unbalanced braces reading the mobile block");
+}
+
+const mobile = mobileBlock();
+
+/**
+ * The declaration body of one rule.
+ *
+ * Depth counting rather than `indexOf("}")`: declarations here carry
+ * `var(--outline-variant)` and a naive scan stops inside the function call,
+ * silently truncating the rule it was trying to read.
+ */
+function decls(block, selector) {
+    const at = block.indexOf(selector + " {");
+    assert.notEqual(at, -1, `rule \`${selector}\` not found`);
+
+    let depth = 0;
+    for (let i = block.indexOf("{", at); i < block.length; i++) {
+        if (block[i] === "{") depth++;
+        else if (block[i] === "}") {
+            depth--;
+            if (depth === 0) return block.slice(block.indexOf("{", at) + 1, i);
+        }
+    }
+    throw new Error(`unbalanced braces reading \`${selector}\``);
+}
+
+test("the mobile header drops the status pill instead of a control", () => {
+    // The brief's framing: END is the only way to end an interview on a phone
+    // (the sidebar's button is display:none below the breakpoint), so END is
+    // primary. `.status-pill` is the one header item that carries no action —
+    // and the rail it was a fragment of (the SISTEMA section, #sidebar-status)
+    // is itself display:none on mobile, so on a phone it reported a system
+    // state nothing on screen could elaborate or contradict. Trading
+    // decoration for reachability is the deliberate call.
+    assert.match(
+        decls(mobile, ".status-pill"),
+        /display:\s*none/,
+        "the ONLINE pill is still in the mobile header row, pushing END off " +
+            "the edge; its information (the SISTEMA rail) is already hidden on " +
+            "mobile, so it is decoration competing with a primary control",
+    );
+});
+
+test("header controls are never the thing that shrinks", () => {
+    // The root cause of the clip is not "the row is too wide" — it is that
+    // every flex item defaults to `flex-shrink: 1`, so under overflow the
+    // browser squeezes the buttons. END has a min-width floor and a
+    // fixed-height header, so what it loses is its text, not its box.
+    // Each rule is read from the block that actually declares it.
+    const rules = [
+        [".header-right", css],
+        ["#context-toggle", css],
+        ["#mobile-end-btn", mobile],
+    ];
+
+    for (const [selector, block] of rules) {
+        assert.match(
+            decls(block, selector),
+            /flex-shrink:\s*0/,
+            `\`${selector}\` can shrink, so a narrow viewport squeezes a ` +
+                "control instead of the brand text",
+        );
+    }
+});
+
+test("the wordmark is the only elastic thing in the header", () => {
+    // A truncated brand is a cosmetic loss; a truncated END button is a dead
+    // primary flow. So the slack has exactly one place to go, and it goes
+    // there without wrapping (the header is a fixed 64px in a
+    // `body { overflow: hidden }` shell, so a wrapped title clips vertically).
+    for (const block of [".header-left", ".header-title"]) {
+        assert.match(
+            decls(css, block),
+            /min-width:\s*0/,
+            `\`${block}\` has flex min-width:auto, so it cannot shrink below ` +
+                "its min-content width and the overflow lands on a control",
+        );
+    }
+    assert.match(
+        decls(css, ".header-title"),
+        /white-space:\s*nowrap/,
+        "the wordmark can wrap, and a second line is clipped by the fixed " +
+            "64px header",
+    );
+    assert.match(
+        decls(css, ".header-title"),
+        /text-overflow:\s*ellipsis/,
+        "the wordmark shrinks with no truncation, so it is just cut off",
+    );
+});
+
+test("the mobile header's boxes fit a 320px viewport", () => {
+    // Arithmetic, not a rendered measurement — no browser runs here. What it
+    // CAN prove is the part that is declared: the sum of the boxes the browser
+    // cannot shrink (padding, gaps, icon sizes, borders, the END touch-target
+    // floor) plus the widest label it is not allowed to truncate, against the
+    // narrowest phone width the brief requires.
+    const tokenPx = (name) => {
+        const match = css.match(new RegExp(`${name}:\\s*(\\d+(?:\\.\\d+)?)px`));
+        assert.ok(match, `:root declares no ${name} in px`);
+        return Number(match[1]);
+    };
+
+    /** Resolves `12px` and `var(--token)` to a number, from one declaration. */
+    const px = (selector, prop, block = mobile) => {
+        const rule = decls(block, selector);
+        const read = (name) =>
+            rule.match(new RegExp(`(?:^|;)\\s*${name}\\s*:\\s*([^;]+)`))?.[1]?.trim();
+
+        let value = read(prop);
+        if (value === undefined) {
+            // `padding: 6px 10px` answers for `padding-right`, not the reverse.
+            const shorthand = { "padding-right": "padding", "padding-left": "padding" }[prop];
+            const parts = shorthand && read(shorthand)?.split(/\s+/);
+            if (parts) value = parts[parts.length === 2 ? 1 : 2];
+        }
+        assert.ok(value, `\`${selector}\` declares no ${prop}`);
+
+        const token = value.match(/^var\(\s*(--[\w-]+)\s*\)$/);
+        if (token) return tokenPx(token[1]);
+
+        const literal = value.match(/^(\d+(?:\.\d+)?)px/);
+        assert.ok(literal, `\`${selector} { ${prop}: ${value} } is not a px length`);
+        return Number(literal[1]);
+    };
+
+    // --space-md is 16px and --space-sm is 8px, but read them from :root
+    // rather than hardcoding, so a spacing-token change is visible here.
+    const md = tokenPx("--space-md");
+    const sm = tokenPx("--space-sm");
+
+    /**
+     * The two numbers in this budget that CSS cannot hand us: text advance.
+     * JetBrains Mono's advance is 0.6em, plus any letter-spacing, and the only
+     * labels measured are the two header strings that may not be truncated
+     * ("Contexto" on the toggle, "ONLINE" on the pill). The wordmark is
+     * excluded on purpose — it is the one element allowed to ellipsis, which
+     * is what makes the rest of the row fit.
+     */
+    const labelWidth = (text, fontRem, trackingEm = 0) =>
+        text.length * (fontRem * 16 * 0.6 + fontRem * 16 * trackingEm);
+
+    // Is the ONLINE pill in the mobile row at all? Derived, not assumed — the
+    // sum below has to be a consequence of the stylesheet or it proves nothing.
+    const pillHidden = new RegExp(`\\.status-pill\\s*\\{[^}]*display:\\s*none`).test(mobile);
+    const pillCost = pillHidden
+        ? 0
+        : px(".status-pill .dot", "width", css) +
+          px(".status-pill", "gap", css) +
+          labelWidth("ONLINE", 0.7, 0.08);
+
+    const items = pillHidden ? 2 : 3; // toggle + END, or pill + toggle + END
+    const gaps = items - 1;
+
+    const fixed =
+        2 * px("header", "padding-right", mobile) + // both gutters
+        px(".header-left", "gap", css) + // logo -> wordmark
+        px(".header-logo", "width", css) +
+        gaps * px(".header-right", "gap", mobile) +
+        2 * px("#context-toggle", "padding-right", mobile) + // both sides
+        2 * px("#context-toggle", "border", css) + // both edges
+        px("#context-toggle", "gap", css) + // icon -> label
+        px("#context-toggle svg", "width", css) +
+        px("#mobile-end-btn", "min-width", mobile) + // END's text fits inside it
+        pillCost;
+
+    // END's own text fits inside its 44px touch-target floor, so that floor is
+    // its whole cost; "Contexto" is the widest label the layout may not cut.
+    const labelAllowance = labelWidth("Contexto", 0.75);
+
+    // 320px is the tightest width the brief requires; 375px is the one the
+    // review measured. Both are asserted, because they fail differently: at
+    // 375px the row fits on paper and still clips in practice (the pill and
+    // the wordmark both have min-content floors, so the squeeze lands on the
+    // controls — see the flex-shrink test), while at 320px it does not even fit.
+    const needed = fixed + labelAllowance;
+    const failures = [320, 375]
+        .map((vw) => ({ vw, available: vw - 2 * md, needed }))
+        .filter(({ available }) => needed > available)
+        .map(({ vw, available }) => `${needed.toFixed(1)}px needed > ${available}px at ${vw}px`);
+
+    assert.deepEqual(
+        failures,
+        [],
+        `the mobile header needs ${fixed.toFixed(1)}px of boxes (including ` +
+            `the ${pillHidden ? "absent" : "present"} ONLINE pill) plus ` +
+            `${labelAllowance.toFixed(1)}px of "Contexto"`,
+    );
+
+    // Sanity: the sum above is not accidentally vacuous.
+    assert.ok(fixed > 100, `fixed-box budget collapsed to ${fixed}px — parser bug?`);
+    assert.equal(md, 16, "--space-md is not 16px; re-check the padding arithmetic");
+    assert.equal(sm, 8, "--space-sm is not 8px; re-check the gap arithmetic");
+});
+
+test("the header does not solve overflow by wrapping", () => {
+    // Records the rejected alternative. `flex-wrap: wrap` on a header with a
+    // fixed `height: var(--header-h)` inside a `body { overflow: hidden }`
+    // shell trades a horizontal clip for a vertical one: the second line is
+    // simply not there, and END lands below the fold of the chrome. Rejected
+    // deliberately; this test is here so nobody re-picks it by accident.
+    assert.doesNotMatch(
+        css,
+        /header\s*\{[^}]*flex-wrap/,
+        "the header wraps — with a fixed height that clips the wrapped line " +
+            "rather than making room for it",
+    );
+});

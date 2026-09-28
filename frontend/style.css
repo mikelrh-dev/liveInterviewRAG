@@ -281,6 +281,11 @@ header {
     display: flex;
     align-items: center;
     gap: var(--space-md);
+    /* The brand block is the only elastic thing in the header. Without
+       min-width:0 a flex item's floor is its min-content width, so the row
+       cannot give up a single pixel here and the overflow is pushed
+       downstream onto the controls. */
+    min-width: 0;
 }
 
 .header-logo {
@@ -296,12 +301,22 @@ header {
     font-weight: 600;
     color: var(--primary);
     letter-spacing: 0.02em;
+    /* Truncates rather than wraps. A wrapped second line is worse than an
+       ellipsis: the header is a fixed 64px inside `body { overflow: hidden }`,
+       so the overflow goes up, not down. Losing the tail of a wordmark is a
+       cosmetic loss; losing END is a dead primary flow. */
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .header-right {
     display: flex;
     align-items: center;
     gap: var(--space-lg);
+    /* Controls never absorb a width shortage — see .header-left. */
+    flex-shrink: 0;
 }
 
 /* Status pill */
@@ -349,6 +364,8 @@ header {
     font-size: 0.75rem;
     font-family: var(--font-mono);
     cursor: pointer;
+    /* A control must never be what shrinks when the row is tight. */
+    flex-shrink: 0;
     transition:
         border-color var(--dur-fast) var(--ease-out),
         color var(--dur-fast) var(--ease-out),
@@ -1117,11 +1134,20 @@ header {
     .main-grid { grid-template-columns: 1fr; }
     #sidebar { display: none; }
 
-    /* Header: reclaim horizontal space on narrow screens */
+    /* Header: reclaim horizontal space on narrow screens.
+       The row has to carry two controls — Contexto and END — and END is the
+       only way to end an interview on a phone, because #sidebar (and with it
+       the sidebar's own end button) is display:none here. So the item that
+       goes is the one that carries no action: the ONLINE pill. Its information
+       belongs to the SISTEMA rail, which this breakpoint already hides, so on
+       a phone it reported a state nothing on screen could elaborate. What is
+       left (logo + wordmark + two controls) fits 320px with the wordmark
+       absorbing the slack as an ellipsis; see tests/frontend/layout_geometry. */
     header { padding-left: var(--space-md); padding-right: var(--space-md); }
     .header-right { gap: var(--space-sm); }
     .header-title { font-size: 0.85rem; }
     .latency { display: none; }
+    .status-pill { display: none; }
     #context-toggle { padding: 6px 10px; }
 
     #context-panel {
@@ -1177,6 +1203,7 @@ header {
         text-transform: uppercase;
         letter-spacing: 0.1em;
         cursor: pointer;
+        flex-shrink: 0;
         transition: background-color var(--dur-fast) var(--ease-out);
     }
 
