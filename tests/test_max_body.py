@@ -180,7 +180,7 @@ class TestMaxBodySizeEndToEnd:
         _rate_limit_store.clear()
 
     @pytest.fixture
-    def mock_services(self):
+    def mock_services(self, isolated_write_targets):
         from unittest.mock import MagicMock, patch
 
         with patch("backend.main.stt_service") as stt, patch(
@@ -191,7 +191,7 @@ class TestMaxBodySizeEndToEnd:
             llm.generate.return_value = "I built InterviewTTS with FastAPI."
 
             async def mock_synthesize(text, output_path=None):
-                path = output_path or Path("audio/test.mp3")
+                path = output_path or isolated_write_targets.audio / "test.mp3"
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.touch()
                 return path

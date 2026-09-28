@@ -21,7 +21,7 @@ FAREWELL_INPUT = "Muchas gracias, eso es todo"
 
 
 @pytest.fixture
-def mock_services():
+def mock_services(isolated_write_targets):
     with patch("backend.main.stt_service") as mock_stt, \
          patch("backend.main.llm_service") as mock_llm, \
          patch("backend.main.tts_service") as mock_tts, \
@@ -44,7 +44,7 @@ def mock_services():
 
         async def mock_synthesize(text, output_path=None):
             spoken.append((text, output_path))
-            path = output_path or Path("audio/test.mp3")
+            path = output_path or isolated_write_targets.audio / "test.mp3"
             path.parent.mkdir(parents=True, exist_ok=True)
             path.touch()
             return path

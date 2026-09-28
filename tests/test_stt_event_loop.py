@@ -37,7 +37,7 @@ class TestSttDoesNotBlockEventLoop:
         return {"stt": None, "tts": None}
 
     @pytest.fixture
-    def mock_services(self, threads):
+    def mock_services(self, threads, isolated_write_targets):
         from unittest.mock import patch
 
         with patch("backend.main.stt_service") as stt, patch(
@@ -55,7 +55,7 @@ class TestSttDoesNotBlockEventLoop:
             async def mock_synthesize(text, output_path=None):
                 # Awaited directly by the route, so this runs on the loop.
                 threads["tts"] = threading.current_thread()
-                path = output_path or Path("audio/test.mp3")
+                path = output_path or isolated_write_targets.audio / "test.mp3"
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.touch()
                 return path

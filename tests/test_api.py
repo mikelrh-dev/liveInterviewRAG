@@ -11,7 +11,7 @@ from backend.main import _rate_limit_store
 
 
 @pytest.fixture
-def mock_services():
+def mock_services(isolated_write_targets):
     """Mock all external services for API tests."""
     with patch("backend.main.stt_service") as mock_stt, \
          patch("backend.main.llm_service") as mock_llm, \
@@ -32,7 +32,7 @@ def mock_services():
 
         # TTS mock
         async def mock_synthesize(text, output_path=None):
-            path = output_path or Path("audio/test.mp3")
+            path = output_path or isolated_write_targets.audio / "test.mp3"
             path.parent.mkdir(parents=True, exist_ok=True)
             path.touch()
             return path
