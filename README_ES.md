@@ -302,17 +302,94 @@ El sistema wiki es la fuente de verdad para los datos del candidato, con un scri
 ## Despliegue
 
 El destino es un VPS ARM64 de Oracle Free Tier. Este proyecto no tiene imagen de
-contenedor ni archivo compose, así que todos los pasos corren en el host.
+contenedor ni archivo compose, así que todos los pasos de aquí en adelante corren en
+el host.
 
-### Manual (Oracle Free Tier)
+### 1. Paquetes del sistema
 
-1. Instalar dependencias del sistema (`python3-venv nginx certbot`)
-2. Configurar Nginx con `nginx/interview.conf`
-3. Configurar servicio systemd con `deployment/interviewtts.service`
-4. Configurar `.env` con valores de producción
+```bash
+sudo apt update
+sudo apt install -y python3-venv nginx certbot
+```
 
-Los pasos completos, en el orden en que se ejecutan, están en
-[RUNBOOK.md](RUNBOOK.md).
+### 2. El usuario de servicio, el código y el venv
+
+`deployment/interviewtts.service` nombra un usuario, un directorio de trabajo y un
+intérprete. Ninguno de los tres existe en un VPS recién creado, y ningún script de
+este repositorio los crea, así que se crean aquí:
+
+```bash
+sudo useradd --system --create-home --home-dir /opt/interviewtts --shell /usr/sbin/nologin interviewtts
+
+# El venv. El ExecStart de la unidad es
+# /opt/interviewtts/venv/bin/uvicorn, así que el venv tiene que vivir DENTRO
+# del directorio del que se ocupa el servicio -- no hay otro intérprete en el
+# PATH del que una unidad systemd pueda fiarse.
+sudo -u interviewtts python3 -m venv /opt/interviewtts/venv
+sudo -u interviewtts /opt/interviewtts/venv/bin/pip install --upgrade pip
+sudo -u interviewtts /opt/interviewtts/venv/bin/pip install -r backend/requirements.txt
+```
+
+Y luego pon el código en su sitio, desde un clone o una copia:
+
+```bash
+sudo git clone https://github.com/mikelrh-dev/liveInterviewRAG.git /opt/interviewtts
+sudo chown -R interviewtts:interviewtts /opt/interviewtts
+```
+
+El `WorkingDirectory` de la unidad es `/opt/interviewtts`, así que la raíz del
+repositorio y el venv son hermanos por diseño y no por casualidad.
+
+### 3. Los directorios con permiso de escritura
+
+`ProtectSystem=strict` junto con `ReadWritePaths` en la unidad significa que el
+servicio puede escribir en exactamente tres sitios, y **systemd se niega a arrancar
+la unidad si alguna entrada de `ReadWritePaths` no existe**. Deben existir antes del
+primer arranque:
+
+```bash
+sudo mkdir -p /opt/interviewtts/audio /opt/interviewtts/data /opt/interviewtts/reports
+sudo chown -R interviewtts:interviewtts /opt/interviewtts/audio /opt/interviewtts/data /opt/interviewtts/reports
+```
+
+`audio/` es lo que nginx hace `alias` para la voz generada y lo que poda el barrido
+periódico; `data/` guarda el store SQLite; `reports/` guarda las transcripciones
+Markdown.
+
+### 4. Configuración
+
+```bash
+sudo cp /opt/interviewtts/.env.example /opt/interviewtts/.env
+sudo chown interviewtts:interviewtts /opt/interviewtts/.env
+sudo -u interviewtts nano /opt/interviewtts/.env   # API keys, CORS_ORIGINS
+```
+
+La unidad lee este archivo vía `EnvironmentFile=`, así que un propietario equivocado
+o la falta de un salto de línea en la última línea impiden que el servicio arranque.
+
+### 5. nginx
+
+Sigue el orden del encabezado de `nginx/interview.conf` — obtén primero el
+certificado, luego instala el archivo y haz `systemctl enable --now nginx`. El
+encabezado indica la ruta exacta que produce cada paso, y
+`tests/test_nginx_cert_procedure.py` falla si el comando documentado y la directiva
+`ssl_certificate` dejan de nombrar el mismo archivo.
+
+### 6. El servicio
+
+```bash
+sudo cp /opt/interviewtts/deployment/interviewtts.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now interviewtts
+sudo systemctl status interviewtts
+sudo journalctl -u interviewtts -f
+```
+
+### 7. Despliegues de contenido
+
+`scripts/deploy.sh` hace rsync de `candidate/` **y de `frontend/`** (el directorio
+desde el que nginx sirve el sitio), crea los tres directorios con permiso de
+escritura y reinicia la unidad.
 
 ---
 
