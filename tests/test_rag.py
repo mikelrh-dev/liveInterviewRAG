@@ -813,6 +813,76 @@ Entrevista por voz en tiempo real con FastAPI y WebSockets.
             "a real answer written after a placeholder must not be deleted"
         )
 
+    def test_note_to_self_prose_keeps_its_terminal_mark(self):
+        """The strip was removing the mark that made the line what it is.
+
+        ``strip_placeholders`` ended with ``.strip(_SEPARATORS)``, and
+        ``_SEPARATORS`` contains ``?``, ``!`` and ``.``. Those are there to
+        clean up the orphaned bullet and colon a removed marker leaves at the
+        START of a line -- but applied to both ends they also took the terminal
+        mark off the prose that survived.
+
+        The result is worse than the marker was. What the marker usually trails
+        is a note-to-self ("[TODO] -- Any metrics?"), and a note-to-self that
+        reads as an unfinished fragment is *less* obviously a note-to-self: a
+        recruiter asking about metrics gets a section that reads as a question
+        the candidate asked, which is the opposite of what it is.
+
+        Measured on the real corpus: 10 of 16 note-to-self lines lost the mark,
+        and one chunk of 125 came out as nothing but unanswered questions.
+        """
+        from backend.services.rag import strip_placeholders
+
+        cleaned, removed = strip_placeholders(
+            "- [TODO: metricas] — El proyecto esta deployado? Metricas de produccion?"
+        )
+        assert removed == 1
+        assert cleaned == (
+            "El proyecto esta deployado? Metricas de produccion?"
+        ), f"the note-to-self line came out as {cleaned!r}"
+
+    @pytest.mark.parametrize(
+        "line,expected",
+        [
+            pytest.param("- [TODO] Any metrics?", "Any metrics?", id="question"),
+            pytest.param("- [TODO] What would you change!", "What would you change!",
+                         id="exclamation"),
+            pytest.param("- [TODO] Shipped on Friday.", "Shipped on Friday.",
+                         id="full-stop"),
+            pytest.param("- [TODO] (e.g. latency?)", "(e.g. latency?)", id="closing-paren"),
+        ],
+    )
+    def test_terminal_punctuation_survives_marker_removal(self, line, expected):
+        from backend.services.rag import strip_placeholders
+
+        cleaned, _ = strip_placeholders(line)
+        assert cleaned == expected, f"{line!r} came out as {cleaned!r}"
+
+    def test_the_orphaned_bullet_the_marker_left_is_still_stripped(self):
+        """The leading side is what the strip was FOR; it must not regress.
+
+        ``- [TODO: x]:** text`` leaves ``- :** text`` behind. Removing the
+        marker has to take that punctuation with it, or every filtered line
+        starts with an orphan bullet and a stray colon.
+        """
+        from backend.services.rag import strip_placeholders
+
+        cleaned, _ = strip_placeholders("- **[TODO: x]:** Reduje la latencia un 40%")
+        assert cleaned == "Reduje la latencia un 40%", f"got {cleaned!r}"
+
+    def test_a_dash_left_by_a_trailing_marker_is_still_stripped(self):
+        """Trailing cleanup keeps the characters a marker removal orphans.
+
+        A dash is not a terminal mark: ``40% —`` is punctuation debris from a
+        marker that used to be between it and the end of the line. A question
+        mark is the author's, so one side of the strip keeps the full
+        separator class and the other cannot.
+        """
+        from backend.services.rag import strip_placeholders
+
+        cleaned, _ = strip_placeholders("Reduje la latencia un 40% — [TODO: completar]")
+        assert cleaned == "Reduje la latencia un 40%", f"got {cleaned!r}"
+
     def test_heading_keeps_its_hashes_so_chunking_is_unchanged(self):
         """Stripping a marker from a heading must not merge two sections."""
         doc = (

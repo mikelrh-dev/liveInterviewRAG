@@ -119,7 +119,26 @@ _PLACEHOLDER_RE = re.compile(r"\[\s*TODO\b[^\]]*\]", re.IGNORECASE)
 # real identifiers (``snake_case_name``) far more often than as noise, and
 # rewriting them would corrupt the indexed content.
 _MD_NOISE_RE = re.compile(r"[*`]+")
+# Punctuation a removed marker can orphan at either end of what is left.
 _SEPARATORS = " \t\u2014\u2013-:,;.!?\u00bb\u00ab"
+# ...but a terminal MARK is the author's, not the marker's. `?`, `!` and `.`
+# are in the class above because a marker sitting between a bullet and its text
+# leaves ``- [TODO] :** text`` behind; applied to the trailing end as well,
+# they took the sentence's own punctuation off the prose that survived.
+#
+# What the marker usually trails is a note-to-self ("[TODO] -- Any metrics?"),
+# and losing the mark makes it worse rather than better: a note-to-self that
+# reads as an unfinished fragment is LESS obviously a note-to-self. A recruiter
+# asking about metrics got a section that read as a question the candidate
+# asked -- 10 of the real corpus's 16 such lines, and one chunk of 125 that
+# was nothing but unanswered questions.
+#
+# So the two ends differ. The leading end still eats the full class, because
+# that is the debris the marker leaves in front of the surviving prose. The
+# trailing end keeps only whitespace and dashes: a dash stranded at the end of
+# a line is debris (``40% -- [TODO]``), while a question mark is punctuation
+# the owner wrote.
+_TRAILING_SEPARATORS = " \t\u2014\u2013"
 _HAS_WORD_RE = re.compile(r"\w", re.UNICODE)
 # A heading line: leading #'s define the section boundary the chunker splits on,
 # so a placeholder inside a heading must not cost them.
@@ -228,6 +247,11 @@ def strip_placeholders(text: str) -> Tuple[str, int]:
     it, the RAG answers from it, and resolving the marker is the owner's task.
     Stripping it is a content decision, not a sanitisation one.
 
+    What the marker leaves behind is a different matter and IS cleaned here:
+    the orphaned bullet and colon in front of the surviving prose. That cleanup
+    is deliberately asymmetric (see ``_TRAILING_SEPARATORS``) so it never takes
+    the terminal mark off the owner's own sentence on the way out.
+
     Returns the cleaned text and the number of markers removed. Headings keep
     their ``#`` markers, so a heading that happens to carry a placeholder still
     splits as a section boundary.
@@ -260,7 +284,11 @@ def strip_placeholders(text: str) -> Tuple[str, int]:
             # Collapse the gap the marker leaves, without eating the word
             # boundaries: "40%  con" must not become "40% con" only by luck.
             cleaned = f"{head} {tail}".split()
-            cleaned = " ".join(cleaned).strip(_SEPARATORS).strip()
+            cleaned = (
+                " ".join(cleaned)
+                .lstrip(_SEPARATORS)
+                .rstrip(_TRAILING_SEPARATORS)
+            )
 
         if _HAS_WORD_RE.search(cleaned):
             kept_lines.append(cleaned)
