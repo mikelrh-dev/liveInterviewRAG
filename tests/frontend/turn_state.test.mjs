@@ -130,6 +130,43 @@ test("does not ask for context the turn does not have", () => {
     assert.equal(state.last(), 4, "but the turn counter still advances");
 });
 
+// ─── The farewell's number arrives after the turn already settled ─────────
+
+test("a number reported after settlement still reaches the state", () => {
+    const state = loadTurnState();
+
+    // The farewell's turn is written to disk *after* `interview_end`, so the
+    // terminal event settles the turn while the committed number is still
+    // unknown. It arrives on `turn_recorded`, after settlement. Nothing about
+    // the payload differs from `done`'s, so nothing else has to differ either.
+    assert.equal(state.commit({ n: 4, has_context: false }), 4);
+    assert.equal(state.last(), 4);
+    // Committed n -> the count the sidebar shows. Same arithmetic as `done`,
+    // which is the point: the two events must never need two readers.
+    assert.equal(state.last() + 1, 5);
+});
+
+test("a post-settlement report of nothing is counted as nothing", () => {
+    const state = loadTurnState();
+
+    // The farewell write failed. An empty payload must not advance anything,
+    // exactly as an empty `done` does — otherwise the counter runs ahead of
+    // the store, which is the bug the server-authoritative number replaced.
+    assert.equal(state.commit({}), null);
+    assert.equal(state.last(), null);
+    assert.equal(state.contextTurn(), null);
+});
+
+test("a post-settlement report with no context asks for none", () => {
+    const state = loadTurnState();
+
+    // The farewell carries no RAG chunks, so reporting it must not queue a
+    // Context request that would 404.
+    state.commit({ n: 6, has_context: false });
+    assert.equal(state.last(), 6);
+    assert.equal(state.contextTurn(), null);
+});
+
 // ─── A new interview starts clean ─────────────────────────────────────────
 
 test("reset clears the state of the previous interview", () => {

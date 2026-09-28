@@ -12,6 +12,8 @@ reported.
                       {"id": int, "url": "..."}        per-sentence stream
     - error:          {"detail": "..."}               fatal, non-recoverable
                       {"detail": "...", "id": int}    recoverable, per-chunk
+    - turn_recorded:  {"n": int, "has_context": bool} committed turn (farewell)
+                      {}                              nothing was stored
     - done:           {"n": int, "has_context": bool} terminal (normal turn)
                       {}                              terminal (nothing stored)
     - interview_end:  {"message": "..."}              terminal (farewell)
@@ -20,13 +22,21 @@ Exactly one terminal event is emitted per stream. ``audio_url`` is the single
 canonical audio event name; the optional ``id`` is the frontend playback cursor
 and is absent when the answer is one whole file.
 
-``done`` is the only event that names a turn, and the name is the one the DB
-committed — the frontend must not count transcript elements to find it. An empty
-``done`` payload means no turn was stored (a failed write, an empty
-transcription, an LLM that died mid-stream), so the client asks the Context
-panel about nothing. ``interview_end`` names no turn: the farewell is written
-after the terminal event on purpose, so the goodbye never queues behind a slow
-disk.
+The two events that name a turn — ``done`` and ``turn_recorded`` — carry the
+identical payload, built by the same function from the turn the DB actually
+committed. The frontend must not count transcript elements to find a turn
+number, and must not read one event differently from the other. An empty
+payload means no turn was stored (a failed write, an empty transcription, an
+LLM that died mid-stream), so the client asks the Context panel about nothing.
+
+``done`` names the turn it terminates on. ``turn_recorded`` exists because
+``interview_end`` cannot: the farewell is written *after* the terminal event,
+on purpose, so the goodbye never queues behind a slow disk — and at that point
+no turn number exists, only the number the pipeline requested. ``record_turn``
+is free to commit a different one, so the request is not a report. The
+committed number is the return value of the write, which is why it travels in
+its own non-terminal event once the write returns. The ordering is unchanged;
+what changed is that the counter is no longer left guessing.
 
 This module is where the two endpoints still diverge: only the streaming path
 detects a farewell and ends the interview. That is a known gap, not an
@@ -212,7 +222,16 @@ def build_stream(
                 # interview_end on purpose — the goodbye must not queue behind
                 # a slow disk. Memory is reconciled before the report is built,
                 # so the report describes exactly what survived the write.
-                await persist_turn(conversation_id, farewell_turn, farewell_message)
+                committed = await persist_turn(
+                    conversation_id, farewell_turn, farewell_message
+                )
+                # The committed number, now that it exists. Without this the
+                # farewell is on disk and off the sidebar: the client already
+                # settled the turn on interview_end, when the number was still
+                # unknowable, so nothing else will ever count it. Same payload
+                # as `done`, from the same builder, so the two agree by
+                # construction. Non-terminal on purpose — the turn is settled.
+                yield sse_format("turn_recorded", turn_done_payload(committed))
                 # Post-hoc report — must never break the SSE stream.
                 # to_thread keeps the event loop free during the file write.
                 report_path = await asyncio.to_thread(

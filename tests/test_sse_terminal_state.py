@@ -395,7 +395,19 @@ class TestTerminalEventGuarantee:
         types = [e["event"] for e in events]
 
         assert _terminal_count(events) == 1, types
-        assert types[-1] == "interview_end", types
+        # The stream terminates on `interview_end`. This used to assert
+        # `types[-1]`, which is no longer the same claim: the farewell's
+        # committed turn number travels in a non-terminal `turn_recorded` that
+        # necessarily trails the terminal event, because the write that
+        # produces the number happens after it on purpose — the goodbye must
+        # not queue behind a slow disk. What is still guaranteed, and what
+        # would break the client, is that exactly one terminal event happened
+        # and that it was `interview_end`, plus the tighter companion
+        # assertion below: only the turn number may follow it.
+        terminal = [e["event"] for e in events if e["event"] in TERMINAL_EVENTS]
+        assert terminal[-1] == "interview_end", types
+        last_terminal = len(types) - 1 - types[::-1].index("interview_end")
+        assert types[last_terminal + 1 :] in ([], ["turn_recorded"]), types
 
 
 # ─── Frontend: the extracted settler, behaviourally ───────────────────────

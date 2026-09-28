@@ -271,6 +271,331 @@ class TestFarewellTurnConsistency:
         assert turns[0]["chunks_used"] == []
 
 
+#: A question that trips neither the farewell detector nor the FAQ cache.
+ORDINARY_QUESTION = "How do you architect a system?"
+
+
+class TestFarewellTurnIsCounted:
+    """The farewell turn reaches disk *and* the sidebar.
+
+    The write happens after ``interview_end`` on purpose, so the goodbye is
+    never queued behind a slow disk. The cost of that ordering is that
+    ``interview_end`` is yielded before anything knows the turn number: the
+    number the DB commits is the *return value* of ``persist_turn``, and it
+    does not exist yet. The settler therefore reads ``turnState.last()`` while
+    it is still ``null``, the counter never advances, and the interview ends
+    one turn short of what was stored.
+
+    Emitting the number inside ``interview_end`` cannot fix that, because at
+    that moment there is no number -- only the pipeline's *request*, derived
+    from memory, which ``record_turn`` is free to override when the requested
+    slot is taken. So the number travels in a second, non-terminal event
+    emitted once the write returns.
+
+    The invariant these tests pin is the one the sidebar actually performs:
+    the reported ``n`` plus one equals the number of stored turns.
+    """
+
+    @pytest.fixture
+    def stored(self, tmp_path, monkeypatch):
+        """A throwaway store *and* a throwaway audio directory.
+
+        Both targets are redirected because the code under test writes to both:
+        without this the counts below would be measured against rows appended
+        to the real ``data/interviewtts.db`` by one run and inherited by the
+        next, and the synthesised mp3s would land in the real ``audio/``.
+        """
+        import backend.main as main_mod
+        from backend.config import config
+        from backend.services.persistence import PersistenceService
+
+        svc = PersistenceService(tmp_path / "farewell.db")
+        svc.initialize()
+        audio_dir = tmp_path / "audio"
+        audio_dir.mkdir()  # uploads.stage_upload writes here, so it must exist
+        monkeypatch.setattr(main_mod, "persistence", svc)
+        monkeypatch.setattr(config, "AUDIO_DIR", audio_dir)
+        return svc
+
+    @pytest.fixture
+    def tts(self, mock_services):
+        """Per-sentence synthesis, which the shared double does not cover.
+
+        ``mock_services`` only mocks the single-file ``synthesize``. An
+        ordinary streamed turn calls ``synthesize_sentence`` once per
+        sentence, and an unstubbed ``MagicMock`` there is not awaitable -- the
+        turn dies at its first sentence, reports a TTS failure and stores
+        nothing. That is the right behaviour for the code under test and the
+        wrong fixture for these tests, so it is filled in here rather than
+        changed for everybody.
+        """
+
+        async def fake_sentence(text, sentence_id, output_dir):
+            path = Path(output_dir) / f"{sentence_id}.mp3"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.touch()
+            return sentence_id, path
+
+        mock_services["tts"].synthesize_sentence = fake_sentence
+        return mock_services
+
+    @pytest.fixture
+    def no_report(self):
+        """Keep report generation out of the real reports/ directory."""
+        with patch("backend.main.report_service") as mock_report:
+            mock_report.generate.return_value = None
+            yield mock_report
+
+    def _stored_numbers(self, svc, cid):
+        hydrated = svc.load_conversation(cid)
+        assert hydrated is not None, "the conversation never reached the store"
+        return [t["n"] for t in hydrated["turns"]]
+
+    def _payload(self, events, event_type):
+        matching = [e for e in events if e["event"] == event_type]
+        assert len(matching) == 1, (
+            f"expected exactly one {event_type!r}, got {[e['event'] for e in events]}"
+        )
+        return matching[0]["data"]
+
+    def _ordinary_turn(self, client, services, cid, question=ORDINARY_QUESTION):
+        """Stream one non-farewell turn and return its ``done`` payload."""
+        services["stt"].transcribe.return_value = question
+        return self._payload(_stream(client, cid), "done")
+
+    def _farewell_turn(self, client, services, cid):
+        """Stream the farewell, and return its events.
+
+        The transcription is reset rather than inherited: the shared
+        ``mock_services`` fixture only answers with the farewell phrase, and
+        the ordinary-turn helper overwrites it, so a bare ``_stream`` here
+        would silently run a third ordinary turn and pass for the real thing.
+        """
+        services["stt"].transcribe.return_value = FAREWELL_INPUT
+        return _stream(client, cid)
+
+    def test_farewell_reports_the_turn_it_persisted(
+        self, client, tts, stored, no_report
+    ):
+        cid = client.post("/api/conversation").json()["conversation_id"]
+
+        events = _stream(client, cid)
+        types = _types(events)
+        reported = self._payload(events, "turn_recorded")["n"]
+        numbers = self._stored_numbers(stored, cid)
+
+        assert numbers == [0], f"stored turns: {numbers}"
+        assert reported == numbers[-1], (
+            f"the wire reported turn {reported} but the store committed "
+            f"{numbers[-1]}"
+        )
+        assert reported + 1 == len(numbers), (
+            f"the sidebar would show {reported + 1} turns and the store holds "
+            f"{len(numbers)}"
+        )
+        assert types.index("interview_end") < types.index("turn_recorded"), (
+            "the committed number must be reported after the terminal event; "
+            "reporting it earlier would mean reporting a number that does not "
+            "exist yet, and would put the goodbye behind the disk write"
+        )
+
+    def test_the_count_is_right_after_several_turns(
+        self, client, tts, stored, no_report
+    ):
+        """Two ordinary turns then a farewell: three stored, three counted."""
+        cid = client.post("/api/conversation").json()["conversation_id"]
+
+        first = self._ordinary_turn(client, tts, cid)
+        second = self._ordinary_turn(client, tts, cid, "And your testing?")
+        farewell = self._payload(self._farewell_turn(client, tts, cid), "turn_recorded")
+        numbers = self._stored_numbers(stored, cid)
+
+        assert numbers == [0, 1, 2], f"stored turns: {numbers}"
+        # The farewell continues the sequence `done` established, rather than
+        # restarting or skipping: the two events must not disagree.
+        assert farewell["n"] == second["n"] + 1, (
+            f"the farewell reported {farewell['n']} after done reported "
+            f"{second['n']}"
+        )
+        # One payload language for both events, so the client needs one reader.
+        assert set(farewell) == set(first) == {"n", "has_context"}, (
+            f"payload shapes drifted: done={set(first)} "
+            f"turn_recorded={set(farewell)}"
+        )
+        assert farewell["n"] + 1 == len(numbers)
+
+    def test_an_interview_without_a_farewell_is_untouched(
+        self, client, tts, stored, no_report
+    ):
+        """The ordinary path keeps naming its turn with ``done`` alone.
+
+        A normal turn is settled by ``done``, so its number is already in
+        ``turnState`` when the settler runs. Emitting the post-write event
+        there too would count the same turn a second time.
+        """
+        cid = client.post("/api/conversation").json()["conversation_id"]
+
+        first = self._ordinary_turn(client, tts, cid)
+        tts["stt"].transcribe.return_value = "And your testing?"
+        second_events = _stream(client, cid)
+        second = self._payload(second_events, "done")
+        numbers = self._stored_numbers(stored, cid)
+
+        assert "turn_recorded" not in _types(second_events), (
+            f"a normal turn must be named by done alone, got {_types(second_events)}"
+        )
+        assert first["n"] == 0 and second["n"] == 1, (first, second)
+        assert numbers == [0, 1], f"stored turns: {numbers}"
+        assert second["n"] + 1 == len(numbers), (
+            f"the sidebar would show {second['n'] + 1} of {len(numbers)} stored turns"
+        )
+
+    def test_a_failed_farewell_write_reports_no_turn(
+        self, client, tts, stored, no_report
+    ):
+        """A turn that did not land must not be counted.
+
+        ``persist_turn`` returns ``None`` for a write that failed, and the
+        payload builder turns that into ``{}``. The client reads a missing
+        ``n`` as "nothing to count" -- the same rule ``done`` follows.
+        Inventing a number here would put the counter one ahead of the store,
+        which is the same class of bug this whole change is about.
+        """
+        stored.record_turn = lambda *a, **k: None
+
+        cid = client.post("/api/conversation").json()["conversation_id"]
+        events = _stream(client, cid)
+        reported = self._payload(events, "turn_recorded")
+
+        assert reported == {}, (
+            f"a write that failed must report an empty payload, got {reported}"
+        )
+        assert self._stored_numbers(stored, cid) == [], (
+            "nothing was stored, so nothing may be counted"
+        )
+
+    def test_a_hydrated_conversation_counts_what_it_stored(
+        self, client, tts, stored, no_report
+    ):
+        """Reading the conversation back must land on the same count.
+
+        The live sidebar is only half the surface: a restart rebuilds memory
+        from these rows, so a turn that is stored but uncounted there shows up
+        as a transcript that disagrees with the number beside it.
+        """
+        import backend.main as main_mod
+
+        cid = client.post("/api/conversation").json()["conversation_id"]
+        self._ordinary_turn(client, tts, cid)
+        farewell = self._payload(self._farewell_turn(client, tts, cid), "turn_recorded")
+
+        main_mod.conversations.clear()  # a process restart, from the store's side
+        hydrated = stored.load_conversation(cid)
+        numbers = [t["n"] for t in hydrated["turns"]]
+
+        assert numbers == [0, 1], f"hydrated turns: {numbers}"
+        assert farewell["n"] + 1 == len(numbers), (
+            f"the reported number would show {farewell['n'] + 1} turns but "
+            f"hydration rebuilds {len(numbers)}"
+        )
+        assert hydrated["turns"][-1]["user_text"] == FAREWELL_INPUT, (
+            "the farewell is missing from the hydrated history"
+        )
+        assert len(hydrated["messages"]) == len(numbers), (
+            "transcript and turn numbering disagree after hydration"
+        )
+
+    def test_the_report_is_built_from_every_stored_turn(
+        self, client, tts, stored, no_report
+    ):
+        """The post-write report must see the farewell, and see it counted.
+
+        The report is generated after ``persist_turn`` precisely so that it
+        describes what survived the write. Handing it a conversation whose turn
+        list lagged the store would make the artifact and the sidebar agree on
+        a number the database does not hold.
+        """
+        from backend.main import conversations
+
+        cid = client.post("/api/conversation").json()["conversation_id"]
+        self._ordinary_turn(client, tts, cid)
+        self._farewell_turn(client, tts, cid)
+
+        assert no_report.generate.call_args[0][0] == cid
+        assert len(conversations[cid]["turns"]) == 2, (
+            f"the report was handed {len(conversations[cid]['turns'])} turns"
+        )
+
+
+class TestFarewellTurnIsCountedInTheFrontend:
+    """The client half of the same defect.
+
+    Node cannot drive the SSE dispatcher -- it is a DOM-bound browser script --
+    so the counting rule is asserted two ways instead: behaviourally on the
+    extracted state object (tests/frontend/turn_state.test.mjs) and
+    structurally on the branch that has to apply it. The structural half is a
+    text check and is labelled as one.
+    """
+
+    def test_the_dispatcher_handles_the_post_write_event(self):
+        from tests.test_sse_contract import handled_event_types
+
+        assert "turn_recorded" in handled_event_types(), (
+            "the frontend has no branch for the event carrying the farewell's "
+            "turn number, so the count stays one short of the store"
+        )
+
+    def test_the_reporting_branch_publishes_the_committed_turn(self):
+        """STRUCTURAL, not behavioural: a text check, and honestly so.
+
+        The counter update *cannot* live in the settler on this path, and that
+        is a consequence of the ordering rather than a tidiness problem:
+        ``interview_end`` settles the turn, and at that point no number
+        exists. So the branch has to apply the same arithmetic as the settler,
+        and this test is what keeps the two from being edited apart.
+
+        What it cannot prove is that the arithmetic is right -- that is the
+        behavioural test above, and the Node suite.
+        """
+        from tests.test_sse_terminal_state import (
+            _js_branch,
+            _sse_dispatch_body,
+            _strip_js_comments,
+        )
+
+        branch = _strip_js_comments(_js_branch(_sse_dispatch_body(), "turn_recorded"))
+
+        assert "turnState.commit(" in branch, (
+            "the branch must hand the committed turn to turnState; anything "
+            "else is a second, private numbering rule"
+        )
+        assert "updateTurnCount(" in branch, (
+            "the committed turn must reach the sidebar counter: the settler "
+            "already ran on interview_end, when no number existed yet"
+        )
+        assert "turn.settle(" not in branch, (
+            "the turn is already settled by interview_end; settling again is "
+            "a second terminal signal for one turn"
+        )
+
+    def test_the_ordinary_path_keeps_a_single_counter_call_site(self):
+        """The duplication above must not spread.
+
+        A ``done`` that updated the counter in its own branch would give the
+        two paths two places to drift -- which is precisely how the farewell
+        count drifted in the first place.
+        """
+        from tests.test_sse_terminal_state import (
+            _js_branch,
+            _sse_dispatch_body,
+            _strip_js_comments,
+        )
+
+        branch = _strip_js_comments(_js_branch(_sse_dispatch_body(), "done"))
+        assert "updateTurnCount(" not in branch
+        assert "fetchContext(" not in branch
+
+
 class TestFarewellTtsFailure:
     """A TTS failure must degrade, never wedge the interview."""
 
