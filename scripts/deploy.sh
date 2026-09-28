@@ -83,10 +83,10 @@ rollback() {
 }
 
 deploy() {
-    echo "==> [1/5] Validating wiki/ ..."
+    echo "==> [1/6] Validating wiki/ ..."
     "$PYTHON" "$REPO_ROOT/scripts/wiki/validate.py" --wiki "$REPO_ROOT/wiki"
 
-    echo "==> [2/5] Compiling wiki/ -> candidate/ ..."
+    echo "==> [2/6] Compiling wiki/ -> candidate/ ..."
     "$PYTHON" "$REPO_ROOT/scripts/wiki/compile.py" \
         --wiki "$REPO_ROOT/wiki" --out "$REPO_ROOT/candidate"
 
@@ -95,7 +95,25 @@ deploy() {
         exit 1
     fi
 
-    echo "==> [3/5] Rotating stale backup; retaining live candidate/ as candidate.prev/ ..."
+    echo "==> [3/6] Creating the runtime directories on the VPS ..."
+    # These three are named in the unit's ReadWritePaths, and systemd will not
+    # set up its mount namespace when a ReadWritePaths entry does not exist --
+    # so the unit fails to start rather than starting read-only. The app also
+    # creates audio/ at import time, but it cannot: the app is what the unit
+    # starts, and the unit is what needs the directory to exist first.
+    #
+    # Created, NOT rsynced. audio/ is TTS output and periodic_cleanup unlinks
+    # files from it (backend/maintenance.py:24-32), so a --delete mirror of a
+    # repository-side tree would restore everything the sweep just pruned, on
+    # every deploy, forever.
+    #
+    # candidate/ is deliberately absent from this list: step 4 rotates it, and
+    # creating it here would hand the rotation an empty directory to promote
+    # into candidate.prev/ -- wiping out the only rollback copy before the
+    # rsync that would replace it has even run.
+    ssh_cmd "mkdir -p $REMOTE_DIR/audio $REMOTE_DIR/data $REMOTE_DIR/reports"
+
+    echo "==> [4/6] Rotating stale backup; retaining live candidate/ as candidate.prev/ ..."
     # Rotation happens BEFORE the mv: a candidate.prev left by the last SUCCESSFUL
     # deploy is stale (service proven healthy), so drop it to make room. The mv
     # then preserves the currently-live tree as the single rollback copy.
@@ -104,14 +122,21 @@ deploy() {
         ssh_cmd "mv $REMOTE_DIR/candidate/ $REMOTE_DIR/candidate.prev/"
     fi
 
-    echo "==> [4/5] Rsyncing candidate/ to VPS ..."
+    echo "==> [5/6] Rsyncing candidate/ and frontend/ to VPS ..."
     rsync -az --delete -e "ssh -p $SSH_PORT" \
         "$REPO_ROOT/candidate/" "$SSH_TARGET:$REMOTE_DIR/candidate/"
+
+    # The site nginx serves. Without this the whole deployment 404s: nothing
+    # else in the repository ever created /opt/interviewtts/frontend, so an
+    # operator who had never deployed before got a running API and no front end,
+    # and deploy.sh reported DEPLOY OK.
+    rsync -az --delete -e "ssh -p $SSH_PORT" \
+        "$REPO_ROOT/frontend/" "$SSH_TARGET:$REMOTE_DIR/frontend/"
 
     echo "==> Replaced content:"
     ssh_cmd "ls -la $REMOTE_DIR/candidate/ && echo 'docs files:' \$(ls $REMOTE_DIR/candidate/docs/ | wc -l)"
 
-    echo "==> [5/5] Restarting interviewtts.service ..."
+    echo "==> [6/6] Restarting interviewtts.service ..."
     ssh_cmd "sudo systemctl restart interviewtts.service"
     ssh_cmd "systemctl is-active interviewtts.service"
 

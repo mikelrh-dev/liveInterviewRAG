@@ -318,18 +318,94 @@ This backup is a documented manual workflow only — no automation hook is wired
 
 ## Deployment
 
-### Docker (optional)
+The target is an Oracle Free Tier ARM64 VPS. There is no container image and no
+compose file for this project, so every step below runs on the host.
+
+### 1. System packages
 
 ```bash
-docker compose up -d
+sudo apt update
+sudo apt install -y python3-venv nginx certbot
 ```
 
-### Manual (Oracle Free Tier)
+### 2. The service user, the code, and the venv
 
-1. Install system dependencies (Python 3.10, ffmpeg, nginx)
-2. Configure Nginx with `nginx/interview.conf`
-3. Set up systemd service with `deployment/interviewtts.service`
-4. Configure `.env` with production values
+`deployment/interviewtts.service` names a user, a working directory and an
+interpreter. None of the three exist on a fresh VPS, and no script in this
+repository creates them, so they are created here:
+
+```bash
+sudo useradd --system --create-home --home-dir /opt/interviewtts --shell /usr/sbin/nologin interviewtts
+
+# The venv. The unit's ExecStart is
+# /opt/interviewtts/venv/bin/uvicorn, so the venv has to live INSIDE the
+# directory the service owns -- there is no other interpreter on the PATH a
+# systemd unit can rely on.
+sudo -u interviewtts python3 -m venv /opt/interviewtts/venv
+sudo -u interviewtts /opt/interviewtts/venv/bin/pip install --upgrade pip
+sudo -u interviewtts /opt/interviewtts/venv/bin/pip install -r backend/requirements.txt
+```
+
+Then put the code in place, from a clone or a copy:
+
+```bash
+sudo git clone https://github.com/mikelrh-dev/liveInterviewRAG.git /opt/interviewtts
+sudo chown -R interviewtts:interviewtts /opt/interviewtts
+```
+
+The unit's `WorkingDirectory` is `/opt/interviewtts`, so the repository root and
+the venv are siblings by design rather than by accident.
+
+### 3. The writable directories
+
+`ProtectSystem=strict` plus `ReadWritePaths` in the unit file means the service
+can write in exactly three places, and **systemd fails to start the unit if any
+`ReadWritePaths` entry does not exist**. They must exist before the first start:
+
+```bash
+sudo mkdir -p /opt/interviewtts/audio /opt/interviewtts/data /opt/interviewtts/reports
+sudo chown -R interviewtts:interviewtts /opt/interviewtts/audio /opt/interviewtts/data /opt/interviewtts/reports
+```
+
+`audio/` is what nginx `alias`es for generated speech and what the periodic
+sweep prunes; `data/` holds the SQLite store; `reports/` holds the Markdown
+transcripts.
+
+### 4. Configuration
+
+```bash
+sudo cp /opt/interviewtts/.env.example /opt/interviewtts/.env
+sudo chown interviewtts:interviewtts /opt/interviewtts/.env
+sudo -u interviewtts nano /opt/interviewtts/.env   # API keys, CORS_ORIGINS
+```
+
+The unit reads this file via `EnvironmentFile=`, so a wrong owner or a missing
+newline on the last line stops the service from starting.
+
+### 5. nginx
+
+Follow the order in the header of `nginx/interview.conf` — obtain the
+certificate first, then install the file and `systemctl enable --now nginx`.
+The header states the exact path each step produces, and
+`tests/test_nginx_cert_procedure.py` fails if the documented command and the
+`ssl_certificate` directive stop naming the same file.
+
+### 6. The service
+
+```bash
+sudo cp /opt/interviewtts/deployment/interviewtts.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now interviewtts
+sudo systemctl status interviewtts
+sudo journalctl -u interviewtts -f
+```
+
+### 7. Content deploys
+
+`scripts/deploy.sh` rsyncs `candidate/` **and `frontend/`** (the directory nginx
+serves the site from), creates the three writable directories, and restarts the
+unit. See [Editing the wiki](#editing-the-wiki-content-workflow) for the
+validate → compile → deploy loop and the rollback.
 
 ---
 
