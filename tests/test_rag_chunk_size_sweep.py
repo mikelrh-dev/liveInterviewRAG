@@ -20,12 +20,23 @@ MEASURED rather than argued:
     answer in it.
 
 So the sweep runs, and — crucially — it can come out NULL. ``CHUNK_SIZE`` is a
-knob with very little surface area on a 37-document corpus whose longest
-section is 266 words, and a knob that barely moves is a knob whose apparent
-"winner" is noise. ``DECISION_RULE`` below states, in advance and in numbers,
-what evidence would justify moving it; ``test_no_config_justifies_replacing_the_
-current_chunk_size`` applies that rule. If nothing clears the bar, the correct
-outcome is to keep 400 and say so.
+knob with very little surface area on a corpus whose longest section is 157
+words, and a knob that barely moves is a knob whose apparent "winner" is noise.
+``DECISION_RULE`` below states, in advance and in numbers, what evidence would
+justify moving it; ``test_no_config_justifies_replacing_the_current_chunk_size``
+applies that rule. If nothing clears the bar, the correct outcome is to keep 400
+and say so.
+
+THE CORPUS, AND WHY IT IS NOT THE OWNER'S wiki/
+-----------------------------------------------
+This sweep measures ``tests/fixtures/retrieval_corpus/`` — 42 invented pages,
+121 chunks at 400/50, 49 labelled questions. It is NOT the repository's
+``wiki/``, which ``.gitignore`` excludes, which is backed up to a private
+repository, and which is therefore absent from a clean clone. Every number this
+file used to report was measured on that corpus, and a clean clone failed
+``test_current_config_meets_its_measured_floor`` because of it. The numbers
+below are re-measured on the fixture, and every floor in this file is now
+FIXTURE-DERIVED. The conclusion did not change; the numbers did.
 
 WHAT IS MEASURED
 ----------------
@@ -63,52 +74,52 @@ resolution limit is roughly +/-0.04. ``DECISION_RULE`` demands a margin several
 times that, plus a CI that excludes zero, precisely so a one-question wobble
 cannot be read as a result.
 
-THE SET IS A STRICT SUPERSET OF THE REPOSITORY'S OWN GUARD
------------------------------------------------------------
-All six ``TestRetrievalRegressionGuard.CASES`` questions and both of its xfail
-questions appear below, verbatim. The earlier 29-question set was ad-hoc and was
-not committed, so it could not be reused; this set was rebuilt from the corpus
-and extended to 49, keeping the committed guard questions as a subset so the two
-measurements stay comparable in direction if not in composition.
+THE SET COVERS THE REPOSITORY'S OWN GUARD
+-----------------------------------------
+The six ``TestRetrievalRegressionGuard.CASES`` questions and its xfail question
+are drawn from this set's shape and target set, so the two measurements stay
+comparable in direction. They are not verbatim copies: the guard's questions
+used to name the owner's real pages, and the corpus moved.
 
 MEASURED RESULT: KEEP 400/50
 ----------------------------
-Run this file to reproduce. Every cell of the grid, all figures measured on the
-real 37-page wiki with real ``all-MiniLM-L6-v2`` embeddings:
+Run this file to reproduce. Every cell of the grid, all figures measured on
+``tests/fixtures/retrieval_corpus/`` with real ``all-MiniLM-L6-v2`` embeddings:
 
     cfg      chunks  R@1    R@3    R@5    MRR    FAQ@3  other@3  top1body  subst  thin
-    120/24     137   0.531  0.633  0.673  0.591  0.579  0.667        33w  0.898  0.020
-    200/40     127   0.551  0.653  0.714  0.611  0.632  0.667        36w  0.918  0.000
-    300/60     125   0.551  0.653  0.714  0.611  0.632  0.667        36w  0.918  0.000
-    400/50     125   0.551  0.653  0.714  0.611  0.632  0.667        36w  0.918  0.000
-    400/80     125   0.551  0.653  0.714  0.611  0.632  0.667        36w  0.918  0.000
-    600/120    125   0.551  0.653  0.714  0.611  0.632  0.667        36w  0.918  0.000
+    120/24     124   0.673  0.776  0.776  0.718  0.650  0.862        45w  0.959  0.020
+    200/40     121   0.673  0.776  0.796  0.722  0.650  0.862        45w  0.980  0.000
+    300/60     121   0.673  0.776  0.796  0.722  0.650  0.862        45w  0.980  0.000
+    400/50     121   0.673  0.776  0.796  0.722  0.650  0.862        45w  0.980  0.000
+    400/80     121   0.673  0.776  0.796  0.722  0.650  0.862        45w  0.980  0.000
+    600/120    121   0.673  0.776  0.796  0.722  0.650  0.862        45w  0.980  0.000
 
-Nothing beats the shipped value. 300, 400 and 600 emit BYTE-IDENTICAL chunk
-sets — no section in the corpus exceeds 266 words, so every cell from 300 up
-runs the same experiment four times and carries no information. 200 ties it
-exactly (paired delta 0 questions, CI [0.000, 0.000]). 120 is one question
-WORSE, and the single question that flips ("cuando podrias incorporarte al
-puesto", rank 3 -> absent) is the exact noise scale this measurement warns
-about: one question is 0.020 of recall at n=49, and the previous run measured
-one question moving recall by 0.034 at n=29.
+Nothing beats the shipped value, and the reason is now starker: no section in
+the corpus exceeds 157 words, so every cell at or above 200 emits BYTE-IDENTICAL
+chunk sets. Five of the six cells are the same experiment. 120/24 is the only
+distinct one, and it is not better — recall@3 ties at 0 questions (CI
+[+0.000, +0.000]) while recall@5 falls one question and the substance control
+gets measurably WORSE: 0.959 vs 0.980 of top-1 chunks carry a real body, and
+2.0% of top-1 chunks become a title or a title-plus-fragment, the exact
+pre-H1-fix failure mode this file exists to prevent.
 
 The hypothesis is refuted structurally, not just numerically — see
 ``test_the_faq_regression_page_is_untouched_by_the_entire_grid`` and
 ``test_shrinking_the_chunk_cannot_recover_the_title_only_retrieval_key``.
 
-THREE FIGURES IN THE BRIEF THAT DO NOT SURVIVE MEASUREMENT
-----------------------------------------------------------
-1. "max 210" is wrong: the longest chunk is 266 words (``skills/backend.md``).
-   210 is the SECOND longest (``faq/hobbies-intereses.md``). The conclusion is
-   unaffected — 266 is still far below 300 — but anyone reasoning about
-   headroom needs the real number.
-2. "the constants are dead" is right for CHUNK_SIZE and CHUNK_OVERLAP and also
-   true of a THIRD constant nobody was looking at: ``threshold=0.3``. The lowest
-   top-1 cosine observed across the 49 questions is 0.414, so no chunk is ever
-   filtered out on score.
-3. Duplicated documents inside a single top-3 look like the cause of the
-   misses and are not: deduplicating by source rescues 0 of 17. See
+THREE FIGURES FROM THE ORIGINAL BRIEF THAT DID NOT SURVIVE MEASUREMENT
+-----------------------------------------------------------------------
+1. "max 210" was wrong even then: the real corpus's longest chunk was 266 words
+   (``skills/backend.md``), not 210. On the fixture the longest is 157.
+2. "the constants are dead" was right for CHUNK_SIZE and CHUNK_OVERLAP, and the
+   claim about ``threshold=0.3`` that rode along with it ("no chunk is ever
+   filtered out on score") was an inference from a top-1 statistic, not a
+   measurement of the filter. The filter drops a large share of the candidate
+   pool. See ``tests/test_rag.py::TestRetrievalThresholdIsHonest``, which now
+   also records that the shipped default legitimately changes the direct-path
+   top-3 for 3 of 49 questions on a corpus this size.
+3. Duplicated documents inside a single top-3 look like the cause of the misses
+   and are not: deduplicating by source rescues 0 questions. See
    ``test_duplicated_top_k_slots_are_a_symptom_not_the_cause``.
 """
 
@@ -121,124 +132,25 @@ from typing import Dict, FrozenSet, List, Optional, Sequence, Tuple
 import numpy as np
 import pytest
 
-from backend.services.candidate import CandidateProfile
 from backend.services.rag import RAGPipeline
 
-ROOT = Path(__file__).resolve().parent.parent
-
-# ── The labelled set ──────────────────────────────────────────────────────────
-#
-# (question, primary gold, also-correct golds, doc class)
-#
-# Phrasing rules, taken from how this system is actually driven: the question
-# reaches the RAG verbatim from Whisper, so it arrives lowercase, unpunctuated,
-# with unreliable accents, and the recruiter rarely bothers with the accents at
-# all. Questions are therefore written that way on purpose — "an accurate
-# Spanish question" would be measuring a distribution this pipeline never sees.
-#
-# ``also_golds`` is deliberately almost empty. A document earns an entry here
-# only when it is *itself* about the same question, not merely adjacent to it.
-# Being generous would inflate the lenient recall and hide strict regressions.
-@dataclass(frozen=True)
-class Case:
-    question: str
-    primary: str
-    also: FrozenSet[str]
-    doc_class: str
-
-
-def _c(question: str, primary: str, also: Sequence[str] = (), doc_class: str = "narrative") -> Case:
-    return Case(question, primary, frozenset(also), doc_class)
-
-
-FAQ = "faq"
-NARRATIVE = "narrative"
-
-LABELLED_CASES: Tuple[Case, ...] = (
-    # ── FAQ pages: the H1 IS the canonical interview question. This is the
-    # group the H1 re-attachment was measured to hurt, so it is the group the
-    # "chunk size is the cause" hypothesis has to answer for.
-    _c("cual es tu nivel de ingles", "faq/nivel-ingles.md", doc_class=FAQ),
-    _c("como es tu ingles hablando", "faq/nivel-ingles.md", doc_class=FAQ),
-    _c("cuando podrias incorporarte al puesto", "faq/disponibilidad.md", doc_class=FAQ),
-    _c("puedes empezar a trabajar ya estas disponible", "faq/disponibilidad.md", doc_class=FAQ),
-    _c("cuales son tus fortalezas y debilidades", "faq/fortalezas-y-debilidades.md", doc_class=FAQ),
-    _c("cuentame sobre ti en treinta segundos", "faq/presentacion-30-segundos.md", doc_class=FAQ),
-    _c("hazme una presentacion rapida de treinta segundos",
-       "faq/presentacion-30-segundos.md", doc_class=FAQ),
-    _c("que area del desarrollo te gusta mas", "faq/area-preferida.md", doc_class=FAQ),
-    _c("prefieres backend o frontend", "faq/area-preferida.md", doc_class=FAQ),
-    _c("como te ves profesionalmente en tres o cinco anos",
-       "faq/donde-veo-en-3-5-anos.md", doc_class=FAQ),
-    _c("que planes tienes para los proximos años", "faq/donde-veo-en-3-5-anos.md", doc_class=FAQ),
-    _c("que haces en tu tiempo libre", "faq/hobbies-intereses.md", doc_class=FAQ),
-    _c("cuales son tus aficiones y hobbies", "faq/hobbies-intereses.md", doc_class=FAQ),
-    _c("que fue lo mas dificil de aprender cuando empezaste dam",
-       "faq/lo-mas-dificil-dam.md", doc_class=FAQ),
-    _c("por que deberiamos contratarte a ti", "faq/por-que-contratarte.md", doc_class=FAQ),
-    _c("dame tres razones para contratarte", "faq/por-que-contratarte.md", doc_class=FAQ),
-    # The one documented duplicate: two pages really do answer "why leave
-    # retail for DAM" — the FAQ page and the decision record. Named so the
-    # strict view can still see the FAQ page lose its own retrieval key.
-    _c("por que dejaste los supermercados para estudiar dam",
-       "faq/por-que-dejar-supermercados.md",
-       ["decisions/dejar-mercadona-para-dam.md"], doc_class=FAQ),
-    _c("por que quieres trabajar aqui", "faq/por-que-esta-empresa.md", doc_class=FAQ),
-    _c("que buscas en una empresa", "faq/por-que-esta-empresa.md", doc_class=FAQ),
-
-    # ── Decision records
-    _c("por que decidiste dejar mercadona para estudiar dam",
-       "decisions/dejar-mercadona-para-dam.md"),
-    _c("por que una arquitectura de tres capas para el detector de fraude",
-       "decisions/fraud-detector-3-layer-architecture.md"),
-    _c("por que elegiste construir interviewtts como portfolio",
-       "decisions/por-que-interviewtts.md"),
-
-    # ── Experience
-    _c("que estabas haciendo en mercadona los ultimos años",
-       "experience/gerente-mercadona-2019-2025.md"),
-    _c("cuentame tu trabajo como encargado en bm",
-       "experience/encargado-bm-2016-2019.md"),
-    _c("empezaste como frutero en mercadona no", "experience/frutero-bm-2015-2016.md"),
-
-    # ── Opinions
-    _c("para que sirven los tests hoy en dia con ia", "opinions/importancia-tests.md"),
-    _c("que opinas de la ia en el desarrollo de software", "opinions/opinion-ia-desarrollo.md"),
-    _c("trabajo remoto o presencial y frameworks o vanilla",
-       "opinions/remoto-presencial-frameworks.md"),
-
-    # ── Profile
-    _c("cuentame tu perfil profesional", "profile/mikel.md"),
-
-    # ── Projects
-    _c("que es el detector de fraude", "projects/fraud-detector.md"),
-    _c("con que stack hiciste el detector de fraude", "projects/fraud-detector.md"),
-    _c("cuales son las metricas del detector de fraude", "projects/fraud-detector.md"),
-    _c("que es interviewtts", "projects/interview-tts.md"),
-    _c("que tecnologias usa interviewtts", "projects/interview-tts.md"),
-    _c("que resultados dio el proyecto de la pagina web de velneo",
-       "projects/pagina-web-practicas.md"),
-    _c("en que consistian tus practicas en ceesa", "projects/pagina-web-practicas.md"),
-
-    # ── Skills
-    _c("que experiencia tienes con javascript y frontend", "skills/frontend.md"),
-    _c("que sabes de backend y java", "skills/backend.md"),
-    _c("que bases de datos has usado", "skills/data.md"),
-    _c("que herramientas de devops y git manejas", "skills/devops.md"),
-    _c("como testias tu codigo", "skills/testing.md"),
-
-    # ── Stories
-    _c("cuentame lo de la huelga de camiones en mercadona", "stories/huelga-camiones-mercadona.md"),
-    _c("por que usaste edge tts en vez de clonar la voz", "stories/edge-tts-vs-clonacion.md"),
-    _c("como aprendes algo nuevo", "stories/aprendizaje-autodidacta.md"),
-    _c("aprendiste todo el stack de interviewtts por tu cuenta",
-       "stories/aprender-interviewtts.md"),
-    _c("que hiciste con fastapi docker y asincronia en dam",
-       "stories/autodidacta-fastapi-docker-async.md"),
-    _c("como gestionabas el tiempo en mercadona", "stories/gestion-tiempo-mercadona.md"),
-    _c("lidieraste al equipo durante el covid", "stories/liderazgo-covid-mercadona.md"),
-    _c("te equivocaste con la configuracion de whisper", "stories/whisper-config-default.md"),
+# The corpus and the labelled set live in ``tests/fixture_corpus.py`` so the
+# retrieval tests and this sweep measure the same thing. CORPUS NOTE, and it
+# governs every figure in this file: the corpus is
+# ``tests/fixtures/retrieval_corpus/`` — 42 invented pages, 121 chunks at
+# 400/50 — NOT the owner's ``wiki/``, which is gitignored, private, and absent
+# from a clean clone. Re-importing the historical name keeps every existing
+# ``from tests.test_rag_chunk_size_sweep import LABELLED_CASES`` working.
+from tests.fixture_corpus import (
+    FIXTURE_ROOT,
+    LABELLED_CASES,
+    Case,
+    FAQ,
+    NARRATIVE,
+    load_documents,
 )
+
+ROOT = Path(__file__).resolve().parent.parent
 
 # ── The sweep grid ───────────────────────────────────────────────────────────
 #
@@ -370,10 +282,12 @@ class _MemoisedEncoder:
 
 @pytest.fixture(scope="module")
 def real_wiki_documents() -> Dict[str, str]:
-    profile = CandidateProfile(ROOT / "candidate", wiki_dir=ROOT / "wiki")
-    profile.load()
-    assert profile.documents, "the real wiki must still load"
-    return profile.documents
+    """The committed fixture corpus, loaded through the production loader.
+
+    Named for the historical real-wiki fixture so the diff stays readable; it
+    is ``tests/fixtures/retrieval_corpus/`` and is entirely invented.
+    """
+    return load_documents()
 
 
 @dataclass(frozen=True)
@@ -509,14 +423,23 @@ def _paired_bootstrap_ci(a: List[bool], b: List[bool], seed: int = 20260927) -> 
 def test_only_three_distinct_configurations_exist_in_this_grid(sweep):
     """How much can CHUNK_SIZE even change? Prove it instead of asserting it.
 
-    The corpus's longest section is well under 300 words, so every cell from 300
-    upwards emits the SAME chunks, byte for byte, and overlap is inert above the
-    threshold. That is the single most important fact about this sweep: a third
-    of the grid is one experiment repeated four times, so it carries no
-    information at all, and no "trend" can be read out of it.
+    The corpus's longest section is 157 words, well under 200, so every cell at
+    or above 200 emits the SAME chunks, byte for byte, and overlap is inert
+    above the threshold. That is the single most important fact about this
+    sweep: five of the six cells are one experiment repeated, so they carry no
+    information at all, and no "trend" can be read out of them.
 
-    This test is a property of the CORPUS, so if the wiki grows long enough for
-    the threshold to bind, it fails and the grid needs rethinking.
+    FIXTURE-DERIVED. On the real corpus the longest section was 266 words, so
+    only four cells collapsed; the 200 cell was distinct. The fixture's
+    longest section is shorter, so 200 collapses too and 120/24 is the ONLY
+    cell that runs a different experiment. The conclusion the file reaches is
+    unchanged — arguably strengthened, since a bigger share of the grid is
+    now provably redundant — but the inert set is a property of the corpus
+    and had to be re-measured with it.
+
+    This test is a property of the CORPUS, so if the fixture grows a section
+    long enough for the threshold to bind, it fails and the grid needs
+    rethinking.
     """
     signatures = {
         cfg: tuple((c.source, c.content) for c in rag.chunks)
@@ -524,11 +447,11 @@ def test_only_three_distinct_configurations_exist_in_this_grid(sweep):
     }
     current = signatures[CURRENT_CONFIG]
     inert = sorted(cfg for cfg, sig in signatures.items() if sig == current)
-    assert inert == [(300, 60), (400, 50), (400, 80), (600, 120)], (
-        f"expected every cell at or above 300 words to be identical to the "
+    assert inert == [(200, 40), (300, 60), (400, 50), (400, 80), (600, 120)], (
+        f"expected every cell at or above 200 words to be identical to the "
         f"current config on this corpus, but these were: {inert}"
     )
-    assert sweep.metrics[CURRENT_CONFIG].max_chunk_words < 300, (
+    assert sweep.metrics[CURRENT_CONFIG].max_chunk_words < 200, (
         "the longest chunk reached the smallest inert cell's threshold, so "
         f"{inert} is no longer a set of duplicates"
     )
@@ -602,19 +525,30 @@ def test_current_config_meets_its_measured_floor(sweep):
     configurations, but to make a silent retrieval regression impossible to
     merge.
 
+    FIXTURE-DERIVED, and every value moved. They were measured on the owner's
+    gitignored, private ``wiki/`` — 37 pages, 125 chunks — so a clean clone
+    could never have passed this test, and on a 46-page clone it failed. They
+    are now measured on ``tests/fixtures/retrieval_corpus/`` — 42 invented
+    pages, 121 chunks, 49 questions. The tolerance is unchanged at one
+    question (1/49 = 0.0204, rounded to 0.021), because the resolution limit
+    is a function of n, not of which corpus supplies the questions. Nothing
+    here was loosened: recall@3 went UP (0.653 -> 0.776) because the fixture's
+    pages are more clearly titled for the questions that reach them.
+
     Flipping ``test_no_config_justifies_replacing_the_current_chunk_size`` to
     failing is the signal that these must be re-baselined in the same change.
     """
     current = sweep.metrics[CURRENT_CONFIG]
-    assert current.recall3 == pytest.approx(0.653, abs=0.021), (
-        f"recall@3 at {CURRENT_CONFIG} is {current.recall3:.3f}, was 0.653 "
-        f"(32/49). A change moved it; re-baseline deliberately or revert."
+    assert current.recall3 == pytest.approx(0.776, abs=0.021), (
+        f"recall@3 at {CURRENT_CONFIG} is {current.recall3:.3f}, was 0.776 "
+        f"(38/49) on tests/fixtures/retrieval_corpus/. A change moved it; "
+        f"re-baseline deliberately or revert."
     )
-    assert current.recall1 == pytest.approx(0.551, abs=0.021)
-    assert current.mrr == pytest.approx(0.611, abs=0.021)
+    assert current.recall1 == pytest.approx(0.673, abs=0.021)
+    assert current.mrr == pytest.approx(0.722, abs=0.021)
     # The control, and the reason the H1 fix exists: the top-1 context is an
     # answer, not a restatement of the interviewer's own question.
-    assert current.substance_ok_rate >= 0.90, (
+    assert current.substance_ok_rate >= 0.95, (
         f"only {current.substance_ok_rate:.1%} of top-1 chunks carry a body of "
         f">= {SUBSTANCE_WORD_THRESHOLD} words — the LLM is getting titles back"
     )
@@ -622,9 +556,9 @@ def test_current_config_meets_its_measured_floor(sweep):
         f"{current.thin_top1_rate:.1%} of top-1 chunks are a title or a title "
         f"plus a fragment (< {THIN_BODY_THRESHOLD} body words)"
     )
-    assert current.median_top1_body_words >= 30, (
+    assert current.median_top1_body_words >= 40, (
         f"median top-1 body is {current.median_top1_body_words:.0f} words, "
-        f"was 36"
+        f"was 45 on the fixture corpus"
     )
 
 
@@ -934,6 +868,15 @@ def test_sweep_never_writes_the_repositorys_embedding_cache(sweep):
     and ``test_lifespan_shutdown`` boots the app — which re-ingests at startup
     and rewrites it. A measurement run that also wrote there would quietly make
     every later run depend on which measurement ran last.
+
+    The second half of this test used to assert that whatever the repo's own
+    suite last wrote into that cache matches this sweep's chunk count. It
+    cannot any more, and the reason is worth stating rather than deleting: the
+    sweep measures the FIXTURE, while that cache is written from the real wiki
+    on the machine that has one. Comparing the two would compare a synthetic
+    corpus to a real one and call the difference a defect. The version guard
+    stays, because that is about the cache's own consistency, not about which
+    corpus it was built from.
     """
     import json
 
@@ -942,18 +885,9 @@ def test_sweep_never_writes_the_repositorys_embedding_cache(sweep):
         assert rag._cache_dir is None, f"{cfg} was given a cache dir: {rag._cache_dir}"
     if repo_cache.exists():
         meta = json.loads(repo_cache.read_text(encoding="utf-8"))
-        # Whatever the repo's own suite last wrote, it must be internally
-        # consistent: the recorded count has to match a real chunking of the
-        # real corpus at the shipped constants. A mismatch would mean something
-        # outside this harness wrote a cache it cannot account for.
         from backend.services.rag import CHUNK_FILTER_VERSION
 
         assert meta["chunk_filter_version"] == CHUNK_FILTER_VERSION, (
             f"repo cache was written at filter version {meta['chunk_filter_version']}, "
             f"current is {CHUNK_FILTER_VERSION}"
-        )
-        assert meta["chunk_count"] == sweep.metrics[CURRENT_CONFIG].n_chunks, (
-            f"repo cache records {meta['chunk_count']} chunks but the corpus "
-            f"chunks to {sweep.metrics[CURRENT_CONFIG].n_chunks} at "
-            f"{CURRENT_CONFIG}"
         )
