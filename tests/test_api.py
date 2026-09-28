@@ -773,7 +773,11 @@ class TestPersistenceIntegration:
 
         mock_services["tts"].synthesize_sentence = fake_synth
 
-        def _dead_connect():
+        def _dead_connect(*args, **kwargs):
+            # `*args, **kwargs` because this replaces a method, and the
+            # replacement must accept whatever the caller passes -- otherwise
+            # the test passes on an AttributeError/TypeError raised by the
+            # stub instead of on the dead store it is pretending to model.
             raise RuntimeError("disk dead mid-interview")
 
         monkeypatch.setattr(persisted_store, "_connect", _dead_connect)

@@ -104,14 +104,20 @@ class PersistenceService:
 
     # ── Connection / schema plumbing ─────────────────────────
 
-    def _connect(self) -> sqlite3.Connection:
+    def _connect(self, *, autocommit: bool = False) -> sqlite3.Connection:
         """Open a short-lived connection with the pragmas from design D3.
 
         If a pragma fails (e.g. corrupt file), the raw connection is closed
         before raising so Windows never keeps a lock on the DB file — this is
         what lets the corrupt-rename recovery actually move the file aside.
+
+        ``autocommit=True`` drops the driver's implicit-transaction mode so the
+        caller can open its own ``BEGIN IMMEDIATE``. It is needed only where a
+        read and the write that depends on it have to be atomic
+        (``record_turn``); every other operation lets the driver's ``with con:``
+        do it, which is one fewer thing to get wrong.
         """
-        con = sqlite3.connect(str(self.db_path))
+        con = sqlite3.connect(str(self.db_path), isolation_level=None if autocommit else "")
         try:
             con.execute("PRAGMA journal_mode=WAL")
             con.execute("PRAGMA foreign_keys=ON")
@@ -218,21 +224,29 @@ class PersistenceService:
     def record_turn(self, cid: str, turn: dict, message: dict) -> dict | None:
         """Composite write-through: turn + message + activity upsert atomically.
 
-        Returns the turn dict as actually committed, or ``None`` when the write
-        failed.  The returned ``n`` is authoritative: callers must reconcile
-        memory from it rather than assuming the ``n`` they asked for was used.
+        Returns the turn dict this call recorded, or ``None`` when it recorded
+        nothing — either because the write failed, or because an identical
+        exchange was already there (see below). The returned ``n`` is
+        authoritative: callers must reconcile memory from it rather than
+        assuming the ``n`` they asked for was used.
 
         Duplicate-``n`` semantics (turns carry UNIQUE(conversation_id, n), and
         the live pipeline derives ``n`` from ``len(conversations[cid]["turns"])``,
-        so two in-flight requests can pick the same ``n``):
+        so two in-flight requests can pick the same ``n``). The discriminator is
+        the turn's CONTENT, because a byte-identical exchange is the same
+        exchange: STT is greedy (``beam_size=1``), so a double-tapped mic
+        re-transcribes to the same ``user_text``, and the FAQ cache returns the
+        same ``answer_text``.
 
-        * **Same ``n``, same content** — a retry of the same turn.  The
-          conditional upsert rewrites the identical row: idempotent and
-          self-healing, never raises, never duplicates.
-        * **Same ``n``, different content** — a genuine collision.  The
-          conditional upsert refuses (rowcount 0, existing row untouched) and
-          the turn is inserted at the next free ``n`` instead, so neither
-          answer is lost.
+        * **Same ``n``, same content** — a retry. Nothing is written and
+          ``None`` is returned, so the caller appends nothing to memory either.
+          One exchange is one ``turns`` row and one ``messages`` row; the
+          paired message used to be inserted unconditionally, which turned one
+          exchange into two transcript entries and made the durable report
+          claim N+1 turns.
+        * **Same ``n``, different content** — a genuine collision. The turn is
+          inserted at the next free ``n`` and reported, so neither answer is
+          lost.
 
         Either way the turn the user actually heard reaches disk, so memory can
         never be ahead of disk.  Previously the plain INSERT raised
@@ -243,10 +257,27 @@ class PersistenceService:
         if not self._enabled:
             return None
         try:
-            con = self._connect()
+            # The retry test is a read whose answer decides a write, so the two
+            # halves must not be interleavable. SQLite would in fact serialise
+            # this transaction even under the driver's deferred BEGIN: the
+            # first statement inside it is the ``conversations`` upsert, and a
+            # deferred transaction that OPENS with a write takes the write lock
+            # there, so the loser blocks before it ever reaches the reads.
+            #
+            # That is an emergent property of the statement order, not a
+            # property of the transaction, and an emergent property of a
+            # durability invariant is not one. Move the upsert below the reads
+            # -- a natural-looking refactor -- and the loser reads "nothing at
+            # n=0", picks n=0 again, and has its INSERT rejected by
+            # UNIQUE(conversation_id, n): an exchange the candidate just heard
+            # aloud is dropped. BEGIN IMMEDIATE takes the lock up front so the
+            # guarantee does not rest on what the first statement happens to be.
+            # busy_timeout (5s) covers the wait.
+            con = self._connect(autocommit=True)
             try:
                 self._ensure_schema(con)
-                with con:
+                con.execute("BEGIN IMMEDIATE")
+                try:
                     now_iso = datetime.utcnow().isoformat()
                     con.execute(
                         """
@@ -268,38 +299,46 @@ class PersistenceService:
                     )
                     requested_n = int(turn.get("n", 0))
 
-                    # The WHERE clause makes the upsert a no-op when the stored
-                    # row differs, so rowcount 0 == "genuine collision".
-                    cur = con.execute(
+                    already_there = con.execute(
+                        """
+                        SELECT 1 FROM turns
+                        WHERE conversation_id = ? AND n = ?
+                            AND user_text = ? AND assistant_text = ?
+                            AND chunks_used = ?
+                        """,
+                        (cid, requested_n, user_text, assistant_text, chunks_json),
+                    ).fetchone()
+                    if already_there is not None:
+                        con.execute("ROLLBACK")
+                        logger.info(
+                            "Turn %d for %s is already recorded verbatim — "
+                            "retry ignored, no second transcript entry",
+                            requested_n, cid,
+                        )
+                        return None
+
+                    # The row at ``requested_n`` is either absent or a different
+                    # exchange. Absent: take the number asked for. Different:
+                    # a genuine collision, re-derived below so neither answer
+                    # is lost.
+                    taken = con.execute(
+                        "SELECT 1 FROM turns WHERE conversation_id = ? AND n = ?",
+                        (cid, requested_n),
+                    ).fetchone()
+                    committed_n = (
+                        self._next_free_n(con, cid, requested_n)
+                        if taken is not None
+                        else requested_n
+                    )
+                    con.execute(
                         """
                         INSERT INTO turns
                             (conversation_id, n, user_text, assistant_text,
                              chunks_used)
                         VALUES (?, ?, ?, ?, ?)
-                        ON CONFLICT(conversation_id, n) DO UPDATE SET
-                            user_text = excluded.user_text,
-                            assistant_text = excluded.assistant_text,
-                            chunks_used = excluded.chunks_used
-                        WHERE turns.user_text = excluded.user_text
-                            AND turns.assistant_text = excluded.assistant_text
-                            AND turns.chunks_used = excluded.chunks_used
                         """,
-                        (cid, requested_n, user_text, assistant_text, chunks_json),
+                        (cid, committed_n, user_text, assistant_text, chunks_json),
                     )
-                    if cur.rowcount:
-                        committed_n = requested_n
-                    else:
-                        committed_n = self._next_free_n(con, cid, requested_n)
-                        con.execute(
-                            """
-                            INSERT INTO turns
-                                (conversation_id, n, user_text, assistant_text,
-                                 chunks_used)
-                            VALUES (?, ?, ?, ?, ?)
-                            """,
-                            (cid, committed_n, user_text, assistant_text,
-                             chunks_json),
-                        )
 
                     con.execute(
                         """
@@ -314,6 +353,10 @@ class PersistenceService:
                             message.get("audio_url", ""),
                         ),
                     )
+                    con.execute("COMMIT")
+                except BaseException:
+                    con.execute("ROLLBACK")
+                    raise
             finally:
                 con.close()
         except Exception as e:
@@ -336,10 +379,11 @@ class PersistenceService:
         reads back ``ORDER BY n``, so a gap is not needed and skipping one keeps
         the derivation trivially correct under any pre-existing state.
 
-        Called inside ``record_turn``'s open transaction, so the
-        UNIQUE(conversation_id, n) index remains the final arbiter: if a racing
-        writer claims the same ``n`` first, the loser's insert raises and is
-        reported as a failed write (``None``) instead of vanishing.
+        Called inside ``record_turn``'s ``BEGIN IMMEDIATE``, which holds the
+        write lock, so no racing writer can claim ``n`` between the SELECT and
+        the INSERT. The UNIQUE(conversation_id, n) index remains the final
+        arbiter regardless: a violation is reported as a failed write (``None``)
+        rather than vanishing.
         """
         row = con.execute(
             "SELECT MAX(n) FROM turns WHERE conversation_id = ?", (cid,)

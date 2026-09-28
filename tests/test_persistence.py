@@ -6,6 +6,8 @@ and Report Survival · Failure Isolation.
 
 import logging
 import sqlite3
+import threading
+import time
 from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
 
@@ -176,23 +178,6 @@ class TestTurnWriteIdempotency:
     forgets.
     """
 
-    def test_same_conversation_and_n_twice_does_not_raise(self, tmp_path):
-        """Re-writing the same (cid, n) must not raise and must stay consistent."""
-        svc = _make_service(tmp_path)
-        turn = {"n": 0, "user_text": "q", "assistant_text": "a", "chunks_used": []}
-        message = {"user_text": "q", "response_text": "a", "audio_url": "/a.mp3"}
-
-        svc.record_turn("c1", turn, message)  # must not raise
-        svc.record_turn("c1", turn, message)  # identical retry — must not raise
-
-        loaded = svc.load_conversation("c1")
-        assert loaded is not None
-        assert len(loaded["turns"]) == 1, "an identical retry must not duplicate the turn"
-        assert loaded["turns"][0]["n"] == 0
-        assert loaded["turns"][0]["assistant_text"] == "a"
-        # The paired message is append-only and must survive the retry
-        assert len(loaded["messages"]) == 2, "messages are append-only, never de-duplicated"
-
     def test_collision_with_different_content_reports_committed_n(self, tmp_path):
         """A genuine (cid, n) collision must commit, and REPORT the n it used.
 
@@ -281,7 +266,11 @@ class TestTurnWriteIdempotency:
         """A failed write reports None so the caller can stop trusting memory."""
         svc = _make_service(tmp_path)
 
-        def _dead_connect():
+        def _dead_connect(*args, **kwargs):
+            # ``*args, **kwargs`` because this replaces a method: the
+            # replacement has to accept whatever the caller passes, or the test
+            # passes on a TypeError from the stub instead of on the dead store
+            # it is pretending to model.
             raise RuntimeError("disk dead")
 
         monkeypatch.setattr(svc, "_connect", _dead_connect)
@@ -292,6 +281,274 @@ class TestTurnWriteIdempotency:
             {"user_text": "q", "response_text": "a", "audio_url": ""},
         ) is None
         assert any(r.levelno == logging.WARNING for r in caplog.records)
+
+
+class TestOneExchangeIsRecordedOnce:
+    """A retried turn must not become a second transcript entry.
+
+    THE DEFECT THIS REPLACES
+    -----------------------
+    ``record_turn`` de-duplicated the ``turns`` row on a retry and then ran an
+    UNCONDITIONAL ``INSERT INTO messages``. One exchange therefore became two
+    transcript entries, and the durable report (``services/report.py`` renders
+    ``Turnos: len(state['messages'])``) claimed N+1 turns and printed the same
+    exchange twice.
+
+    An earlier version of this file asserted that as the requirement --
+    ``assert len(loaded["messages"]) == 2, "messages are append-only, never
+    de-duplicated"``. The schema cannot distinguish an append-only transcript
+    from a duplicated one: ``messages`` carries no turn number, so "append
+    only" and "appended twice by a retry" are the same row shape. The
+    discriminator has to be content, and it lives on the ``turns`` row.
+
+    WHY CONTENT IS THE RIGHT DISCRIMINATOR
+    ---------------------------------------
+    A byte-identical exchange is the SAME exchange. STT is greedy
+    (``beam_size=1``), so a double-tapped mic re-transcribes to the same
+    ``user_text``; the FAQ cache returns the same ``answer_text``. Same ``n`` +
+    same content == one exchange, recorded once. Same ``n`` + DIFFERENT content
+    == a genuine collision: the second exchange is real and is committed at the
+    next free ``n``, so neither answer is lost.
+    """
+
+    TURN = {
+        "n": 0,
+        "user_text": "como testias tu codigo",
+        "assistant_text": "Hago tests unitarios y de integracion con pytest.",
+        "chunks_used": [{"text": "pytest", "score": 0.8, "source": "skills/testing.md"}],
+    }
+    MESSAGE = {
+        "user_text": "como testias tu codigo",
+        "response_text": "Hago tests unitarios y de integracion con pytest.",
+        "audio_url": "/audio/c1/abc.mp3",
+    }
+
+    def test_identical_retry_records_the_exchange_exactly_once(self, tmp_path):
+        svc = _make_service(tmp_path)
+
+        first = svc.record_turn("c1", dict(self.TURN), dict(self.MESSAGE))
+        assert first is not None, "the first write is a real exchange"
+        second = svc.record_turn("c1", dict(self.TURN), dict(self.MESSAGE))
+
+        loaded = svc.load_conversation("c1")
+        assert loaded is not None
+        assert len(loaded["turns"]) == 1, "an identical retry must not duplicate the turn"
+        assert loaded["turns"][0]["n"] == 0
+        assert loaded["turns"][0]["assistant_text"] == self.TURN["assistant_text"]
+        assert len(loaded["messages"]) == 1, (
+            "the retry added a second transcript entry for one exchange: "
+            f"{[m['response_text'] for m in loaded['messages']]}"
+        )
+        assert second is None, (
+            "a retry must report that it added nothing, or the caller appends "
+            "the same turn number to memory a second time"
+        )
+
+    @staticmethod
+    def _two_racing_writers(tmp_path, name, monkeypatch, delay=0.05):
+        """Two independent services on one file, each with a widened window.
+
+        Separate objects, because each holds its own connection and its own
+        "DDL applied" flag: one shared instance would serialise on nothing and
+        hide the behaviour under test.
+
+        ``delay`` matters more than the barrier. Two GIL-bound writes usually
+        land in whatever order the scheduler picks, which is not a race -- it
+        is luck, and a test that passes by luck is a test that cannot fail.
+        The trace callback sleeps on each connection's FIRST statement, i.e.
+        after it has taken whatever lock it takes and before it has decided
+        anything, so the second writer reliably arrives mid-transaction.
+        """
+        db_path = tmp_path / name
+        writers = [PersistenceService(db_path), PersistenceService(db_path)]
+        for writer in writers:
+            writer.initialize()
+
+        for writer in writers:
+            bound = writer._connect
+
+            def factory(*args, _bound=bound, **kwargs):
+                con = _bound(*args, **kwargs)
+                state = {"slept": False}
+
+                def _trace(_sql):
+                    if not state["slept"]:
+                        state["slept"] = True
+                        time.sleep(delay)
+
+                con.set_trace_callback(_trace)
+                return con
+
+            monkeypatch.setattr(writer, "_connect", factory)
+        return writers
+
+    @staticmethod
+    def _race(writers, payloads):
+        """Run one ``record_turn`` per writer from real threads, simultaneously."""
+        barrier = threading.Barrier(len(writers))
+        reported: list = []
+        errors: list = []
+
+        def _write(service, turn, message):
+            try:
+                barrier.wait(timeout=10)
+                reported.append(service.record_turn("c1", turn, message))
+            except BaseException as exc:  # noqa: BLE001 - re-raised by the asserts
+                errors.append(exc)
+
+        threads = [
+            threading.Thread(target=_write, args=(w, t, m))
+            for w, (t, m) in zip(writers, payloads)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+
+        assert not any(t.is_alive() for t in threads), (
+            "a writer is still blocked on the store lock after 30s"
+        )
+        assert not errors, f"a writer raised: {errors!r}"
+        return reported
+
+    def test_concurrent_writers_of_one_exchange_record_it_exactly_once(
+        self, tmp_path, monkeypatch
+    ):
+        """Two writers, one exchange: the store is the arbiter, not the caller.
+
+        Both in-flight requests read ``len(turns)`` before either appends, so
+        both ask for the same ``n``. A read-then-write retry check is only a
+        retry check if the two halves cannot be interleaved, so this drives two
+        real connections that genuinely overlap rather than calling
+        ``record_turn`` twice from one thread -- which a sequential
+        implementation passes while still duplicating the exchange under the
+        race that causes it.
+        """
+        writers = self._two_racing_writers(tmp_path, "race.db", monkeypatch)
+        payloads = [(dict(self.TURN), dict(self.MESSAGE))] * 2
+
+        reported = self._race(writers, payloads)
+
+        loaded = writers[0].load_conversation("c1")
+        assert loaded is not None
+        assert len(loaded["turns"]) == 1, (
+            f"two writers produced {len(loaded['turns'])} turn rows"
+        )
+        assert len(loaded["messages"]) == 1, (
+            f"two writers produced {len(loaded['messages'])} transcript entries "
+            "for one exchange"
+        )
+        assert [r for r in reported if r is not None] != [], (
+            "the winning writer must report the exchange it recorded"
+        )
+        assert len([r for r in reported if r is not None]) == 1, (
+            f"both writers reported a new exchange: {reported!r}"
+        )
+
+    def test_a_different_second_exchange_at_the_same_n_is_still_recorded(self, tmp_path):
+        """Content is the discriminator, so a genuine collision is never dropped.
+
+        The counterpart to the retry case: if the de-duplication were keyed on
+        ``(conversation_id, n)`` alone, this second exchange would be silently
+        discarded and the candidate would hear an answer that no restart
+        recalls.
+        """
+        svc = _make_service(tmp_path)
+        first_turn = {**self.TURN, "assistant_text": "La primera respuesta."}
+        second_turn = {**self.TURN, "assistant_text": "Una respuesta distinta."}
+
+        svc.record_turn("c1", first_turn, {
+            **self.MESSAGE, "response_text": first_turn["assistant_text"]})
+        svc.record_turn("c1", second_turn, {
+            **self.MESSAGE, "response_text": second_turn["assistant_text"]})
+
+        loaded = svc.load_conversation("c1")
+        assert [t["assistant_text"] for t in loaded["turns"]] == [
+            "La primera respuesta.", "Una respuesta distinta."
+        ], "a different exchange at the same n must be recorded, not swallowed"
+        assert [t["n"] for t in loaded["turns"]] == [0, 1]
+        assert len(loaded["messages"]) == 2, "two exchanges are two transcript entries"
+
+    def test_concurrent_writers_of_different_exchanges_both_survive(
+        self, tmp_path, monkeypatch
+    ):
+        """The same race with different content must lose nothing.
+
+        This is the case a deferred transaction gets wrong. The loser's retry
+        check and its "is this ``n`` taken" check both read a state the winner
+        has not committed yet, so it picks ``n=0`` again and its INSERT is
+        rejected by UNIQUE(conversation_id, n) -- the exchange the candidate
+        just heard aloud is dropped, which is the blocker this class exists for.
+        """
+        writers = self._two_racing_writers(tmp_path, "race-diff.db", monkeypatch)
+        answers = ["La primera respuesta.", "Una respuesta distinta."]
+        payloads = [
+            ({**self.TURN, "assistant_text": answer},
+             {**self.MESSAGE, "response_text": answer})
+            for answer in answers
+        ]
+
+        reported = self._race(writers, payloads)
+
+        loaded = writers[0].load_conversation("c1")
+        assert sorted(t["assistant_text"] for t in loaded["turns"]) == sorted(answers), (
+            f"a racing writer's exchange was dropped instead of re-derived: "
+            f"{[t['assistant_text'] for t in loaded['turns']]}"
+        )
+        assert sorted({t["n"] for t in loaded["turns"]}) == [0, 1], (
+            "the two exchanges must occupy distinct turn numbers"
+        )
+        assert len(loaded["messages"]) == 2
+        assert all(r is not None for r in reported), (
+            f"both writers recorded a new exchange and both must say so: {reported!r}"
+        )
+
+    def test_a_retry_does_not_push_a_duplicate_n_into_memory(self, tmp_path):
+        """Memory must not gain a second copy of a turn number already held.
+
+        ``persist_turn`` appends whatever the write reports. A retry that
+        reports the turn it found would put the same ``n`` in ``turns`` twice;
+        ``build_turn`` then derives the next ``n`` from ``len(turns)``, which has
+        silently drifted from the store's ``MAX(n)`` and never recovers.
+        """
+        import asyncio as _asyncio
+
+        import backend.main as main_mod
+        from backend.conversation import persist_turn
+
+        svc = _make_service(tmp_path, name="memory.db")
+        cid = "retry-memory"
+        main_mod.conversations[cid] = {
+            "id": cid, "messages": [], "turns": [], "summary": "",
+            "created_at": "", "last_activity_at": "",
+        }
+        original = main_mod.persistence
+        main_mod.persistence = svc
+        try:
+            first = _asyncio.run(
+                persist_turn(cid, dict(self.TURN), dict(self.MESSAGE))
+            )
+            retry = _asyncio.run(
+                persist_turn(cid, dict(self.TURN), dict(self.MESSAGE))
+            )
+            state = main_mod.conversations[cid]
+        finally:
+            main_mod.persistence = original
+            main_mod.conversations.pop(cid, None)
+
+        assert first is not None and first["n"] == 0
+        assert retry is None, (
+            "a retry must report that it stored nothing, so nothing is appended"
+        )
+        assert [t["n"] for t in state["turns"]] == [0], (
+            f"memory holds {state['turns']!r}; a retried turn number was "
+            "appended a second time"
+        )
+        assert len(state["messages"]) == 1, (
+            f"memory holds {len(state['messages'])} transcript entries for one "
+            "exchange"
+        )
+        assert svc.load_conversation(cid)["turns"][0]["n"] == 0
 
 
 class TestEvictAndReports:
@@ -365,7 +622,11 @@ class TestFailureIsolation:
     def test_execute_failure_logs_warning_returns_sentinel(self, tmp_path, monkeypatch, caplog):
         svc = _make_service(tmp_path)
 
-        def _dead_connect():
+        def _dead_connect(*args, **kwargs):
+            # ``*args, **kwargs`` because this replaces a method: the
+            # replacement has to accept whatever the caller passes, or the test
+            # passes on a TypeError from the stub instead of on the dead store
+            # it is pretending to model.
             raise RuntimeError("disk dead")
 
         monkeypatch.setattr(svc, "_connect", _dead_connect)
@@ -493,7 +754,9 @@ class TestPruneConversations:
         """If execute raises, prune_conversations returns 0 and never propagates."""
         svc = _make_service(tmp_path)
 
-        def _dead_connect():
+        def _dead_connect(*args, **kwargs):
+            # ``*args, **kwargs`` because this replaces a method: see the note
+            # in ``test_record_turn_reports_none_and_warns_on_failure``.
             raise RuntimeError("database locked")
 
         monkeypatch.setattr(svc, "_connect", _dead_connect)
