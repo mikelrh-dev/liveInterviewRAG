@@ -3,6 +3,11 @@ name = "interviewtts"
 version = "0.1.0"
 description = "AI-powered voice interview digital twin"
 requires-python = ">=3.10"
+# MUST stay identical to backend/requirements.txt, entry for entry. Two
+# manifests describing one install drift silently and for free: they already
+# had (python-dotenv was missing here entirely, httpx sat at two different
+# floors). tests/test_packaging.py::TestManifestsDoNotDrift fails on any
+# difference in distribution set, version floor or extras.
 dependencies = [
     "fastapi>=0.104.0",
     "uvicorn[standard]>=0.24.0",
@@ -12,13 +17,28 @@ dependencies = [
     "pydub>=0.25.1",
     "numpy>=1.24.0",
     "python-multipart>=0.0.6",
+    "httpx>=0.28.0",
+    "python-dotenv>=1.0.0",
+    # Imported directly by backend/, previously declared nowhere. Each floor is
+    # the exact floor an already-mandatory dependency imposes. See
+    # backend/requirements.txt for the per-dependency reasoning.
+    "pyyaml>=6.0",        # backend/services/rag.py:14
+    "scikit-learn>=1.1.0",  # backend/services/rag.py:421, TF-IDF fallback
+    "starlette>=0.46.0",  # backend/middleware.py:13
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=7.4.0",
     "pytest-asyncio>=0.21.0",
-    "httpx>=0.25.0",
+    # Aligned with the runtime floor above, which was already the stricter of
+    # the two. Tests exercise the real httpx-backed TestClient, so a dev
+    # environment resolved to 0.25.x would be running an httpx the app itself
+    # has already declared it does not support.
+    "httpx>=0.28.0",
+    # tomllib is stdlib from 3.11. tests/test_packaging.py reads this file, and
+    # this project supports 3.10, where it needs a backport.
+    "tomli>=2.0.0; python_version < '3.11'",
 ]
 
 [tool.pytest.ini_options]

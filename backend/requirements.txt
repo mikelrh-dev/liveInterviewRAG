@@ -8,3 +8,26 @@ numpy>=1.24.0
 python-multipart>=0.0.6
 httpx>=0.28.0
 python-dotenv>=1.0.0
+
+# Imported directly, and previously declared nowhere. All three were installed
+# anyway as unconditional transitives, which is why the omission was invisible
+# rather than absent. Each floor below is the exact floor an already-mandatory
+# dependency imposes, so declaring them adds no new constraint on the resolver.
+# tests/test_packaging.py fails if any of this stops being true.
+
+# backend/services/rag.py:14 (module level). ctranslate2 (via faster-whisper)
+# pins pyyaml<7,>=5.3; transformers and huggingface_hub pin >=5.1. 6.0 is the
+# converged 6.x baseline and the floor openspec/changes/wiki-pipeline already
+# proposed in design.md item 6.2.
+pyyaml>=6.0
+
+# backend/services/rag.py:421, the TF-IDF fallback in RAGPipeline.initialize().
+# sentence-transformers requires scikit-learn>=1.1.0 unconditionally, so the
+# package is installed on every machine that can run the primary path. The
+# fallback itself is live, not dead weight -- see the tests in
+# tests/test_packaging.py::TestTfidfFallbackIsLiveCode.
+scikit-learn>=1.1.0
+
+# backend/middleware.py:13 (module level), plus three test modules. fastapi
+# pins starlette>=0.46.0, so this is also a no-op on the resolver.
+starlette>=0.46.0
