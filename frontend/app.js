@@ -2248,32 +2248,66 @@ function closeContextPanel() {
 async function fetchContext(turnNumber) {
     if (!conversationId || turnNumber < 0) return;
 
+    let chunks;
     try {
         const res = await fetch(
             `${API_BASE}/api/conversation/${conversationId}/context?turn=${turnNumber}`,
         );
         if (!res.ok) {
-            // Context endpoint fails silently — hide panel, no error
+            // Say what is true. The comment this replaces said "hide panel" and
+            // the code hid nothing: it returned, leaving `#context-content` with
+            // whatever `renderContext` wrote for the PREVIOUS turn. So a 404 --
+            // which is what a turn number the server does not have produces --
+            // left turn N-1's passages on screen inside a panel that now belongs
+            // to turn N.
+            //
+            // That is the worst failure this panel is capable of. The passages
+            // look authoritative, they are attributed to the current answer, and
+            // they are wrong: a recruiter reads them as this answer's provenance.
+            // Nothing on the page says otherwise.
+            renderContextUnavailable();
             return;
         }
 
-        const chunks = await res.json();
-        renderContext(chunks);
-
-        // Deliberately no timer here.
-        //
-        // This used to `setTimeout(..., 5000)` and then remove the `open` class,
-        // which made the panel a toast: a recruiter could not re-read turn 2's
-        // evidence once turn 3 landed, and the pending handle was never stored,
-        // so it could also slam a panel the user had opened by hand. No interval
-        // is long enough to stop that -- the failure is not the length, it is
-        // the panel moving without the user. Evidence is replaced in place in a
-        // rail that stays exactly where they put it; on a phone the overlay is
-        // opened by the user, when they want it.
+        chunks = await res.json();
     } catch (e) {
-        // Silently fail — interview unaffected
+        // The other way to fail, and the likelier one. It warned and left the
+        // panel exactly as it was, which is the same stale attribution.
         console.warn("Context fetch failed:", e.message);
+        renderContextUnavailable();
+        return;
     }
+
+    renderContext(chunks);
+
+    // Deliberately no timer here.
+    //
+    // This used to `setTimeout(..., 5000)` and then remove the `open` class,
+    // which made the panel a toast: a recruiter could not re-read turn 2's
+    // evidence once turn 3 landed, and the pending handle was never stored,
+    // so it could also slam a panel the user had opened by hand. No interval
+    // is long enough to stop that -- the failure is not the length, it is
+    // the panel moving without the user. Evidence is replaced in place in a
+    // rail that stays exactly where they put it; on a phone the overlay is
+    // opened by the user, when they want it.
+}
+
+/**
+ * The evidence for this turn could not be retrieved.
+ *
+ * Deliberately worded differently from `renderContext`'s empty case, because
+ * they are different facts. An empty list is the retriever's answer: it looked
+ * and found nothing. A failed request means we never found out. They share the
+ * `context-empty` class so the panel reads as empty either way, but a reader
+ * must not be able to conclude "nothing was retrieved" from a request that was
+ * never served.
+ *
+ * It also never leaves the previous turn's passages in place. Clearing the panel
+ * is the load-bearing half; the wording is what keeps the emptiness honest.
+ */
+function renderContextUnavailable() {
+    contextContent.innerHTML =
+        '<p class="context-empty context-unavailable">No se pudo recuperar el contexto de esta respuesta</p>';
 }
 
 function renderContext(chunks) {
