@@ -487,17 +487,114 @@ function initDisclaimer() {
         return;
     }
 
-    // Not accepted yet: gate the mic and show the overlay.
-    btnMic.disabled = true;
-    disclaimerOverlay.classList.remove("hidden");
+    showDisclaimerGate();
     disclaimerAccept.addEventListener("click", () => {
         try {
             localStorage.setItem(DISCLAIMER_KEY, "1");
         } catch (e) {
             // Persist best-effort; still unlock in-session.
         }
-        disclaimerOverlay.classList.add("hidden");
-        btnMic.disabled = false;
+        hideDisclaimerGate();
+    });
+}
+
+/**
+ * Everything in the page that the dialog stands in front of.
+ *
+ * Derived from the body's children rather than named, so a region added to the
+ * page later is covered by the gate without anyone remembering to add it here.
+ * A hard-coded list is how "the dialog is modal" quietly stops being true after
+ * an unrelated markup change.
+ */
+function modalBackgroundRegions() {
+    return Array.from(document.body.children).filter(
+        (el) => el !== disclaimerOverlay,
+    );
+}
+
+/**
+ * Show the disclaimer gate, and make the page behind it genuinely unavailable.
+ *
+ * The card carries `role="dialog" aria-modal="true"`, and until now neither
+ * claim was true. Nothing took focus, so a keyboard user's first Tab after load
+ * landed wherever the document happened to be. Nothing trapped it, so they could
+ * Tab straight out of a dialog that had promised they could not. And nothing
+ * was inert, so END, Contexto, the transcript and the close button all stayed
+ * in the tab order behind a modal.
+ *
+ * That matters more than usual here: the interview cannot be started until the
+ * gate is acknowledged, so the page behind it is not merely distracting, it is
+ * the part of the application the user is being asked to read first. A dialog
+ * that says "modal" and is not is worse than one that says nothing, because it
+ * spends the user's trust on the claim.
+ *
+ * Three things, and all three are needed: focus moves in, Tab cannot leave, and
+ * the rest of the page is inert.
+ */
+function showDisclaimerGate() {
+    // Not accepted yet: gate the mic and show the overlay.
+    btnMic.disabled = true;
+    disclaimerOverlay.classList.remove("hidden");
+    for (const region of modalBackgroundRegions()) {
+        region.setAttribute("inert", "");
+    }
+    disclaimerAccept.focus();
+    trapFocusInDisclaimer();
+}
+
+/**
+ * Take the gate down and give the page back.
+ *
+ * `inert` is removed, not just the class: a page left inert behind a dismissed
+ * dialog is a page the user can see and cannot touch.
+ */
+function hideDisclaimerGate() {
+    disclaimerOverlay.classList.add("hidden");
+    for (const region of modalBackgroundRegions()) {
+        region.removeAttribute("inert");
+    }
+    btnMic.disabled = false;
+}
+
+/**
+ * Keep Tab inside the gate while it is open.
+ *
+ * The check is on the overlay being visible rather than on a flag, so the trap
+ * cannot outlive the dialog: close the gate and the handler becomes a no-op
+ * without anything having to remember to unregister it. A trap that keeps
+ * running after the dialog is gone holds focus on a control the user can no
+ * longer see.
+ */
+function trapFocusInDisclaimer() {
+    document.addEventListener("keydown", (e) => {
+        if (e.key !== "Tab") return;
+        if (disclaimerOverlay.classList.contains("hidden")) return;
+
+        const focusable = Array.from(
+            disclaimerOverlay.querySelectorAll(
+                "button, [href], input, select, textarea, [tabindex]:not([tabindex='-1'])",
+            ),
+        ).filter((el) => !el.disabled);
+        if (!focusable.length) return;
+
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        const active = document.activeElement;
+
+        // Focus that is not in the dialog -- after any markup change, or after
+        // the browser moved it -- comes straight back in.
+        if (!disclaimerOverlay.contains(active)) {
+            e.preventDefault();
+            first.focus();
+            return;
+        }
+        if (e.shiftKey && active === first) {
+            e.preventDefault();
+            last.focus();
+        } else if (!e.shiftKey && active === last) {
+            e.preventDefault();
+            first.focus();
+        }
     });
 }
 

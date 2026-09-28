@@ -88,6 +88,12 @@ export function baseState(overrides = {}) {
         // has in index.html: the API is served from the same origin, so every
         // path is relative.
         API_BASE: "",
+        // app.js's other module constant, read by initDisclaimer. Without it
+        // the localStorage lookup throws a ReferenceError that the function's
+        // own try/catch swallows as "not acknowledged" -- so every test would
+        // see a first-time visitor and the returning-visitor path would be
+        // untestable.
+        DISCLAIMER_KEY: "interviewtts.disclaimerAccepted",
         conversationId: null,
         mediaRecorder: null,
         audioChunks: [],
