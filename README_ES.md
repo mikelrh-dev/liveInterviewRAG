@@ -208,17 +208,26 @@ Más allá de la técnica, este proyecto también me enseñó a tomar decisiones
 ### Instalación
 
 ```bash
-git clone <repo-url>
-cd InterviewTTS
+git clone https://github.com/mikelrh-dev/liveInterviewRAG.git
+cd liveInterviewRAG
 
 python -m venv venv
 source venv/bin/activate  # Linux/Mac
 # o
 venv\Scripts\activate  # Windows
 
-pip install -r backend/requirements.txt
-pip install pytest pytest-asyncio httpx  # para desarrollo
+# Dependencias de runtime Y el runner de tests en un solo paso, desde el
+# manifiesto del proyecto. Esto es lo que hace CI (tests.yml:174);
+# `pip install -r backend/requirements.txt` por su cuenta te da el runtime
+# pero no pytest, y `pyproject.toml` declara los dos manifiestos como un
+# contrato que un test (tests/test_packaging.py::TestManifestsDoNotDrift)
+# mantiene sin que se desvíen.
+pip install -e ".[dev]"
 ```
+
+El directorio del clone se llama como el repositorio (`liveInterviewRAG`), no como
+este archivo. Vale cualquier nombre: la configuración ancla `BASE_DIR` al directorio
+padre del paquete `backend`, no a un nombre de directorio fijo.
 
 ### Configuración
 
