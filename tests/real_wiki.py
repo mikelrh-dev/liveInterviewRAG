@@ -47,6 +47,34 @@ unpunctuated and with unreliable accents. "An accurate Spanish question" would
 be measuring a distribution this pipeline never sees.
 
 It is deliberately NOT named ``test_*.py``: it contains no tests.
+
+WHICH MODEL PRODUCED THESE FLOORS, AND WHEN
+------------------------------------------
+The floors in this module are a FROZEN HISTORICAL MEASUREMENT, not a value
+recomputed from whatever run is happening now. Re-deriving them from the current
+run would make the guard agree with itself by construction, which is the exact
+defeat of a floor. What may change is the NUMBER, and only when the measurement
+it records has genuinely been re-run; the FORMULA that turns a measurement into
+a floor is pinned by
+``tests/test_rag.py::test_the_floor_is_a_function_of_the_measurement_not_a_literal``
+and must not be touched.
+
+There have been two such re-measurements, and both are recorded here so a reader
+never has to guess which vector space a number belongs to:
+
+  * 2026-08-28, ``all-MiniLM-L6-v2`` (English), no identity prefix, no per-page
+    cut. recall@3 32/49 = 0.6531 full, 27/41 = 0.6585 reduced; floors 0.6122 and
+    0.6098. The 0.6531 figure is the one quoted across this repository's own
+    audit trail; it describes a configuration that no longer ships.
+  * 2026-09-29, ``paraphrase-multilingual-MiniLM-L12-v2`` (multilingual), the
+    page-identity prefix on the embedded text, the one-chunk-per-page top-k cut
+    and the bodyless-heading filter. recall@3 40/49 = 0.8163 full, 34/41 =
+    0.8293 reduced; floors 0.7755 and 0.7805. THESE are the floors the guard
+    enforces now.
+
+Both populations were measured through the production path -- the real loader,
+the real 400/50 chunker, real embeddings, real ``expand_query``, strict
+primary-gold-page matching at ``top_k=3``.
 """
 
 from __future__ import annotations
@@ -68,7 +96,13 @@ CHUNK_OVERLAP = 50
 
 #: The embedding model the production pipeline loads by default. A floor
 #: measured with a different vector space is a different measurement.
-EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+#:
+#: ``paraphrase-multilingual-MiniLM-L12-v2``, which is what ``backend/config.py``
+#: and ``RAGPipeline.__init__`` both default to. It replaced the English
+#: ``all-MiniLM-L6-v2`` on 2026-09-29; every floor below was re-measured under it
+#: and none of them survived the change unaltered, which is the point of
+#: recording the model in the module that asserts the floor.
+EMBEDDING_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
 
 
 # ── Loading ──────────────────────────────────────────────────────────────────
@@ -323,10 +357,16 @@ class Measurement:
 
 #: The full population: every one of the 49 labelled gold pages is served. This
 #: is the author's working tree, where four FAQ pages exist on disk.
+#:
+#: MEASURED 2026-09-29 with ``paraphrase-multilingual-MiniLM-L12-v2``, the
+#: identity-prefixed chunk text and the one-chunk-per-page top-k cut: 40 of 49.
+#: The same configuration measured 32 of 49 (0.6531) under the previous
+#: ``all-MiniLM-L6-v2`` with no prefix and no cut, so the floors in this module
+#: are not comparable across that model change and never were meant to be.
 MEASURED_FULL = Measurement(
     name="full",
     questions=len(LABELLED_CASES),
-    hits=32,
+    hits=40,
     corpus="wiki/ as it is on the author's machine -- 37 loaded pages",
 )
 
@@ -336,13 +376,13 @@ MEASURED_FULL = Measurement(
 #:
 #: It is a SEPARATE measurement with its own floor rather than the 49-question
 #: floor applied to 41 questions, which is the exact mistake this module exists
-#: to stop. The two floors land within 0.003 of each other (0.6122 against
-#: 0.6098), which is the sanity check: the reduced population is not a weaker
+#: to stop. The two floors land within 0.005 of each other (0.7755 against
+#: 0.7805), which is the sanity check: the reduced population is not a weaker
 #: instrument, it is a different one, and it happens to agree.
 MEASURED_REDUCED = Measurement(
     name="reduced",
     questions=41,
-    hits=27,
+    hits=34,
     corpus="wiki/ as actions/checkout produces it -- 33 loaded pages, 4 untracked "
            "FAQ pages absent",
 )
@@ -410,7 +450,12 @@ def guard_blocker(documents: Dict[str, str] | None = None) -> str | None:
 
 
 #: The commit that set these floors, for the reader who wants to diff against it.
-FLOOR_SET_BY = "this commit; see the message for the old value and the measurement"
+#: The floors above were last re-measured on 2026-09-29, together with the
+#: multilingual embedder that produced them; the previous pair (32/49 and 27/41,
+#: floors 0.6122 and 0.6098) was measured with ``all-MiniLM-L6-v2``, no identity
+#: prefix and no per-page cut, and belongs to a vector space that no longer
+#: ships.
+FLOOR_SET_BY = "2026-09-29, under paraphrase-multilingual-MiniLM-L12-v2"
 
 FLOOR_CHUNKER = f"chunk_size={CHUNK_SIZE} chunk_overlap={CHUNK_OVERLAP}"
 FLOOR_EMBEDDER = EMBEDDING_MODEL

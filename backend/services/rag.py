@@ -107,7 +107,28 @@ def canonical_doc_type(value: Optional[str]) -> str:
 # still contains all 34 bare H1 titles and all 42 wikilink sections and must be
 # rejected rather than served. Proven by
 # ``TestChunkFilterVersionGuardsTheStaleCache``.
-CHUNK_FILTER_VERSION = "3"
+#
+# "4": the text embedded per chunk is now the page identity (H1, summary,
+# section) followed by the body, where it was the bare body. This is the one
+# version bump that changes NO chunk and NO field: the chunk set, the contents
+# and the corpus hash are all byte-identical to version "3", and the vectors
+# are still simply wrong for the retriever now shipping — they are cosine
+# distances measured against a sentence that never mentioned which page it was
+# from. A cache whose metadata says version "3" is therefore a cache of
+# pre-identity vectors wearing a post-identity label, and it has to be
+# rejected. Without this bump the model change below would be enough to
+# invalidate the cache on a developer machine and nothing at all on a machine
+# that had already run the multilingual model once, which is the worst of both.
+#
+# "5": a heading section with no body under it is no longer emitted (see
+# ``is_bare_heading``). Unlike "4" this one DOES change the chunk set — the real
+# corpus loses ``## Alternativas consideradas`` from
+# ``decisions/fraud-detector-3-layer-architecture.md`` — from UNCHANGED document
+# text, which is exactly the case the version exists to catch: the document hash
+# is computed over the raw wiki and cannot see it. Without this bump a version
+# "4" cache keeps serving a bodyless heading as the top-1 context for 3 of the
+# 49 labelled questions.
+CHUNK_FILTER_VERSION = "5"
 
 # ``[TODO ...]`` and friends. Tolerates the real spellings seen in wiki/:
 # ``[TODO: ask Mikel]``, ``[TODO]``, ``[TODO — fill in]``.
@@ -148,6 +169,33 @@ _HEADING_RE = re.compile(r"^#{1,6}\s")
 _SECTION_SPLIT_RE = re.compile(r"\n(?=#{1,3}\s)")
 # A section that is nothing but the document's own H1 title.
 _H1_ONLY_RE = re.compile(r"^#\s+\S")
+# The title text of an H1 line. Level-1 only, so an H2 or H3 cannot be mistaken
+# for the page's name.
+_H1_TITLE_RE = re.compile(r"^#\s+(.+)$")
+
+
+def document_h1(body: str) -> str:
+    """The document's own H1 title, or ``""`` when the body does not open with one.
+
+    "Own" means the same thing here that it means in ``split_sections``: the
+    first thing the body says. A *later* H1 is a genuine top-level section
+    boundary, not the page's identity, and reading one as the title would stamp
+    every chunk on the page with a heading from the middle of it.
+
+    The distinction is not cosmetic. ``split_sections`` re-attaches the leading
+    H1 to the section that follows it, so the H1 is inside the content of
+    exactly ONE of a page's chunks — for a two-chunk page, one chunk carries
+    the title and the other has never seen it. Every chunk therefore records
+    the title for itself, and it is that field, not ``content``, that reaches
+    the vector (see ``embedding_text``).
+    """
+    for line in body.split("\n"):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        match = _H1_TITLE_RE.match(stripped)
+        return match.group(1).strip() if match else ""
+    return ""
 
 
 def split_sections(content: str) -> List[str]:
@@ -230,6 +278,40 @@ def is_wikilink_reference(section: str) -> bool:
     if not body:
         return bool(heading_match) and heading_match.group(1).strip().lower() in REFERENCE_HEADINGS
     return all(_WIKILINK_LINE_RE.match(line) for line in body)
+
+
+def is_bare_heading(section: str) -> bool:
+    """True when a section is a heading and nothing else -- a title with no body.
+
+    This is the other way a section can state no answer at all, and it is not
+    caught by ``is_wikilink_reference``, which only recognises a heading whose
+    body is links. A heading with no body at all cannot be an answer either.
+
+    It is produced by the split, not by the author: ``split_sections`` cuts on
+    every H1-H3, so a heading immediately followed by a deeper heading becomes
+    its own empty section. The real corpus has exactly one --
+    ``## Alternativas consideradas`` in
+    ``decisions/fraud-detector-3-layer-architecture.md``, whose H3 children
+    follow on the next line. The author wrote no such empty heading.
+
+    Dropping it is lossless for a structural reason rather than a judgemental
+    one: the section holds no characters of content to lose, and the H3
+    subsections that were under it are separate sections either way.
+
+    WHY IT NEEDED A FIX RATHER THAN A NOTE
+    --------------------------------------
+    It was harmless while an English embedder ranked it low, and stopped being
+    harmless the moment one did not: with the multilingual model and the
+    identity prefix, ``## Alternativas consideradas`` became the TOP-1 context
+    for 3 of the 49 labelled questions, all of them fraud-detector questions.
+    The LLM's first piece of evidence for "que es el detector de fraude" was the
+    word "Alternativas". That is the exact failure
+    ``TestTheTopChunkCarriesAnAnswerNotJustATitle`` exists to catch, and the
+    model change is what made it reachable -- so the chunker is fixed and the
+    test is left alone.
+    """
+    lines = [l for l in section.split("\n") if l.strip()]
+    return len(lines) == 1 and bool(_HEADING_LINE_RE.match(lines[0]))
 
 
 def strip_placeholders(text: str) -> Tuple[str, int]:
@@ -337,6 +419,12 @@ def detect_doc_type(query: str) -> Optional[str]:
     guess fixes 2 questions and breaks 6. The numbers, the command and the
     per-question list are in ``_retrieve_for_context``'s docstring.
 
+    Those figures were taken with the previous English embedder, which is what
+    the pipeline shipped when the guess was removed. They are kept because they
+    are the measurement the decision rests on, and they are labelled here so
+    nobody reads them as what the code produces today; the current
+    configuration's numbers are in the floors of ``tests/real_wiki.py``.
+
     So the table is still data worth keeping — it is what a caller with a real
     type would match against, and ``TestDocTypeFilterCoverage`` proves every
     canonical type the corpus carries is reachable through it. What is not
@@ -410,7 +498,54 @@ class Chunk:
     type: str = ""
     tags: List[str] = field(default_factory=list)
     summary: str = ""
+    #: The page's own H1 (``document_h1``). Carried on every chunk of the page
+    #: because ``content`` only contains it on the first one.
+    h1: str = ""
     embedding: Optional[np.ndarray] = field(default=None, repr=False)
+
+
+def embedding_text(chunk: Chunk) -> str:
+    """The string actually embedded for ``chunk`` — the identity prefix, then the body.
+
+    WHY THE PREFIX EXISTS
+    ---------------------
+    The body alone does not say which page it is from. ``summary`` is filled in
+    (``_chunk_document``), printed in the context the LLM reads
+    (``_format_context_string``) and written to the embedding cache — and never
+    reached the vector, so half of the retrieval signal never left the page.
+
+    The token that separates one FAQ from its twelve siblings lives in the H1,
+    and the H1 is inside the content of exactly one of a page's chunks
+    (``document_h1``). It attacks the dominant failure class of this corpus:
+    of the 17 misses the original configuration produced, 11 were ranking
+    misses with the gold page at rank 4-15, which is a question of not knowing
+    what page this is.
+
+    The order ``h1, summary, section`` is measured, not assumed: the
+    alternatives were run over the same 49 labelled questions and the same
+    corpus, and the comparison is re-measured by
+    ``tests/test_rag.py::TestTheEmbeddedTextCarriesThePageIdentity`` rather
+    than restated, because a prefix order is a retrieval decision and not a
+    formatting preference.
+
+    Duplicate parts are dropped rather than repeated: for the first chunk of a
+    page ``section`` IS the H1 (``split_sections`` merges the two), and a
+    title repeated in the same sentence is noise the embedder has to spend
+    capacity on. Empty parts are dropped for the same reason, and a chunk with
+    no identity at all embeds its bare content exactly as before.
+    """
+    parts: List[str] = []
+    seen: set = set()
+    for candidate in (chunk.h1, chunk.summary, chunk.section):
+        value = candidate.strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        parts.append(value)
+    if not parts:
+        return chunk.content
+    return f"{'. '.join(parts)}. {chunk.content}"
+
 
 
 class RAGPipeline:
@@ -420,32 +555,62 @@ class RAGPipeline:
     #: below, because a different ceiling is a different vector space.
     TFIDF_MAX_FEATURES = 384
 
-    def __init__(self, chunk_size: int = 400, chunk_overlap: int = 50, threshold: float = 0.3,
-                 cache_dir: Optional[Path] = None, embedding_model: str = "all-MiniLM-L6-v2"):
+    def __init__(self, chunk_size: int = 400, chunk_overlap: int = 50, threshold: float = 0.25,
+                 cache_dir: Optional[Path] = None,
+                 embedding_model: str = "paraphrase-multilingual-MiniLM-L12-v2"):
+        """``embedding_model``'s default is the model the app ships, and it is
+        kept here rather than read from ``backend.config`` so the service stays
+        free of a module-level global: the pipeline is constructed with whatever
+        it is told to use, and the configuration layer decides what that is.
+
+        It is spelled out a second time in ``config.py`` on purpose, and the two
+        copies are checked against each other by
+        ``tests/test_rag_cache_identity.py::TestTheModelNameIsASingleSourceOfTruth``
+        -- a duplicated literal that a test keeps in agreement is a contract,
+        where a duplicated literal that nothing checks is a future incident.
+        """
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         # Minimum cosine a chunk needs to be returned at all.
         #
         # MEASURED on the corpus this repository's tests actually load --
         # the real ``wiki/`` (125 chunks at 400/50), the 49 labelled questions
-        # in ``tests/real_wiki.py``, real all-MiniLM-L6-v2, real
-        # ``expand_query``. The guard that holds this number is
+        # in ``tests/real_wiki.py``, real ``expand_query``. The guard that
+        # holds this number is
         # ``tests/test_rag.py::TestRetrievalThresholdIsHonest``; read it before
         # changing this value, and re-derive its floors rather than adjusting
         # them. A floor that keeps its value while its corpus changes is not a
         # floor.
         #
-        # It is not inert. Over the 49 x 125 (question, chunk) matrix the 0.30
-        # default discards a large share of the candidate pool, and because the
-        # filter runs BEFORE the ``top_k`` slice it changes what a caller
-        # receives whenever fewer than ``top_k`` chunks clear it. The earlier
-        # claim that "the lowest top-1 cosine is 0.414, so the filter never
-        # removes anything" was an inference from the best chunk per question,
-        # not a measurement of the filter: 0.414 is a top-1 statistic, and the
-        # minimum over the whole matrix is far below it.
+        # It is not inert. Over the 49 x 125 (question, chunk) matrix this
+        # default discards a sixth of the candidate pool, and because the filter
+        # runs BEFORE the ``top_k`` slice it changes what a caller receives
+        # whenever fewer than ``top_k`` chunks clear it. The earlier claim that
+        # "the lowest top-1 cosine is 0.414, so the filter never removes
+        # anything" was an inference from the best chunk per question, not a
+        # measurement of the filter: 0.414 is a top-1 statistic, and the minimum
+        # over the whole matrix is far below it.
         #
-        # 0.30 stays because it is the measured setting, and every floor is
-        # re-derived from the corpus rather than trusted.
+        # 0.25 is the RE-MEASURED default, not the inherited one. The previous
+        # 0.30 was calibrated against the English embedder, and a cosine scale
+        # is a property of the vector space, so it does not survive a change of
+        # model. Re-swept on the current one (multilingual model, identity
+        # prefix, page-dedup), over 0.20-0.35 in steps of 0.01:
+        #
+        #   threshold  questions whose top-3 changed vs no filter  min survivors
+        #   0.20-0.28   0                                                     3
+        #   0.29        1                                                     2
+        #   0.30        2                                                     2
+        #   0.35        9                                                     0
+        #
+        # 0.30 sat exactly on the cliff: the third-best score of "cuentame lo de
+        # la huelga de camiones en mercadona" is 0.2861 and of "cual es tu nivel
+        # de ingles" is 0.2980, so the old default could not serve a full top-3
+        # to either of them. 0.25 is chosen over the highest passing value
+        # (0.28) because 0.28 clears the thinnest question by 0.006 while 0.25
+        # clears it by 0.036, and a default one question's noise away from
+        # starvation is not a default, it is a coincidence. The filter is still
+        # substantially live at 0.25: 956 of 6125 pairs, 15.6%.
         self.threshold = threshold
         self.chunks: List[Chunk] = []
         self._embedder = None
@@ -571,6 +736,7 @@ class RAGPipeline:
             sections = np.array([c.section for c in chunks], dtype=object)
             types = np.array([c.type for c in chunks], dtype=object)
             summaries = np.array([c.summary for c in chunks], dtype=object)
+            h1s = np.array([c.h1 for c in chunks], dtype=object)
             # Tags are variable-length; store as JSON strings
             tags_json = np.array([json.dumps(c.tags) for c in chunks], dtype=object)
             embeddings = np.stack([c.embedding for c in chunks]) if chunks else np.empty((0, 0), dtype=np.float32)
@@ -579,7 +745,7 @@ class RAGPipeline:
             np.savez_compressed(
                 npz_path,
                 ids=ids, contents=contents, sources=sources,
-                sections=sections, types=types, summaries=summaries,
+                sections=sections, types=types, summaries=summaries, h1s=h1s,
                 tags_json=tags_json, embeddings=embeddings,
             )
 
@@ -684,6 +850,7 @@ class RAGPipeline:
             sections = data["sections"]
             types = data["types"]
             summaries = data["summaries"]
+            h1s = data["h1s"]
             tags_json = data["tags_json"]
             embeddings = data["embeddings"]
 
@@ -702,6 +869,7 @@ class RAGPipeline:
                     type=str(types[i]),
                     tags=json.loads(str(tags_json[i])),
                     summary=str(summaries[i]),
+                    h1=str(h1s[i]),
                     embedding=embeddings[i],
                 ))
 
@@ -800,6 +968,11 @@ class RAGPipeline:
 
         chunks = []
 
+        # The page's own title, read BEFORE the split, because the split merges
+        # it into the first section and no later chunk would carry it. Recorded
+        # on every chunk (see ``document_h1`` and ``embedding_text``).
+        h1 = document_h1(content)
+
         # Split by headings, keeping the document's own H1 with the body it
         # titles (an orphaned title is a chunk with no answer in it).
         sections = split_sections(content)
@@ -809,11 +982,22 @@ class RAGPipeline:
         # ``is_wikilink_reference``): each one names a document that is indexed
         # on its own, so nothing is lost and a top-k slot stops being spent on
         # text that cannot answer anything.
+        #
+        # A heading with no body at all is dropped for the same reason and by
+        # the same rule, extended: it holds no answer either (see
+        # ``is_bare_heading``). Both predicates are asked in the same loop
+        # because they are the same defect -- a section that states nothing --
+        # arriving by two different routes.
         kept_sections = []
         dropped = 0
+        dropped_empty = 0
         for section in sections:
-            if is_wikilink_reference(section.strip()):
+            stripped = section.strip()
+            if is_wikilink_reference(stripped):
                 dropped += 1
+                continue
+            if is_bare_heading(stripped):
+                dropped_empty += 1
                 continue
             kept_sections.append(section)
         if dropped:
@@ -821,6 +1005,12 @@ class RAGPipeline:
                 "Dropped %d wikilink-only reference section(s) from %s — they "
                 "list links to other pages and hold no answer. Filter version %s.",
                 dropped, filename, CHUNK_FILTER_VERSION,
+            )
+        if dropped_empty:
+            logger.info(
+                "Dropped %d bodyless heading section(s) from %s — a heading with "
+                "no body under it cannot answer anything. Filter version %s.",
+                dropped_empty, filename, CHUNK_FILTER_VERSION,
             )
 
         chunk_id = 0
@@ -843,6 +1033,7 @@ class RAGPipeline:
                     type=doc_type,
                     tags=tags,
                     summary=summary,
+                    h1=h1,
                 ))
                 chunk_id += 1
             else:
@@ -860,6 +1051,7 @@ class RAGPipeline:
                         type=doc_type,
                         tags=tags,
                         summary=summary,
+                        h1=h1,
                     ))
                     chunk_id += 1
                     start += self.chunk_size - self.chunk_overlap
@@ -867,8 +1059,14 @@ class RAGPipeline:
         return chunks
 
     def _compute_embeddings(self) -> None:
-        """Compute embeddings for all chunks."""
-        texts = [c.content for c in self.chunks]
+        """Compute embeddings for all chunks.
+
+        The text embedded per chunk is ``embedding_text(chunk)`` — the page
+        identity followed by the body — and NOT ``chunk.content`` on its own.
+        ``content`` is still what the LLM is shown, so the prefix buys retrieval
+        without changing a single word of the answer.
+        """
+        texts = [embedding_text(c) for c in self.chunks]
 
         if self._use_tfidf:
             logger.info("Computing TF-IDF embeddings for %d chunks", len(texts))
@@ -985,7 +1183,43 @@ class RAGPipeline:
 
         # Sort by descending score
         scores.sort(key=lambda x: x[1], reverse=True)
-        return scores[:top_k]
+        return self._one_chunk_per_page(scores, top_k)
+
+    @staticmethod
+    def _one_chunk_per_page(
+        scores: List[Tuple[Chunk, float]], top_k: int
+    ) -> List[Tuple[Chunk, float]]:
+        """Cut ``top_k`` out of score-ordered results, at most one chunk per page.
+
+        A top-k slot is a slot some OTHER page cannot occupy, and a long page
+        can spend all of them. Measured: "empezaste como frutero en mercadona
+        no" returned ``[dejar-mercadona-para-dam, lo-mas-dificil-dam,
+        dejar-mercadona-para-dam]`` — two of the three slots on the same page,
+        so the model was handed three fragments of one story and no fact.
+
+        It is a cut, not a filter. The threshold above still decides what is
+        eligible, the sort still decides the order, and the FIRST chunk of each
+        page in score order is the one that survives — so the best-matching
+        chunk of a page is never traded away for a worse one, and rank 1 cannot
+        move. Consequently this can only ADD pages to a top-k, never remove
+        one, which is why it improves recall instead of trading against it.
+
+        Fewer than ``top_k`` results is the correct outcome when the corpus
+        simply has fewer than ``top_k`` distinct pages above the threshold:
+        padding the list back to length would mean either re-admitting a page
+        this just excluded or returning something below the threshold.
+        """
+        taken: List[Tuple[Chunk, float]] = []
+        seen_sources: set = set()
+        for chunk, score in scores:
+            source = chunk.source
+            if source in seen_sources:
+                continue
+            seen_sources.add(source)
+            taken.append((chunk, score))
+            if len(taken) == top_k:
+                break
+        return taken
 
     def _retrieve_for_context(self, query: str, top_k: int) -> List[Tuple[Chunk, float]]:
         """The retrieval both context shapes are built from.
@@ -998,11 +1232,19 @@ class RAGPipeline:
         This used to pass ``doc_type=detect_doc_type(query)``. That guess is
         removed, and the measurement that removed it is on the real corpus with
         the 49 labelled questions in ``tests/real_wiki.py`` (strict recall@3,
-        top_k=3, real all-MiniLM-L6-v2, real ``expand_query``):
+        top_k=3, real ``expand_query``):
 
             guessed filter ON    0.5714     lenient 0.5918
             guessed filter OFF   0.6531     lenient 0.6531
             recall@1             0.5510 either way
+
+        Those figures predate the embedder change and are kept as the
+        measurement the decision rests on, not as a description of today's
+        numbers: they were taken with the English embedder this pipeline used
+        to ship. Re-measuring the guess against the current embedder is a
+        separate piece of work and is NOT done here — what is done is the
+        property below, which holds whatever the numbers are, and which is the
+        claim the decision actually rests on.
 
         Per question the filter FIXES 2 and BREAKS 6, so it is a net loss of four.
         It fires on 14 of the 49 questions, and on 6 of those 14 the type it

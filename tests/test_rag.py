@@ -14,7 +14,9 @@ from backend.services.rag import (
     RAGPipeline,
     canonical_doc_type,
     detect_doc_type,
+    embedding_text,
     expand_query,
+    is_bare_heading,
     parse_frontmatter,
     split_sections,
 )
@@ -2060,6 +2062,218 @@ class TestRetrievalRegressionGuard:
         assert not wasted, f"top-k slots wasted on link lists or the index: {wasted}"
 
 
+class TestTheEmbeddedTextCarriesThePageIdentity:
+    """The string that reaches the vector is the page identity, then the body.
+
+    ``backend/services/rag.py``'s ``embedding_text`` docstring names this class
+    as the thing that re-measures its prefix order rather than restating it. It
+    has to exist, or that docstring is a promise to nobody.
+
+    WHY THE IDENTITY IS IN THE VECTOR AT ALL
+    ----------------------------------------
+    ``summary`` was already filled in, already printed in the context the LLM
+    reads and already written to the cache, and never reached the vector. The
+    H1 has the same problem for a different reason: ``split_sections`` merges a
+    page's own H1 into the first section, so the title is inside the content of
+    exactly ONE of a page's chunks.
+
+    These are unit tests about the STRING, deliberately, not about recall. The
+    recall consequences are measured by the guard above and the sweep; what is
+    asserted here is the mechanism, because a mechanism that silently stops
+    being applied would leave the recall numbers unexplained.
+    """
+
+    def test_every_real_chunk_carries_its_pages_h1(self, real_wiki_pipeline):
+        """The title that separates a FAQ from its twelve siblings must be there."""
+        chunks = real_wiki_pipeline.chunks
+        missing = [
+            c.id for c in chunks
+            if not c.h1.strip()
+        ]
+        assert not missing, (
+            f"{len(missing)} of {len(chunks)} chunks carry no page H1: "
+            f"{missing[:5]}. The token that distinguishes one FAQ from its "
+            f"siblings is not reaching the vector for these."
+        )
+
+    def test_the_embedded_text_starts_with_the_identity_and_ends_with_the_body(
+        self, real_wiki_pipeline
+    ):
+        """Order and both ends. A prefix that does not lead is not a prefix."""
+        chunk = real_wiki_pipeline.chunks[0]
+        embedded = embedding_text(chunk)
+
+        assert embedded.endswith(chunk.content), (
+            "the identity prefix must PREPEND, not replace or append: the body "
+            "is what the LLM answers from and it has to be in the vector whole"
+        )
+        assert embedded != chunk.content, (
+            f"{chunk.id} embeds its bare content: the page identity is not "
+            f"reaching the vector for this chunk"
+        )
+        assert chunk.h1 in embedded, f"{chunk.id} does not lead with its H1"
+        assert embedded.index(chunk.h1) < embedded.index(chunk.summary), (
+            "the order H1, summary, section is the measured one; the H1 is what "
+            "separates sibling pages, so it goes first"
+        )
+
+    def test_duplicate_and_empty_identity_parts_are_dropped_not_repeated(
+        self, real_wiki_pipeline
+    ):
+        """For a first chunk the section IS the H1, and a repeated title is noise.
+
+        ``split_sections`` re-attaches the leading H1 to the body it titles, so
+        ``chunk.section == chunk.h1`` for the first chunk of every page (37 of
+        the 124 chunks, one per page). Spelling the title twice in the PREFIX
+        makes the embedder spend capacity on it for no gain.
+
+        The count is over the prefix only. The title legitimately appears a
+        second time inside the body itself, because the first chunk's content
+        opens with the heading it titles -- counting the whole embedded string
+        would fail on correct behaviour.
+        """
+        firsts = [
+            c for c in real_wiki_pipeline.chunks
+            if c.section.strip() == c.h1.strip()
+        ]
+        assert firsts, (
+            "no chunk has section == h1: split_sections is no longer "
+            "re-attaching the leading H1, so this test is not testing what it "
+            "thinks it is"
+        )
+        for chunk in firsts[:20]:
+            embedded = embedding_text(chunk)
+            assert embedded.endswith(chunk.content)
+            prefix = embedded[: -len(chunk.content)].rstrip(". ")
+            assert prefix.count(chunk.h1) == 1, (
+                f"{chunk.id} spells its title {prefix.count(chunk.h1)} times in "
+                f"the identity prefix {prefix!r}"
+            )
+
+    def test_a_chunk_with_no_identity_still_embeds_its_content(self):
+        """The fallback must not be ``"None. None. None. <content>"``."""
+        bare = Chunk(id="x-0", content="# Body\n\nthe answer", source="x.md",
+                     section="", tags=[])
+        assert embedding_text(bare) == bare.content, (
+            "a chunk with no H1, no summary and no section should embed its "
+            f"content untouched, got {embedding_text(bare)[:60]!r}"
+        )
+
+
+class TestTheTopKIsCutOverPagesNotChunks:
+    """A top-k slot is a slot some OTHER page cannot occupy.
+
+    Measured before this existed: "empezaste como frutero en mercadona no"
+    returned ``[dejar-mercadona-para-dam, lo-mas-dificil-dam,
+    dejar-mercadona-para-dam]`` — two of three slots on one page, so the model
+    was handed three fragments of a story and no fact.
+
+    A recall floor is structurally blind to the harm here: recall@3 asks whether
+    the gold PAGE is among three results, and three results from one page can
+    satisfy it. The guard is that the list holds three DIFFERENT pages.
+    """
+
+    def test_no_top_k_slot_is_spent_twice_on_the_same_page(self, real_wiki_pipeline):
+        repeated = []
+        for case in LABELLED_CASES:
+            sources = [_norm_source(c.source) for c, _ in
+                       real_wiki_pipeline.retrieve(case.question, top_k=3)]
+            if len(set(sources)) < len(sources):
+                repeated.append((case.question, sources))
+        assert not repeated, (
+            f"{len(repeated)} of {len(LABELLED_CASES)} questions spent two of "
+            f"their three slots on one page: {repeated[:3]}"
+        )
+
+    def test_the_best_chunk_of_a_page_is_the_one_that_survives(self, real_wiki_pipeline):
+        """A cut, not a filter: the FIRST chunk of a page in score order wins.
+
+        The alternative -- keeping the highest-scoring chunk of each page but
+        re-sorting, or keeping a later chunk that happens to sit higher -- would
+        change rank 1, and rank 1 is what recall@1 measures.
+        """
+        chunk = real_wiki_pipeline.chunks[0]
+        scores = [(chunk, 0.9), (real_wiki_pipeline.chunks[1], 0.8)]
+        cut = RAGPipeline._one_chunk_per_page(scores, top_k=1)
+        assert cut[0][0] is chunk, "the cut did not keep the first chunk in score order"
+
+    def test_fewer_than_top_k_results_is_allowed(self):
+        """Padding back to top_k would mean re-admitting a page or serving a
+        below-threshold chunk, both worse than a short list."""
+        def chunk(source, chunk_id):
+            return Chunk(id=f"{source}-{chunk_id}", content="body", source=source,
+                         section="Body", type="faq", tags=[], summary="", h1="")
+
+        scores = [
+            (chunk("a.md", 0), 0.9),
+            (chunk("a.md", 1), 0.8),
+            (chunk("b.md", 0), 0.7),
+        ]
+        cut = RAGPipeline._one_chunk_per_page(scores, top_k=5)
+        assert [x.source for x, _ in cut] == ["a.md", "b.md"], (
+            f"expected one chunk per page and no padding, got "
+            f"{[x.source for x, _ in cut]}"
+        )
+
+
+class TestNoBodylessHeadingReachesTheContext:
+    """A heading with no body under it cannot answer anything.
+
+    ``## Alternativas consideradas`` in
+    ``decisions/fraud-detector-3-layer-architecture.md`` is followed immediately
+    by an H3, so the section split produced it as a section with a title and
+    nothing else. With the English embedder it ranked low and nobody noticed.
+    With the multilingual embedder and the identity prefix it became the TOP-1
+    context for 3 of the 49 labelled questions, all fraud-detector questions:
+    the model's first piece of evidence for "que es el detector de fraude" was
+    the word "Alternativas".
+
+    ``TestTheTopChunkCarriesAnAnswerNotJustATitle`` is the guard that caught
+    this. It is left exactly as it was; what changed is that it no longer fires.
+    """
+
+    def test_the_corpus_produces_no_bodyless_heading_chunk(self, real_wiki_pipeline):
+        bodyless = [
+            (c.id, c.content[:60])
+            for c in real_wiki_pipeline.chunks
+            if is_bare_heading(c.content.strip())
+        ]
+        assert not bodyless, (
+            f"{len(bodyless)} chunk(s) are a heading and nothing else: {bodyless}. "
+            f"They cannot answer anything and they win rank 1."
+        )
+
+    def test_a_heading_followed_by_a_deeper_heading_is_dropped(self):
+        """The structural cause, pinned so the corpus cannot drift back into it.
+
+        The fixture carries YAML frontmatter on purpose, because that is what
+        makes the defect possible. ``split_sections`` re-attaches a document's
+        own H1 to the body it titles -- but only when the FIRST section is an
+        H1. With frontmatter the first section is the frontmatter, so the
+        re-attachment never fires and every heading on the page becomes its own
+        section. That is why the real corpus has exactly one bodyless heading
+        and why the fixture has to reproduce it rather than a plain heading.
+        """
+        content = (
+            "---\ntype: decision\nconfidence: medium\n---\n\n"
+            "# Arquitectura de 3 Capas\n\n"
+            "## Alternativas consideradas\n\n"
+            "### Solo reglas\n\n"
+            "Se descarto por Cardinalidad.\n"
+        )
+        sections = split_sections(content)
+        assert any(
+            is_bare_heading(s.strip()) for s in sections
+        ), "the fixture no longer produces a bodyless heading; it cannot test the filter"
+
+        kept = [s for s in sections if not is_bare_heading(s.strip())]
+        assert not any(is_bare_heading(s.strip()) for s in kept)
+        assert any("Cardinalidad" in s for s in kept), (
+            "the filter removed a section that had content: it must drop only "
+            "sections with nothing under them"
+        )
+
+
 class TestTheRetrievalGuardActuallyRan:
     """A guard that could not measure anything must not read as a pass.
 
@@ -2448,61 +2662,89 @@ class TestRetrievalThresholdIsHonest:
     These assertions used to run against ``tests/fixtures/retrieval_corpus/``,
     an invented stand-in, on the stated ground that the real wiki was private
     and untracked. It is neither: 46 files, in the index, checked out by CI.
-    The figures on the real corpus, 125 chunks, 49 questions, real
-    ``all-MiniLM-L6-v2``, real ``expand_query``:
 
-      * the 0.30 default drops 1801 of 6125 (question, chunk) pairs -- 29.4%;
+    Re-measured 2026-09-29 under ``paraphrase-multilingual-MiniLM-L12-v2`` with
+    the identity-prefixed chunk text (124 chunks after the bodyless-heading
+    filter), the 49 labelled questions and real ``expand_query``:
+
+      * the 0.25 default drops 956 of 6125 (question, chunk) pairs -- 15.6% --
+        of its own accord. This figure needed a method change; see the note
+        inside ``test_the_filter_is_live_and_drops_real_pairs``;
       * the direct path at ``top_k=3`` is unchanged by it for all 49
-        questions, and the thinnest question still has 3 survivors;
-      * raising it: 0.35 and 0.40 cost nothing, 0.45 costs one question and
-        empties two, 0.50 costs three and empties five, 0.60 costs seven and
-        empties nineteen.
+        questions, and the thinnest still has exactly 3 survivors;
+      * the cliff: 0.29 costs 1 question a result, 0.30 costs 2, 0.35 costs 9
+        and empties one. 0.30 was the OLD default, calibrated against the
+        English embedder, and it sat exactly on the cliff.
 
-    The default stays at 0.3. The surface that invited the wrong conclusion is
-    still gone: no per-call ``threshold`` override, because no production
-    caller passes one and only one value has ever been measured.
+    The surface that invited the wrong conclusion is still gone: no per-call
+    ``threshold`` override, because no production caller passes one and only
+    one value has ever been measured.
     """
 
-    def test_the_filter_is_live_and_drops_a_fourth_of_the_candidate_pool(self, real_wiki_pipeline):
+    def test_the_filter_is_live_and_drops_real_pairs(self, real_wiki_pipeline):
         """Guard the OTHER direction: the filter must not be vacuous.
 
         Without this, every "the default drops nothing" test below could be
         satisfied by a filter that never binds at all (a threshold of -1, a
-        comparison against a constant). Pinning that 0.3 really does discard
-        29% of the matrix is what makes them non-vacuous.
+        comparison against a constant). Pinning that the default really does
+        discard pairs is what makes them non-vacuous.
 
-        The count is taken from ``retrieve()`` with a ``top_k`` larger than the
-        corpus, so the number of returned chunks IS the number of survivors.
-        Recomputing the cosine here instead would test the test: an earlier
-        draft of this assertion re-implemented the dot product and therefore
-        passed unchanged when ``retrieve()``'s comparison was mutated to
-        ``score >= -1.0``. Verified by mutation — do not "simplify" this back
-        into local arithmetic.
+        THE MEASUREMENT HAD TO BE REWRITTEN, AND THE OLD ONE WAS LYING
+        -------------------------------------------------------------
+        The previous version counted ``total - survivors`` at a deep ``top_k``
+        and asserted 15% of it. That was correct when ``retrieve()`` returned
+        raw score-ordered chunks. It stopped being correct the moment
+        ``retrieve()`` started returning AT MOST ONE CHUNK PER PAGE: the deep
+        call is then bounded by the number of PAGES (37) instead of the number
+        of chunks (124), so 70.4% of the matrix is missing before the threshold
+        has done anything at all. The assertion still passed -- 70.4% is
+        comfortably over 15% -- while measuring page-dedup instead of the
+        filter. Every "the default drops no real result" test in this class was
+        vacuous behind it, which is precisely what its own docstring warns
+        about.
+
+        So the count is now the DIFFERENCE between the survivors at the shipped
+        threshold and the survivors with the filter disabled, both taken from
+        ``retrieve()`` at the same deep ``top_k``. Dedup cancels, and what is
+        left is what the threshold alone discarded. Recomputing the cosine here
+        instead would test the test: an earlier draft of this assertion
+        re-implemented the dot product and therefore passed unchanged when
+        ``retrieve()``'s comparison was mutated to ``score >= -1.0``. Verified
+        by mutation -- do not "simplify" this back into local arithmetic.
         """
         rag = real_wiki_pipeline
         shipped = rag.threshold
-        assert shipped == 0.3, (
-            f"the shipped default is {shipped}, not 0.3. Raising it is not free: "
-            f"measured on the real corpus over the labelled set, 0.35 and 0.40 "
-            f"cost 0 questions of recall@3, 0.45 costs 1 and empties 2, 0.50 "
-            f"costs 3 and empties 5, 0.60 costs 7 and empties 19."
+        assert shipped == 0.25, (
+            f"the shipped default is {shipped}, not 0.25. Re-swept on the real "
+            f"corpus over the labelled set with the current embedder: 0.20-0.28 "
+            f"cost 0 questions, 0.29 costs 1 and leaves one question with 2 "
+            f"results, 0.30 costs 2, 0.35 costs 9 and empties one. See the "
+            f"threshold block in RAGPipeline.__init__ for why 0.25 rather than "
+            f"the highest passing value."
         )
 
         deeper = len(rag.chunks) * 2
-        survivors = sum(len(rag.retrieve(case.question, top_k=deeper)) for case in LABELLED_CASES)
         total = len(LABELLED_CASES) * len(rag.chunks)
-        dropped = total - survivors
+        try:
+            rag.threshold = shipped
+            filtered = sum(len(rag.retrieve(c.question, top_k=deeper)) for c in LABELLED_CASES)
+            rag.threshold = -1.0
+            unfiltered = sum(len(rag.retrieve(c.question, top_k=deeper)) for c in LABELLED_CASES)
+        finally:
+            rag.threshold = shipped
+
+        dropped = unfiltered - filtered
 
         assert total == len(LABELLED_CASES) * len(rag.chunks), (
             f"expected {len(LABELLED_CASES)} questions x {len(rag.chunks)} chunks "
-            f"= {total} pairs, scored {survivors} survivors"
+            f"= {total} pairs, scored {filtered} survivors"
         )
-        assert dropped > 0.15 * total, (
-            f"the 0.3 filter now drops only {dropped}/{total} "
-            f"({dropped / total:.1%}) of the candidate pool. If it has stopped "
-            f"binding, every 'the default drops no real result' test in this "
-            f"class is vacuously true and this file is guarding nothing. On the "
-            f"real corpus it measures 1801/6125 (29.4%)."
+        assert dropped > 0, (
+            f"the {shipped} filter now discards NOTHING ({filtered} survivors "
+            f"with it and {unfiltered} without, over {total} pairs). If it has "
+            f"stopped binding, every 'the default drops no real result' test in "
+            f"this class is vacuously true and this file is guarding nothing. "
+            f"On the real corpus it discards 956/6125 (15.6%)."
         )
 
     def test_shipped_default_drops_no_result_the_unfiltered_run_keeps(
@@ -2516,15 +2758,20 @@ class TestRetrievalThresholdIsHonest:
         precisely the statistic that made the original claim look safe while
         the filter was still dropping 29% of the pool.
 
-        MEASURED ON THE REAL CORPUS: the filtered and unfiltered top-3 are
-        IDENTICAL for all 49 questions, and the thinnest question still has
-        exactly 3 survivors. So on this corpus at ``top_k=3`` the filter costs
-        the caller nothing -- which is a fact about this corpus's score
-        distribution, not a guarantee this pipeline makes, and the reason the
-        assertion is a cap rather than an equality. A corpus with fewer chunks,
-        or a question whose top candidates all sit near 0.3, would legitimately
-        change; the cap is what lets that change fail loudly instead of being
-        argued about.
+        MEASURED ON THE REAL CORPUS, re-measured 2026-09-29 under the
+        multilingual embedder: the filtered and unfiltered top-3 are IDENTICAL
+        for all 49 questions, and the thinnest question still has exactly 3
+        survivors. So on this corpus at ``top_k=3`` the filter costs the caller
+        nothing -- which is a fact about this corpus's score distribution, not a
+        guarantee this pipeline makes, and the reason the assertion is a cap
+        rather than an equality. A corpus with fewer chunks, or a question whose
+        top candidates all sit near 0.25, would legitimately change; the cap is
+        what lets that change fail loudly instead of being argued about.
+
+        This is the assertion that caught the 0.30 default sitting on the cliff
+        with the current model: 0.30 changed the top-3 for 2 of 49 questions
+        and left one of them with only 2 results. The fix was to re-sweep the
+        threshold, not to widen this cap.
 
         The bar is two-sided. RAISING the default must not starve the direct
         path, so the number of questions whose top-3 changes is capped at 0.
@@ -2581,39 +2828,46 @@ class TestRetrievalThresholdIsHonest:
             f"the shipped threshold of {rag.threshold} leaves {len(empty)} of "
             f"{len(LABELLED_CASES)} labelled questions with NO context at all: "
             f"{empty}. An interview answer with no grounding from the profile "
-            f"is worse than a loose one. Measured on the real corpus, 0.35 and "
-            f"0.40 cost nothing and 0.45 empties two -- so if this ever fires, "
-            f"check the corpus first and the threshold second."
+            f"is worse than a loose one. Measured on the real corpus under the "
+            f"current embedder, 0.20-0.28 empty nothing and 0.35 empties one -- "
+            f"so if this ever fires, check the corpus first and the threshold "
+            f"second."
         )
 
-    def test_english_question_against_a_spanish_page_retrieves_nothing(self, real_wiki_pipeline):
-        """KNOWN LIMITATION, asserted so it stays visible: the embedder is English-only.
+    def test_an_english_question_reaches_its_spanish_gold_page(self, real_wiki_pipeline):
+        """A KNOWN LIMITATION THAT WAS FIXED, asserted so it stays fixed.
 
-        ``all-MiniLM-L6-v2`` -- the model this pipeline ships -- is an English
-        model. A Spanish question against a Spanish page scores 0.41-0.51,
-        comfortably above the 0.3 filter. Cross the two and the score falls
-        below it: measured on the real corpus, "what are your strengths and
-        weaknesses" scores 0.2747 against its own page, so the gold is not
-        even in the top 3 with the threshold DISABLED, and
-        ``get_context_string`` returns the empty string.
+        This test used to assert the opposite. It read:
 
-        Both halves are asserted, and the direction matters. The second is the
-        product problem: an interview answer with no grounding. The first is
-        what makes it a real one rather than a tuning problem -- the answer is
-        not merely filtered out, it is unreachable.
+            ``all-MiniLM-L6-v2`` -- the model this pipeline ships -- is an
+            English model. ... "what are your strengths and weaknesses" scores
+            0.2747 against its own page, so the gold is not even in the top 3
+            with the threshold DISABLED, and ``get_context_string`` returns the
+            empty string. ... What would clear it: a multilingual embedder.
+            That is a product decision, not a test edit, and it is the owner's
+            call.
 
-        The corpus is entirely Spanish and the 49 questions are phrased the way
-        Whisper emits them, so this cannot surface inside ``LABELLED_CASES`` at
-        all. It used to be stated against an invented stand-in that had
-        English pages in it; the stand-in is deleted and the finding is now
-        stated against the real pages, where it reproduces more sharply.
+        The owner's call was made: the default embedder is now
+        ``paraphrase-multilingual-MiniLM-L12-v2``, because ``wiki/`` is Spanish
+        and the question reaches this pipeline verbatim from Whisper, in
+        Spanish. The limitation is gone, and the test was inverted rather than
+        deleted, because a limitation that is gone and unguarded is a limitation
+        that comes back.
 
-        Why it is not in ``LABELLED_CASES``: a question that cannot return a
-        result makes the whole class un-runnable. Keeping it here preserves the
-        assertion in one place with its cause named.
+        The old failure message asked for exactly this ("re-measure and either
+        drop the mark or record the new cause"). This is the new cause.
 
-        What would clear it: a multilingual embedder. That is a product
-        decision, not a test edit, and it is the owner's call.
+        MEASURED, threshold DISABLED: unfiltered top 3 is
+        ``[('faq/fortalezas-y-debilidades.md', 0.5637),
+        ('faq/por-que-esta-empresa.md', 0.4744),
+        ('faq/area-preferida.md', 0.3991)]`` -- the gold is RANK 1, against
+        0.2747 and unreachable before. 0.5637 clears the shipped threshold
+        comfortably, so the filtered path agrees with the unfiltered one.
+
+        Both halves are still asserted and both are now positive: the gold is
+        reachable at all, and it is reachable through the threshold the app
+        actually ships with. Asserting only the first would pass on a pipeline
+        that could find the page and then refuse to show it.
         """
         rag = real_wiki_pipeline
         question = "what are your strengths and weaknesses"
@@ -2627,18 +2881,18 @@ class TestRetrievalThresholdIsHonest:
         finally:
             rag.threshold = shipped
 
-        assert _norm_source(gold) not in [_norm_source(c.source) for c, _ in unfiltered], (
-            "an English question now reaches its Spanish gold page with the "
-            "threshold disabled -- the embedder is either no longer English-only "
-            "or the corpus changed. This is a FINDING, not something to delete: "
-            f"re-measure and either drop the mark or record the new cause. "
-            f"Unfiltered top 3 was "
+        assert _norm_source(gold) in [_norm_source(c.source) for c, _ in unfiltered], (
+            "an English question can no longer reach its Spanish gold page even "
+            "with the threshold disabled. The multilingual embedder stopped "
+            "bridging the two languages: either the default has been reverted or "
+            "the corpus no longer answers it. Unfiltered top 3 was "
             f"{[(c.source, round(s, 4)) for c, s in unfiltered]}"
         )
-        assert not rag.get_context_string(question, top_k=3), (
-            "an English question against a Spanish page now returns context. The "
-            "embedder may no longer be English-only -- if so this limitation is "
-            "gone and should be recorded as such."
+        assert rag.get_context_string(question, top_k=3), (
+            "an English question against a Spanish page retrieves the page but "
+            f"returns no context under the shipped threshold of {rag.threshold}. "
+            "The score is being filtered away after retrieval, which is a "
+            "different defect from the one this test was written for."
         )
 
     def test_retrieve_takes_no_per_call_threshold(self):

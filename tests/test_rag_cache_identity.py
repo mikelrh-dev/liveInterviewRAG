@@ -43,7 +43,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from backend.services.rag import RAGPipeline
+from backend.services.rag import RAGPipeline, embedding_text
 
 DIMENSIONS = 384
 
@@ -151,7 +151,12 @@ class TestAFallbackRunCannotPoisonTheCache:
                 f"{chunk.id} came back with a {chunk.embedding.shape} vector, "
                 "which is the fallback's geometry rather than the embedder's"
             )
-            expected = real.embedder.encode([chunk.content])[0]
+            # `embedding_text`, not `chunk.content`: the pipeline embeds the
+            # page identity followed by the body, and this test asks whether
+            # the cached vector is the one THIS embedder produced. Asking it
+            # about the body alone would make it fail for a correct cache and
+            # pass for a wrong one.
+            expected = real.embedder.encode([embedding_text(chunk)])[0]
             assert np.allclose(chunk.embedding, expected), (
                 f"{chunk.id} does not carry this embedder's vector: the cache "
                 "served numbers from a different embedder"
@@ -167,10 +172,12 @@ class TestAFallbackRunCannotPoisonTheCache:
         )
 
         meta = _read_metadata(cache_dir)
-        assert meta.get("embedder") == "sentence-transformer:all-MiniLM-L6-v2", (
+        assert meta.get("embedder") == (
+            "sentence-transformer:paraphrase-multilingual-MiniLM-L12-v2"
+        ), (
             f"the cache does not say which embedder produced these vectors: {meta}"
         )
-        assert meta.get("model") == "all-MiniLM-L6-v2"
+        assert meta.get("model") == "paraphrase-multilingual-MiniLM-L12-v2"
         assert meta.get("chunk_size") == 400
         assert meta.get("chunk_overlap") == 50
 
@@ -362,10 +369,54 @@ class TestTheModelNameIsASingleSourceOfTruth:
         )
 
     def test_the_default_is_still_the_default(self, sentence_transformers):
+        """Pin the shipped default, in BOTH places it is written, against one name.
+
+        ``RAGPipeline.__init__`` and ``backend/config.py`` each carry the
+        default as a literal, deliberately, and
+        ``tests/test_rag.py::TestTheEmbeddedTextCarriesThePageIdentity`` reads
+        the other one to check the two agree. This test is the other half: it
+        says which name they have to agree ON, so changing the model is one
+        edit in this file rather than a hunt for a string that happens to
+        appear in four places.
+
+        The value moved from ``all-MiniLM-L6-v2`` to
+        ``paraphrase-multilingual-MiniLM-L12-v2`` on 2026-09-29, because the
+        corpus and the questions are Spanish and an English embedder charges a
+        language gap on every paraphrase. Nothing about the mechanism changed;
+        only the name did, and only the name should have to change.
+        """
+        expected = "paraphrase-multilingual-MiniLM-L12-v2"
         requested = sentence_transformers()
         RAGPipeline().initialize()
 
-        assert requested == ["all-MiniLM-L6-v2"]
+        assert requested == [expected], (
+            f"a pipeline constructed with no arguments loaded {requested!r} "
+            f"instead of the shipped default {expected!r}"
+        )
+        assert RAGPipeline()._embedding_model == expected
+
+    def test_the_two_copies_of_the_default_name_agree(
+        self, sentence_transformers, monkeypatch
+    ):
+        """``config.py`` and ``RAGPipeline.__init__`` each carry the default.
+
+        They are duplicated deliberately -- the service stays free of a
+        module-level global and the configuration layer decides what the
+        pipeline is told -- and this is what stops the duplication from
+        rotting. A duplicated literal that nothing checks is a future incident;
+        the failure mode is quiet and expensive: the app loads one model, the
+        service and its tests describe another, and the cache tags vectors with
+        a name that does not match what produced them.
+        """
+        from backend.config import Config
+
+        monkeypatch.delenv("EMBEDDING_MODEL", raising=False)
+        assert Config().EMBEDDING_MODEL == RAGPipeline()._embedding_model, (
+            f"config.py defaults to {Config().EMBEDDING_MODEL!r} and "
+            f"RAGPipeline.__init__ defaults to {RAGPipeline()._embedding_model!r}. "
+            f"The app would load the first and the service would be told the "
+            f"second; the embedding cache is tagged with whichever it is given."
+        )
 
     def test_the_loaded_model_matches_the_field_the_cache_is_tagged_with(
         self, tmp_path, sentence_transformers

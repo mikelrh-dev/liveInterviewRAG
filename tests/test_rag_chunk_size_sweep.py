@@ -377,10 +377,27 @@ def sweep(real_wiki_documents) -> Sweep:
     cache at all, so this fixture cannot touch ``backend/.rag_cache/`` — the
     repository's own test suite rewrites that file when the app boots, and a
     measurement harness must not be a second writer to a real cache.
+
+    THE MODEL IS THE SHIPPED DEFAULT, NOT A LITERAL
+    ----------------------------------------------
+    This read ``SentenceTransformer("all-MiniLM-L6-v2")`` and constructed every
+    pipeline with its own default, which happened to be the same string. The two
+    agreed by coincidence, and when the default moved to
+    ``paraphrase-multilingual-MiniLM-L12-v2`` on 2026-09-29 only the second one
+    moved: this sweep kept measuring the old vector space and reported recall@3
+    0.755 while the pipeline it was supposed to be characterising returned
+    0.8163 on the same corpus. A measurement harness that measures a different
+    retriever than the one it is characterising is worse than no harness,
+    because its numbers still look authoritative.
+
+    So the model is now read from the constructor's own default, the same value
+    the app will load, and the pipeline below is built without an override. If
+    the two ever disagree again, every number in this file is wrong and the
+    guard on the floor in ``real_wiki.py`` will say so.
     """
     from sentence_transformers import SentenceTransformer
 
-    model = SentenceTransformer("all-MiniLM-L6-v2")
+    model = SentenceTransformer(RAGPipeline()._embedding_model)
     encoder = _MemoisedEncoder(model, {})
 
     metrics: Dict[Tuple[int, int], Metrics] = {}
@@ -602,9 +619,18 @@ def test_current_config_meets_its_measured_floor(sweep):
     ``wiki/`` at the time and then re-pinned onto
     ``tests/fixtures/retrieval_corpus/``, an invented stand-in that turned out
     to be a structural clone of that very wiki. They are back on the real
-    corpus, where they reproduce the original figures cell for cell: 0.653
-    recall@3, 0.551 recall@1, 0.611 MRR, 125 chunks. The stand-in read 0.776 /
-    0.673 / 0.722 on 121 chunks.
+    corpus.
+
+    RE-MEASURED 2026-09-29, under ``paraphrase-multilingual-MiniLM-L12-v2`` with
+    the page-identity prefix and the one-chunk-per-page cut: 0.816 recall@3,
+    0.735 recall@1, 0.793 MRR, 124 chunks. The previous set — 0.653 / 0.551 /
+    0.611 on 125 chunks — belongs to the English embedder and is kept here only
+    so the movement is legible. Two things moved together and neither can be
+    attributed to the other from this file: the embedder changed, and this
+    sweep was for a long time loading the OLD embedder from a literal of its
+    own, so its first 2026-09-29 run read 0.755 while the pipeline it was
+    characterising returned 0.8163 on the same corpus. Both now load
+    ``RAGPipeline()``'s own default.
 
     The tolerance is unchanged at one question (1/49 = 0.0204, rounded to
     0.021), because the resolution limit is a function of n, not of which
@@ -630,14 +656,14 @@ def test_current_config_meets_its_measured_floor(sweep):
         f"population {measurement.name!r}) on the real wiki. A change moved it; "
         f"re-baseline deliberately or revert."
     )
-    assert current.recall1 == pytest.approx(0.551, abs=0.06), (
-        f"recall@1 is {current.recall1:.3f}; measured 0.551 on the full "
+    assert current.recall1 == pytest.approx(0.735, abs=0.06), (
+        f"recall@1 is {current.recall1:.3f}; measured 0.735 on the full "
         f"population. The tolerance is wider than elsewhere because recall@1 is "
         f"the noisiest number in the grid and this is a floor, not a "
         f"discriminator."
     )
-    assert current.mrr == pytest.approx(0.611, abs=0.06), (
-        f"MRR is {current.mrr:.3f}; measured 0.611 on the full population."
+    assert current.mrr == pytest.approx(0.793, abs=0.06), (
+        f"MRR is {current.mrr:.3f}; measured 0.793 on the full population."
     )
     # The control, and the reason the H1 fix exists: the top-1 context is an
     # answer, not a restatement of the interviewer's own question. On the real
@@ -831,61 +857,91 @@ def test_shrinking_the_chunk_cannot_recover_the_title_only_retrieval_key(sweep):
     )
 
 
-def test_duplicated_top_k_slots_are_a_symptom_not_the_cause(sweep):
-    """Top-3 lists DO repeat a document — and deduplicating them fixes NOTHING.
+def test_duplicated_top_k_slots_are_now_impossible_and_that_is_worth_a_question(sweep):
+    """The negative result that argued against dedup is no longer the truth.
 
-    While diagnosing the misses, this looked like the obvious defect: several
-    failing top-3 lists hold the same document twice, e.g. for "empezaste como
-    frutero en mercadona no" the shipped configuration returns
-    ``decisions/dejar-mercadona-para-dam.md`` at ranks 1 AND 3. Three slots are
-    meant to be three candidate documents for the LLM to choose between.
+    THIS TEST ONCE RECORDED THE OPPOSITE. Read the history, because the reason
+    it was written is the reason it had to be rewritten.
 
-    Measured, that is NOT what is costing the recall. Re-running every question
-    with the top-k cut taken over DISTINCT sources instead of distinct chunks
-    moves recall@3 from 0.653 to 0.653: the same 17 questions miss, and zero
-    questions are rescued. The gold documents are not sitting at rank 4 waiting
-    for a slot to free up; they are genuinely ranked low.
+    Top-3 lists used to repeat a document: for "empezaste como frutero en
+    mercadona no" the shipped configuration returned
+    ``dejar-mercadona-para-dam.md`` at ranks 1 AND 3, so the model was handed
+    three fragments of one story and no fact. It looked like the defect. It was
+    measured and it was NOT what cost the recall: re-running every question with
+    the cut taken over DISTINCT sources moved recall@3 from 0.653 to 0.653 —
+    the same 17 questions missed, zero were rescued. So it was pinned as a
+    negative result, and anyone who noticed the repetition again was told to
+    re-check this test before "fixing" it.
 
-    So this is pinned as the negative result it is. Duplicated slots look like
-    the bug, cost nothing measurable, and chasing them would be a change to
-    retrieval semantics with no evidence behind it. Anyone who notices the
-    repetition again should re-check this test before "fixing" it.
+    THAT ADVICE WAS RIGHT AND THE CONCLUSION WAS NOT, and the reason is visible
+    only now. The measurement was taken with ``all-MiniLM-L6-v2``. The
+    multilingual embedder changes which questions are ranking failures: of the
+    questions that miss, fewer have their gold page stranded at rank 4+ waiting
+    for a slot, and more are crowded out by siblings of the page already in the
+    list. Re-measured on the current configuration, deduplicating the cut
+    rescues a real question, and it is the one the old test used as its example.
 
-    The bar is deliberately loose — a guard on an observation, not a target.
+    So this is now the guard for the property the pipeline depends on, in two
+    halves:
+
+      * ``retrieve()`` at ``top_k=3`` NEVER returns two chunks from the same
+        document. Not "usually" — never, on the labelled set.
+      * deduplication is not cosmetic. The count of rescued questions is
+        compared against a measured value, so a future change that quietly
+        restores the repetition fails here instead of being argued about.
+
+    The un-deduplicated cut is obtained by neutralising
+    ``_one_chunk_per_page`` for the duration of the comparison rather than by
+    re-implementing the ranking, so the two sides differ by exactly the one
+    thing being measured.
     """
     rag = sweep.pipelines[CURRENT_CONFIG]
+    cases = _scored_cases()
 
-    def deduped(case, depth=20):
-        seen, out = set(), []
-        for chunk, _score in rag.retrieve(case.question, top_k=depth):
-            key = _norm(chunk.source)
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append(key)
-            if len(out) == 3:
-                break
-        return out
-
-    duplicated = 0
-    rescued = 0
-    for case in _scored_cases():
-        sources = [_norm(c.source) for c, _ in rag.retrieve(case.question, top_k=3)]
-        if len(set(sources)) < len(sources):
-            duplicated += 1
-        plain = _rank(sources, frozenset({case.primary}))
-        dedup = _rank(deduped(case), frozenset({case.primary}))
-        if (plain is None or plain > 3) and dedup is not None and dedup <= 3:
-            rescued += 1
-
-    assert duplicated > 0, (
-        "no top-3 list repeats a document any more — the observation this test "
-        "records has changed; re-check whether deduplication now matters"
+    duplicated = [
+        case.question
+        for case in cases
+        if (sources := [_norm(c.source) for c, _ in rag.retrieve(case.question, top_k=3)])
+        and len(set(sources)) < len(sources)
+    ]
+    assert not duplicated, (
+        f"{len(duplicated)} top-3 list(s) repeat a document: {duplicated[:5]}. "
+        f"The per-page cut in RAGPipeline._one_chunk_per_page is the only thing "
+        f"standing between three slots and three fragments of one story."
     )
-    assert rescued == 0, (
-        f"deduplicating top-k by source now rescues {rescued} question(s) that "
-        f"the shipped configuration misses. That would make it a real lever, "
-        f"worth its own change with its own measurement."
+
+    # Measure what the cut buys, by turning it off for one comparison and
+    # turning it back on for the other. The restore has to happen BETWEEN the
+    # two retrieves, not after both: leaving it off for the whole loop compares
+    # the un-deduplicated list with itself and rescues exactly nothing, which
+    # is indistinguishable from a cut that buys nothing.
+    #
+    # NOTE: the restore re-wraps in `staticmethod`. `_one_chunk_per_page` is a
+    # staticmethod on the class, so reading it off the class hands back the
+    # plain function; putting THAT back as a class attribute rebinds it as an
+    # instance method and `retrieve` then fails for every test after this one.
+    original = RAGPipeline.__dict__["_one_chunk_per_page"]
+    rescued = 0
+    try:
+        for case in cases:
+            RAGPipeline._one_chunk_per_page = staticmethod(lambda scores, top_k: scores[:top_k])
+            raw = [_norm(c.source) for c, _ in rag.retrieve(case.question, top_k=3)]
+            RAGPipeline._one_chunk_per_page = original
+
+            deduped = [_norm(c.source) for c, _ in rag.retrieve(case.question, top_k=3)]
+
+            raw_rank = _rank(raw, frozenset({case.primary}))
+            new_rank = _rank(deduped, frozenset({case.primary}))
+            if (raw_rank is None or raw_rank > 3) and new_rank is not None and new_rank <= 3:
+                rescued += 1
+    finally:
+        RAGPipeline._one_chunk_per_page = original
+
+    assert rescued == 1, (
+        f"the per-page cut now rescues {rescued} question(s), measured at 1 on "
+        f"2026-09-29. More means the ranking shifted and this floor wants "
+        f"re-deriving; fewer means the cut stopped buying anything and the cost "
+        f"of a top_k slot has to be re-argued."
     )
 
 
