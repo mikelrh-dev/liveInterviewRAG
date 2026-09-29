@@ -46,7 +46,7 @@ It's not a demo. It's a deployable system with real tradeoffs, real constraints,
 - **Session management** — Multi-turn conversations with TTL-based cleanup
 - **Rate limiting** — 10 requests per minute per IP to prevent abuse
 - **Periodic audio cleanup** — Old TTS files are pruned automatically
-- **Tested** — 736 Python tests plus 263 Node tests covering config, RAG, LLM, STT, TTS, API endpoints, conversation memory, response cache, embedding persistence, SSE framing, the nginx TLS procedure and the deploy path
+- **Tested** — 763 Python tests plus 263 Node tests covering config, RAG, LLM, STT, TTS, API endpoints, conversation memory, response cache, embedding persistence, SSE framing, the nginx TLS procedure and the deploy path
 
 ---
 
@@ -190,7 +190,7 @@ Building this project end-to-end forced me to learn things that aren't taught in
 - **Multi-provider LLM orchestration** — Google AI as primary, OpenRouter as fallback, with graceful degradation. The pattern matters more than the providers.
 - **SSE (Server-Sent Events)** — For streaming tokens and audio URLs. Different from WebSockets in tradeoffs.
 - **Spec-driven development** — Every change goes through OpenSpec (proposal → spec → design → tasks → test → apply). Forces clarity before code.
-- **TDD discipline** — 736 Python tests, all written before the production change. Strict mode means red → green, no shortcuts.
+- **TDD discipline** — 763 Python tests, all written before the production change. Strict mode means red → green, no shortcuts.
 - **MCP and agent orchestration** — Built tooling around Model Context Protocol for connecting the LLM to local resources.
 
 Beyond the tech, this project also taught me to make product decisions under constraints: prioritize what matters, defer what doesn't, document the tradeoffs.
@@ -353,8 +353,13 @@ compose file for this project, so every step below runs on the host.
 
 ```bash
 sudo apt update
-sudo apt install -y python3-venv nginx certbot
+sudo apt install -y python3-venv nginx certbot rsync
 ```
+
+`rsync` is not optional. `scripts/deploy.sh` uses it for every content deploy
+(`deploy.sh:126` and `:133`), and it is not something a stock ARM64 image has, so
+without this line the first `deploy.sh` run dies with `rsync: command not found`
+on a box that otherwise deployed fine.
 
 ### 2. The service user, the code, and the venv
 
@@ -363,22 +368,36 @@ interpreter. None of the three exist on a fresh VPS, and no script in this
 repository creates them, so they are created here:
 
 ```bash
+# 1. The service account. --create-home makes /opt/interviewtts exist and
+#    contain nothing yet, which is precisely what the clone in step 2 needs.
 sudo useradd --system --create-home --home-dir /opt/interviewtts --shell /usr/sbin/nologin interviewtts
 
-# The venv. The unit's ExecStart is
-# /opt/interviewtts/venv/bin/uvicorn, so the venv has to live INSIDE the
-# directory the service owns -- there is no other interpreter on the PATH a
-# systemd unit can rely on.
-sudo -u interviewtts python3 -m venv /opt/interviewtts/venv
-sudo -u interviewtts /opt/interviewtts/venv/bin/pip install --upgrade pip
-sudo -u interviewtts /opt/interviewtts/venv/bin/pip install -r backend/requirements.txt
-```
-
-Then put the code in place, from a clone or a copy:
-
-```bash
+# 2. The code. This has to come BEFORE the venv and before the install, and the
+#    order is not cosmetic:
+#      - the file installed in step 4 is backend/requirements.txt, which is
+#        inside this clone, so the install cannot precede the clone;
+#      - git refuses to clone into a directory that already has content in it
+#        ("destination path already exists and is not an empty directory"), so
+#        anything that writes into /opt/interviewtts first -- a venv in
+#        particular -- makes this line fail.
+#    git DOES accept an existing empty directory, which is what
+#    useradd --create-home left behind above. A copy instead of a clone works
+#    equally well; leave the directory empty either way.
 sudo git clone https://github.com/mikelrh-dev/liveInterviewRAG.git /opt/interviewtts
 sudo chown -R interviewtts:interviewtts /opt/interviewtts
+
+# 3. The venv. The unit's ExecStart is
+# /opt/interviewtts/venv/bin/uvicorn, so the venv has to live INSIDE the
+# directory the service owns -- there is no other interpreter on the PATH a
+# systemd unit can rely on. This is after the chown above so the tree belongs to
+# interviewtts and not to root.
+sudo -u interviewtts python3 -m venv /opt/interviewtts/venv
+sudo -u interviewtts /opt/interviewtts/venv/bin/pip install --upgrade pip
+
+# 4. The dependencies, by ABSOLUTE path. A relative backend/requirements.txt is
+#    resolved against whatever directory your shell happens to be sitting in,
+#    and at this point there is no reason for it to be the one you cloned into.
+sudo -u interviewtts /opt/interviewtts/venv/bin/pip install -r /opt/interviewtts/backend/requirements.txt
 ```
 
 The unit's `WorkingDirectory` is `/opt/interviewtts`, so the repository root and
@@ -386,18 +405,35 @@ the venv are siblings by design rather than by accident.
 
 ### 3. The writable directories
 
-`ProtectSystem=strict` plus `ReadWritePaths` in the unit file means the service
-can write in exactly three places, and **systemd fails to start the unit if any
-`ReadWritePaths` entry does not exist**. They must exist before the first start:
+`ProtectSystem=strict` makes the whole filesystem read-only to the service, and
+`ReadWritePaths` in the unit file carves back out exactly the paths the
+application writes to. **systemd fails to start the unit if an unprefixed
+`ReadWritePaths` entry does not exist**, so these must exist before the first
+start:
 
 ```bash
-sudo mkdir -p /opt/interviewtts/audio /opt/interviewtts/data /opt/interviewtts/reports
-sudo chown -R interviewtts:interviewtts /opt/interviewtts/audio /opt/interviewtts/data /opt/interviewtts/reports
+sudo mkdir -p /opt/interviewtts/audio /opt/interviewtts/data /opt/interviewtts/reports /opt/interviewtts/backend/.rag_cache /opt/interviewtts/.cache/huggingface
+sudo chown -R interviewtts:interviewtts /opt/interviewtts/audio /opt/interviewtts/data /opt/interviewtts/reports /opt/interviewtts/backend/.rag_cache /opt/interviewtts/.cache
 ```
 
-`audio/` is what nginx `alias`es for generated speech and what the periodic
-sweep prunes; `data/` holds the SQLite store; `reports/` holds the Markdown
-transcripts.
+- `audio/` is what nginx `alias`es for generated speech and what the periodic
+  sweep prunes.
+- `data/` holds the SQLite store.
+- `reports/` holds the Markdown transcripts.
+- `backend/.rag_cache/` holds the persisted embeddings. It is gitignored, so a
+  clone never creates it, and the unit names it in `ReadWritePaths` without a
+  `-` prefix. If it is missing the service does not start -- and that is the
+  point. When the directory IS there but is not writable, the failure is much
+  worse: `RAGPipeline` catches the `OSError`, logs a warning
+  (`backend/services/rag.py:768`) and re-embeds the whole corpus, at every
+  single boot, invisibly.
+- `.cache/huggingface/` is where the embedding model is cached. The unit
+  declares it as `-/opt/interviewtts/.cache/huggingface`, with systemd's
+  "ignore if missing" prefix, because this directory comes into existence on its
+  own the first time the model is downloaded -- requiring it would restart-loop a
+  fresh install until someone created a HuggingFace-internal path by hand. It is
+  created here anyway so that first download lands in a directory that already
+  belongs to the service user.
 
 ### 4. Configuration
 
@@ -479,7 +515,7 @@ validate → compile → deploy loop and the rollback.
 │   ├── app.js               # Voice chat logic
 │   ├── avatar.js            # 3D avatar controller
 │   └── assets/              # Avatar video files
-├── tests/                   # 736 Python tests + 263 Node tests, strict TDD
+├── tests/                   # 763 Python tests + 263 Node tests, strict TDD
 ├── docs/                    # Internal docs (optimization plans, superpowers specs)
 ├── openspec/                # Change management artifacts
 │   ├── specs/               # Current capability specs
@@ -497,7 +533,7 @@ validate → compile → deploy loop and the rollback.
 
 ## Testing
 
-736 Python tests covering config, RAG, LLM, STT, TTS, API endpoints, conversation
+763 Python tests covering config, RAG, LLM, STT, TTS, API endpoints, conversation
 memory, response cache, embedding persistence, SSE framing, the nginx TLS
 procedure and the deploy path — plus 263 Node tests over the SSE contract, turn
 state, tokens and motion. Strict TDD mode: every change is red → green →
@@ -507,7 +543,7 @@ refactor.
 # Run all Python tests. Use the venv interpreter: the global Python has no
 # pydantic.
 venv\Scripts\python.exe -m pytest tests/ -q --no-header -p no:cacheprovider
-# -> 736 passed in 313.51s
+# -> 763 passed in 391.25s
 
 # Run a specific test file, or a single test
 venv\Scripts\python.exe -m pytest tests/test_rag.py -q -p no:cacheprovider

@@ -46,7 +46,7 @@ No es una demo. Es un sistema desplegable con tradeoffs reales, restricciones re
 - **Gestión de sesiones** — Conversaciones multi-turno con limpieza basada en TTL
 - **Rate limiting** — 10 solicitudes por minuto por IP para prevenir abuso
 - **Limpieza periódica de audio** — Archivos TTS antiguos se eliminan automáticamente
-- **Testeado** — 736 tests de Python más 263 tests de Node cubriendo config, RAG, LLM, STT, TTS, endpoints de API, memoria de conversación, caché de respuestas, persistencia de embeddings, framing SSE, el procedimiento TLS de nginx y la ruta de despliegue
+- **Testeado** — 763 tests de Python más 263 tests de Node cubriendo config, RAG, LLM, STT, TTS, endpoints de API, memoria de conversación, caché de respuestas, persistencia de embeddings, framing SSE, el procedimiento TLS de nginx y la ruta de despliegue
 
 ---
 
@@ -190,7 +190,7 @@ Construir este proyecto de extremo a extremo me obligó a aprender cosas que no 
 - **Orquestación multi-proveedor LLM** — Google AI como principal, OpenRouter como fallback, con degradación graceful. El patrón importa más que los proveedores.
 - **SSE (Server-Sent Events)** — Para streaming de tokens y URLs de audio. Diferente a WebSockets en tradeoffs.
 - **Desarrollo dirigido por spec** — Cada cambio pasa por OpenSpec (propuesta → spec → design → tasks → test → apply). Obliga a claridad antes de código.
-- **Disciplina TDD** — 736 tests de Python, todos escritos antes del cambio en producción. Modo estricto significa rojo → verde, sin atajos.
+- **Disciplina TDD** — 763 tests de Python, todos escritos antes del cambio en producción. Modo estricto significa rojo → verde, sin atajos.
 - **MCP y orquestación de agentes** — Construí herramientas alrededor de Model Context Protocol para conectar el LLM a recursos locales.
 
 Más allá de la técnica, este proyecto también me enseñó a tomar decisiones de producto bajo restricciones: priorizar lo que importa, diferir lo que no, documentar los tradeoffs.
@@ -365,8 +365,13 @@ el host.
 
 ```bash
 sudo apt update
-sudo apt install -y python3-venv nginx certbot
+sudo apt install -y python3-venv nginx certbot rsync
 ```
+
+`rsync` no es opcional. `scripts/deploy.sh` lo usa en todos los despliegues de
+contenido (`deploy.sh:126` y `:133`), y no es algo que traiga de serie una imagen
+ARM64, así que sin esta línea el primer `./scripts/deploy.sh` muere con
+`rsync: command not found` en una máquina que por lo demás desplegaba bien.
 
 ### 2. El usuario de servicio, el código y el venv
 
@@ -375,22 +380,36 @@ intérprete. Ninguno de los tres existe en un VPS recién creado, y ningún scri
 este repositorio los crea, así que se crean aquí:
 
 ```bash
+# 1. La cuenta de servicio. --create-home hace que /opt/interviewtts exista y no
+#    contenga nada todavía, que es justo lo que necesita el clone del paso 2.
 sudo useradd --system --create-home --home-dir /opt/interviewtts --shell /usr/sbin/nologin interviewtts
 
-# El venv. El ExecStart de la unidad es
-# /opt/interviewtts/venv/bin/uvicorn, así que el venv tiene que vivir DENTRO
-# del directorio del que se ocupa el servicio -- no hay otro intérprete en el
-# PATH del que una unidad systemd pueda fiarse.
-sudo -u interviewtts python3 -m venv /opt/interviewtts/venv
-sudo -u interviewtts /opt/interviewtts/venv/bin/pip install --upgrade pip
-sudo -u interviewtts /opt/interviewtts/venv/bin/pip install -r backend/requirements.txt
-```
-
-Y luego pon el código en su sitio, desde un clone o una copia:
-
-```bash
+# 2. El código. Esto tiene que ir ANTES del venv y antes de la instalación, y el
+#    orden no es cosmético:
+#      - el archivo que instala el paso 4 es backend/requirements.txt, que está
+#        dentro de este clone, así que la instalación no puede preceder al clone;
+#      - git se niega a clonar en un directorio que ya tenga contenido ("fatal:
+#        destination path already exists and is not an empty directory"), así que
+#        cualquier cosa que escriba antes en /opt/interviewtts -- un venv en
+#        particular -- hace fallar esta línea.
+#    git SÍ acepta un directorio existente vacío, que es lo que dejó
+#    useradd --create-home más arriba. Una copia en vez de un clone sirve igual;
+#    deja el directorio vacío en cualquier caso.
 sudo git clone https://github.com/mikelrh-dev/liveInterviewRAG.git /opt/interviewtts
 sudo chown -R interviewtts:interviewtts /opt/interviewtts
+
+# 3. El venv. El ExecStart de la unidad es
+# /opt/interviewtts/venv/bin/uvicorn, así que el venv tiene que vivir DENTRO
+# del directorio del que se ocupa el servicio -- no hay otro intérprete en el
+# PATH del que una unidad systemd pueda fiarse. Va después del chown de arriba
+# para que el árbol pertenezca a interviewtts y no a root.
+sudo -u interviewtts python3 -m venv /opt/interviewtts/venv
+sudo -u interviewtts /opt/interviewtts/venv/bin/pip install --upgrade pip
+
+# 4. Las dependencias, por ruta ABSOLUTA. Un backend/requirements.txt relativo
+#    se resuelve contra el directorio en el que tu shell-resulta estar, y a este
+#    punto no hay motivo para que sea aquel al que clonaste.
+sudo -u interviewtts /opt/interviewtts/venv/bin/pip install -r /opt/interviewtts/backend/requirements.txt
 ```
 
 El `WorkingDirectory` de la unidad es `/opt/interviewtts`, así que la raíz del
@@ -398,19 +417,35 @@ repositorio y el venv son hermanos por diseño y no por casualidad.
 
 ### 3. Los directorios con permiso de escritura
 
-`ProtectSystem=strict` junto con `ReadWritePaths` en la unidad significa que el
-servicio puede escribir en exactamente tres sitios, y **systemd se niega a arrancar
-la unidad si alguna entrada de `ReadWritePaths` no existe**. Deben existir antes del
+`ProtectSystem=strict` deja todo el sistema de archivos en solo lectura para el
+servicio, y `ReadWritePaths` en la unidad reabre exactamente las rutas en las que
+la aplicación escribe. **systemd se niega a arrancar la unidad si una entrada de
+`ReadWritePaths` sin prefijo `-` no existe**, así que estas deben existir antes del
 primer arranque:
 
 ```bash
-sudo mkdir -p /opt/interviewtts/audio /opt/interviewtts/data /opt/interviewtts/reports
-sudo chown -R interviewtts:interviewtts /opt/interviewtts/audio /opt/interviewtts/data /opt/interviewtts/reports
+sudo mkdir -p /opt/interviewtts/audio /opt/interviewtts/data /opt/interviewtts/reports /opt/interviewtts/backend/.rag_cache /opt/interviewtts/.cache/huggingface
+sudo chown -R interviewtts:interviewtts /opt/interviewtts/audio /opt/interviewtts/data /opt/interviewtts/reports /opt/interviewtts/backend/.rag_cache /opt/interviewtts/.cache
 ```
 
-`audio/` es lo que nginx hace `alias` para la voz generada y lo que poda el barrido
-periódico; `data/` guarda el store SQLite; `reports/` guarda las transcripciones
-Markdown.
+- `audio/` es lo que nginx hace `alias` para la voz generada y lo que poda el
+  barrido periódico.
+- `data/` guarda el store SQLite.
+- `reports/` guarda las transcripciones Markdown.
+- `backend/.rag_cache/` guarda los embeddings persistidos. Está en el
+  `.gitignore`, así que un clone nunca lo crea, y la unidad lo nombra en
+  `ReadWritePaths` sin prefijo `-`. Si falta, el servicio no arranca -- y eso es
+  justo lo que se quiere. Cuando el directorio SÍ está pero no es escribible, el
+  fallo es mucho peor: `RAGPipeline` captura el `OSError`, escribe un warning
+  (`backend/services/rag.py:768`) y re-embebe el corpus entero, en cada arranque,
+  sin que se note.
+- `.cache/huggingface/` es donde se cachea el modelo de embeddings. La unidad lo
+  declara como `-/opt/interviewtts/.cache/huggingface`, con el prefijo de systemd
+  "ignorar si no existe", porque ese directorio aparece por sí solo la primera
+  vez que se descarga el modelo; exigirlo provocaría un bucle de reinicios en una
+  instalación nueva hasta que alguien creara a mano una ruta interna de
+  HuggingFace. Aquí se crea igualmente, para que esa primera descarga caiga en un
+  directorio que ya pertenece al usuario del servicio.
 
 ### 4. Configuración
 
@@ -491,7 +526,7 @@ escritura y reinicia la unidad.
 │   ├── app.js               # Lógica de chat por voz
 │   ├── avatar.js            # Controlador del avatar 3D
 │   └── assets/              # Archivos de video del avatar
-├── tests/                   # 736 tests de Python + 263 de Node, TDD estricto
+├── tests/                   # 763 tests de Python + 263 de Node, TDD estricto
 ├── docs/                    # Docs internos (planes de optimización, specs de superpowers)
 ├── openspec/                # Artefactos de gestión de cambios
 │   ├── specs/               # Specs de capacidades actuales
@@ -510,7 +545,7 @@ escritura y reinicia la unidad.
 
 ## Testing
 
-736 tests de Python cubriendo config, RAG, LLM, STT, TTS, endpoints de API, memoria
+763 tests de Python cubriendo config, RAG, LLM, STT, TTS, endpoints de API, memoria
 de conversación, caché de respuestas, persistencia de embeddings, framing SSE, el
 procedimiento TLS de nginx y la ruta de despliegue — más 263 tests de Node sobre el
 contrato SSE, el estado de turno, los tokens y el motion. Modo TDD estricto: cada
@@ -520,7 +555,7 @@ cambio es rojo → verde → refactor.
 # Ejecutar todos los tests de Python. Usa el intérprete del venv: el Python
 # global no tiene pydantic.
 venv\Scripts\python.exe -m pytest tests/ -q --no-header -p no:cacheprovider
-# -> 736 passed in 313.51s
+# -> 763 passed in 391.25s
 
 # Ejecutar un archivo de tests concreto, o un solo test
 venv\Scripts\python.exe -m pytest tests/test_rag.py -q -p no:cacheprovider
