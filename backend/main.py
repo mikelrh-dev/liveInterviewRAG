@@ -101,15 +101,24 @@ tts_service = TTSService(
 # RAGPipeline._chunk_document never takes its splitting branch.
 #
 # Measured on the 37 wiki pages CandidateProfile loads, chunked by
-# _chunk_document at 400/50: 125 chunks, median 54 words, p95 131, longest 266,
-# and ZERO chunks reach 400 words. The distribution is NOT bottom-heavy -- 0.8%
-# are under 15 words, and 14.4% are under 30 -- so the previous version of this
+# _chunk_document at 400/50: 124 chunks, median 54 words, p95 131, longest 266,
+# and ZERO chunks reach 400 words. The distribution is NOT bottom-heavy -- 0.0%
+# are under 15 words, and 13.7% are under 30 -- so the previous version of this
 # comment, which claimed 37.4% under 15 and concluded that a ceiling which
 # actually bites "would need to be far lower", had the shape of the corpus
 # backwards. The conclusion that survives is the one above, and it survives for
 # the opposite reason: not because the chunks cluster at the short end, but
 # because the longest is 266 words, 134 short of the ceiling.
 # CHUNK_OVERLAP is inert for the same reason.
+#
+# RE-MEASURED 2026-09-29, one chunk down: 125 -> 124, and the short tail has
+# gone from 0.8% to 0.0%. Both come from the same change -- a heading section
+# with no body under it is no longer emitted (see `is_bare_heading`). The
+# `## Alternativas consideradas` section of
+# `decisions/fraud-detector-3-layer-architecture.md` was the corpus's ONLY
+# chunk under 15 words. It was also the top-1 context for 3 of the 49 labelled
+# questions under the multilingual embedder, so removing it costs the
+# distribution one chunk and the reader one restated heading.
 #
 # The corpus is wiki/, which .gitignore excludes and which is therefore absent
 # from a clean clone -- a reader elsewhere cannot reproduce these figures and
@@ -142,10 +151,16 @@ persistence = PersistenceService(config.DB_PATH, enabled=config.PERSISTENCE_ENAB
 
 # The semantic answer cache (Cap-3) used to be constructed here, sharing this
 # module's DB and reusing the RAG embedder. It is gone: measured with the real
-# all-MiniLM-L6-v2, the shipped threshold could not be reached by any paraphrase
-# and lowering it to a zero-false-positive floor still served ~7% of them,
-# because an English-only embedder cannot separate a Spanish paraphrase from a
-# different Spanish question. It also retained the recruiter's raw question for
+# all-MiniLM-L6-v2 that this pipeline shipped at the time, the shipped threshold
+# could not be reached by any paraphrase and lowering it to a
+# zero-false-positive floor still served ~7% of them, because an English-only
+# embedder cannot separate a Spanish paraphrase from a different Spanish
+# question. The corpus is Spanish, so that embedder is no longer the default
+# (see config.py: EMBEDDING_MODEL); this cache stays removed regardless, and
+# re-measuring it against the multilingual embedder is a separate piece of work
+# that has NOT been done — a cache is not reinstated on the strength of a
+# different vector space making the old numbers look obsolete.
+# It also retained the recruiter's raw question for
 # 14 days while the transcript expires in 2. The measurement is kept, and kept
 # honest, in tests/test_rag.py::TestSemanticAnswerCacheWasNotViable. The FAQ
 # literal cache (services/response_cache.py) is unaffected and still works.

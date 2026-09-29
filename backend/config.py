@@ -70,7 +70,18 @@ class Config:
         self.LLM_MAX_TOKENS: int = _env_int("LLM_MAX_TOKENS", "200")
 
         # RAG settings
-        self.EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+        #
+        # The default embedder is MULTILINGUAL because the corpus and the
+        # questions are: `wiki/` is Spanish and the question reaches the RAG
+        # verbatim from Whisper, in Spanish, unpunctuated. The previous
+        # default, all-MiniLM-L6-v2, is an ENGLISH model, so every Spanish
+        # paraphrase paid for the language gap. Measured on the 49 labelled
+        # questions in `tests/real_wiki.py` (strict, top_k=3, real corpus):
+        # recall@1 0.5510 -> 0.6122, recall@3 0.6531 -> 0.7959, MRR@5 0.6109
+        # -> 0.7088. Ten questions fixed, three broken, no other lever touched.
+        self.EMBEDDING_MODEL: str = os.getenv(
+            "EMBEDDING_MODEL", "paraphrase-multilingual-MiniLM-L12-v2"
+        )
         self.RAG_TOP_K: int = _env_int("RAG_TOP_K", "3")
         self.CHUNK_SIZE: int = _env_int("CHUNK_SIZE", "400")
         self.CHUNK_OVERLAP: int = _env_int("CHUNK_OVERLAP", "50")

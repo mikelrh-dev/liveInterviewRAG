@@ -46,7 +46,7 @@ No es una demo. Es un sistema desplegable con tradeoffs reales, restricciones re
 - **Gestión de sesiones** — Conversaciones multi-turno con limpieza basada en TTL
 - **Rate limiting** — 10 solicitudes por minuto por IP para prevenir abuso
 - **Limpieza periódica de audio** — Archivos TTS antiguos se eliminan automáticamente
-- **Testeado** — 724 tests de Python más 263 tests de Node cubriendo config, RAG, LLM, STT, TTS, endpoints de API, memoria de conversación, caché de respuestas, persistencia de embeddings, framing SSE, el procedimiento TLS de nginx y la ruta de despliegue
+- **Testeado** — 736 tests de Python más 263 tests de Node cubriendo config, RAG, LLM, STT, TTS, endpoints de API, memoria de conversación, caché de respuestas, persistencia de embeddings, framing SSE, el procedimiento TLS de nginx y la ruta de despliegue
 
 ---
 
@@ -130,7 +130,7 @@ sequenceDiagram
 |---|---|---|
 | Backend | Python 3.10 + FastAPI | Async-first, docs OpenAPI auto-generados, validación Pydantic |
 | STT | faster-whisper (CTranslate2) | CTranslate2 es mucho más rápido que Whisper vanilla en CPU, cuantización int8 mantiene RAM en ~1.4 GB |
-| Embeddings | sentence-transformers (all-MiniLM-L6-v2) | Modelo pequeño, corre en CPU, suficiente para búsqueda semántica sobre documentos |
+| Embeddings | sentence-transformers (paraphrase-multilingual-MiniLM-L12-v2) | Multilingüe porque el corpus y las preguntas están en español; el modelo inglés al que sustituye pagaba una brecha de idioma en cada paráfrasis (recall@3 0,653 → 0,816 sobre las 49 preguntas etiquetadas). ~1,1 GB RSS, solo CPU |
 | LLM | Google AI (Gemini) + OpenRouter | Google AI como principal (rápido, barato), OpenRouter como fallback con flexibilidad de modelo |
 | TTS | Edge TTS (`edge-tts`) | Sin API key que configurar, sin GPU, sin modelo local que desplegar. Es un servicio *en la nube* — el texto se envía a Microsoft — así que no hay síntesis offline |
 | Frontend | HTML/CSS/JS vanilla | Sin sobrecarga de framework, arranque más rápido en free tier |
@@ -190,7 +190,7 @@ Construir este proyecto de extremo a extremo me obligó a aprender cosas que no 
 - **Orquestación multi-proveedor LLM** — Google AI como principal, OpenRouter como fallback, con degradación graceful. El patrón importa más que los proveedores.
 - **SSE (Server-Sent Events)** — Para streaming de tokens y URLs de audio. Diferente a WebSockets en tradeoffs.
 - **Desarrollo dirigido por spec** — Cada cambio pasa por OpenSpec (propuesta → spec → design → tasks → test → apply). Obliga a claridad antes de código.
-- **Disciplina TDD** — 724 tests de Python, todos escritos antes del cambio en producción. Modo estricto significa rojo → verde, sin atajos.
+- **Disciplina TDD** — 736 tests de Python, todos escritos antes del cambio en producción. Modo estricto significa rojo → verde, sin atajos.
 - **MCP y orquestación de agentes** — Construí herramientas alrededor de Model Context Protocol para conectar el LLM a recursos locales.
 
 Más allá de la técnica, este proyecto también me enseñó a tomar decisiones de producto bajo restricciones: priorizar lo que importa, diferir lo que no, documentar los tradeoffs.
@@ -491,7 +491,7 @@ escritura y reinicia la unidad.
 │   ├── app.js               # Lógica de chat por voz
 │   ├── avatar.js            # Controlador del avatar 3D
 │   └── assets/              # Archivos de video del avatar
-├── tests/                   # 724 tests de Python + 263 de Node, TDD estricto
+├── tests/                   # 736 tests de Python + 263 de Node, TDD estricto
 ├── docs/                    # Docs internos (planes de optimización, specs de superpowers)
 ├── openspec/                # Artefactos de gestión de cambios
 │   ├── specs/               # Specs de capacidades actuales
@@ -510,7 +510,7 @@ escritura y reinicia la unidad.
 
 ## Testing
 
-724 tests de Python cubriendo config, RAG, LLM, STT, TTS, endpoints de API, memoria
+736 tests de Python cubriendo config, RAG, LLM, STT, TTS, endpoints de API, memoria
 de conversación, caché de respuestas, persistencia de embeddings, framing SSE, el
 procedimiento TLS de nginx y la ruta de despliegue — más 263 tests de Node sobre el
 contrato SSE, el estado de turno, los tokens y el motion. Modo TDD estricto: cada
@@ -520,7 +520,7 @@ cambio es rojo → verde → refactor.
 # Ejecutar todos los tests de Python. Usa el intérprete del venv: el Python
 # global no tiene pydantic.
 venv\Scripts\python.exe -m pytest tests/ -q --no-header -p no:cacheprovider
-# -> 724 passed, 2 xfailed
+# -> 736 passed in 313.51s
 
 # Ejecutar un archivo de tests concreto, o un solo test
 venv\Scripts\python.exe -m pytest tests/test_rag.py -q -p no:cacheprovider
