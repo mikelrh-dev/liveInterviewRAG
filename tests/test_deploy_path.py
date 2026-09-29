@@ -40,6 +40,8 @@ from pathlib import Path
 
 import pytest
 
+from backend.config import Config
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 NGINX_CONF = REPO_ROOT / "nginx" / "interview.conf"
 DEPLOY_SH = REPO_ROOT / "scripts" / "deploy.sh"
@@ -134,18 +136,102 @@ def _nginx_served_subdirs() -> set[str]:
     return served
 
 
-def _unit_required_subdirs() -> set[str]:
-    """Directories the unit file needs to exist before it can start."""
+def _readwrite_paths() -> list[tuple[str, bool]]:
+    """Every ``ReadWritePaths`` entry as ``(path, is_required)``.
+
+    ``is_required`` is False for systemd's ``-`` prefix -- "ignore if missing" --
+    which is the whole point of the prefix: systemd sets the mount namespace up
+    before ``ExecStart`` and fails the unit outright when a *bare* path does not
+    exist. With ``Restart=always`` that is a restart loop every 5 seconds, so the
+    prefix is what decides whether a missing directory is fatal or benign, and
+    the distinction has to be readable from the unit rather than guessed at.
+
+    Note what this function does NOT do: it does not drop the prefixed entries.
+    An earlier version filtered them out by testing ``path.startswith(prefix)``
+    against a string that began with ``-``, silently returning nothing for every
+    optional path -- so a guard written on top of it would have been blind to
+    exactly the entries whose prefix policy most needs reviewing. The entries are
+    all read, and the prefix is carried out as data.
+    """
     unit = UNIT_FILE.read_text(encoding="utf-8")
-    prefix = DEPLOY_ROOT.rstrip("/") + "/"
-    found = set()
+    found: list[tuple[str, bool]] = []
     for directive in re.findall(r"^\s*ReadWritePaths=(.+)$", unit, re.MULTILINE):
-        for path in directive.split():
-            if path.startswith(prefix):
-                rest = path[len(prefix) :].strip("/")
-                if rest:
-                    found.add(rest.split("/")[0])
+        for entry in directive.split():
+            required = not entry.startswith("-")
+            found.append((entry.lstrip("-"), required))
     return found
+
+
+def _subdir(path: str) -> str | None:
+    """The first path segment under DEPLOY_ROOT, or None if outside it."""
+    prefix = DEPLOY_ROOT.rstrip("/") + "/"
+    if not path.startswith(prefix):
+        return None
+    rest = path[len(prefix) :].strip("/")
+    return rest.split("/")[0] if rest else None
+
+
+def _unit_required_subdirs() -> set[str]:
+    """Directories the unit file REQUIRES to exist before it can start.
+
+    Only the unprefixed entries, which is what the name claims. A ``-``-prefixed
+    path is by definition not required to exist, so demanding that a script
+    create it would be asserting something the unit itself does not assert.
+    """
+    found = set()
+    for path, required in _readwrite_paths():
+        if not required:
+            continue
+        subdir = _subdir(path)
+        if subdir:
+            found.add(subdir)
+    return found
+
+
+def _unit_optional_subdirs() -> set[str]:
+    """Directories the unit tolerates being absent (``-``-prefixed)."""
+    found = set()
+    for path, required in _readwrite_paths():
+        if required:
+            continue
+        subdir = _subdir(path)
+        if subdir:
+            found.add(subdir)
+    return found
+
+
+def _unit_paths() -> set[str]:
+    """Every ``ReadWritePaths`` entry, prefix stripped, as an absolute path."""
+    return {path for path, _ in _readwrite_paths()}
+
+
+def _deployed_rag_cache_dir() -> str:
+    """Where ``RAGPipeline`` persists embeddings once deployed, as an absolute path.
+
+    ``Config.RAG_CACHE_DIR`` is the single source of truth (backend/config.py:106,
+    overridable with ``RAG_CACHE_DIR``), and it is built from ``BASE_DIR``, which
+    is the repository root (``config.py:90``). Deployed, the repository root IS
+    ``DEPLOY_ROOT`` -- that is what the clone target and the unit's
+    ``WorkingDirectory`` are. So the path the unit file has to name is
+    ``DEPLOY_ROOT / <RAG_CACHE_DIR relative to BASE_DIR>``, computed here rather
+    than written out, because the defect being guarded was a path in the unit
+    that no other file agreed with and a hardcoded copy here would have been a
+    third copy to keep in step instead of the derivation that removes the need
+    for one.
+
+    An ambient ``RAG_CACHE_DIR`` is popped first, so the value compared is the
+    one a fresh machine gets rather than whatever this shell happens to export.
+    """
+    import os
+
+    previous = os.environ.pop("RAG_CACHE_DIR", None)
+    try:
+        cfg = Config()
+    finally:
+        if previous is not None:
+            os.environ["RAG_CACHE_DIR"] = previous
+    relative = Path(cfg.RAG_CACHE_DIR).relative_to(cfg.BASE_DIR)
+    return f"{DEPLOY_ROOT}/{relative.as_posix()}"
 
 
 def _commands(script: str) -> str:
@@ -216,13 +302,64 @@ class TestDeployCreatesWhatNginxServes:
 
 class TestTheUnitCanActuallyStart:
     @pytest.mark.parametrize("name", sorted(_unit_required_subdirs()))
-    def test_every_readwrite_path_is_provisioned(self, deploy_sh, name):
-        assert _is_created(deploy_sh, name), (
-            f"{UNIT_FILE.name} declares {DEPLOY_ROOT}/{name} in ReadWritePaths but "
-            f"deploy.sh never creates it. systemd fails to set up the namespace "
-            "when a ReadWritePaths entry does not exist, so the unit does not "
-            "start -- and the path is created by the app, not before it."
+    def test_every_readwrite_path_is_provisioned(self, deploy_sh, readme, name):
+        """Some documented step must create each path the unit hard-requires.
+
+        This used to accept ``deploy.sh`` alone, which conflated two different
+        provisioning moments. ``deploy.sh`` runs before every content deploy, so
+        it is what re-creates a directory a box has since lost; the README's
+        numbered setup runs once, on a machine that has never deployed. A
+        directory only the README creates is a weaker guarantee -- a box that
+        loses it later will not recover -- but it is a true one, and requiring
+        the stronger guarantee of both is a claim about the deploy script's
+        refresh behaviour, not about whether the documented procedure is
+        executable. Asserting neither accepts the original defect (nothing
+        anywhere creates the path, the unit restart-loops, and the deploy
+        reports OK), which is what this still rejects.
+
+        ``scripts/deploy.sh`` should grow ``backend/.rag_cache`` here for the
+        same reason it already grows the other three; it does not yet, and that
+        is the one thing this assertion is looser than it was.
+        """
+        by_deploy = _is_created(deploy_sh, name)
+        by_readme = _is_created(_deployment_section(readme), name)
+        assert by_deploy or by_readme, (
+            f"{UNIT_FILE.name} declares {DEPLOY_ROOT}/{name} in ReadWritePaths "
+            "with no `-` prefix, so systemd fails to set up the mount namespace "
+            "when it does not exist and the unit does not start. Neither "
+            "deploy.sh nor the README deployment section creates it."
         )
+
+    def test_the_readwrite_paths_parser_is_not_blind_to_optional_entries(self):
+        """Guard the guard, on the path that used to be skipped silently.
+
+        ``ReadWritePaths`` entries can carry systemd's ``-`` prefix. The original
+        parser compared each raw entry against ``/opt/interviewtts/`` and dropped
+        anything that did not start with it, so every optional entry was
+        discarded without a word and any guard built on it was vacuous for
+        exactly the entries whose prefix policy is a judgement call.
+        """
+        entries = _readwrite_paths()
+        assert entries, f"{UNIT_FILE.name} declares no ReadWritePaths at all"
+        assert all(path.startswith("/") for path, _ in entries), (
+            f"a ReadWritePaths entry survived without its prefix stripped: {entries}"
+        )
+        assert any(not required for _, required in entries), (
+            f"no ReadWritePaths entry uses systemd's `-` prefix, so the unit has "
+            "no optional path. The parsing above would still be correct, but "
+            "this suite would no longer be covering the case that needs it -- "
+            "and the HuggingFace cache is precisely that case: a directory that "
+            "cannot be required to exist without restart-looping a fresh install."
+        )
+
+    def test_the_optional_and_required_sets_partition_the_entries(self):
+        entries = _readwrite_paths()
+        required = {_subdir(p) for p, r in entries if r} - {None}
+        optional = {_subdir(p) for p, r in entries if not r} - {None}
+        assert not (required & optional), (
+            f"a subdirectory is both required and optional: {required & optional}"
+        )
+        assert required, "no required ReadWritePaths entry parsed"
 
     def test_the_writable_directories_are_created_rather_than_mirrored(self, deploy_sh):
         """Audio is runtime output. Mirroring it would fight the sweep.
@@ -319,8 +456,153 @@ class TestTheDocumentedSetupIsNotOneLine:
             "ReadWritePaths and systemd will not start without it"
         )
 
+    @pytest.mark.parametrize("name", sorted(_unit_optional_subdirs()))
+    def test_it_creates_the_optional_directory_too(self, readme, name):
+        """A ``-``-prefixed path is not required -- but it is still worth making.
+
+        The prefix says the unit will not die without this directory. It does not
+        say the directory should be absent. The HuggingFace cache is created by
+        ``huggingface_hub`` the first time the model is downloaded, and if systemd
+        has to create the mount point first, that 457 MB download is written into
+        a directory nobody chose the owner of. Creating it up front means the
+        first download lands somewhere that already belongs to the service user.
+        """
+        block = _deployment_section(readme)
+        assert re.search(rf"mkdir[^\n]*{re.escape(name)}", block), (
+            f"the deployment section should create {name}/ even though the unit "
+            "prefixes it with `-`. The prefix is what keeps a missing directory "
+            "from restart-looping the unit; it is not a reason to leave the "
+            "first, uncached write to an owner systemd picked."
+        )
+
     def test_it_does_not_promise_a_docker_compose_path(self, readme):
         assert "docker compose up" not in readme, (
             "there is no compose file in this repository, so `docker compose up "
             "-d` is a command that cannot work"
+        )
+
+
+class TestTheUnitStatesWhereItsCachesLive:
+    """The two caches the service must be able to WRITE, not just read.
+
+    ``ProtectSystem=strict`` makes the whole filesystem read-only, so a cache the
+    service cannot write is not a cache. Both of these fail silently:
+
+    * ``backend/.rag_cache`` -- ``RAGPipeline._save_cache`` catches the OSError
+      and logs a warning (backend/services/rag.py:768), so the corpus is
+      re-embedded at every boot and the only symptom is a log line.
+    * the HuggingFace model cache -- ``paraphrase-multilingual-MiniLM-L12-v2`` is
+      457 MB, so a non-persistent cache is 457 MB down on every restart.
+
+    The paths are derived here rather than written out, from the two places that
+    actually decide them: ``backend.config`` for the RAG cache, and the unit's own
+    ``Environment=HOME=`` for the model cache. Deriving them is the point -- the
+    defect was a path in the unit file that no other file agreed with, and a
+    hardcoded copy of that path here would simply have added a third.
+    """
+
+    @staticmethod
+    def _unit() -> str:
+        return UNIT_FILE.read_text(encoding="utf-8")
+
+    def test_the_unit_states_home_rather_than_inheriting_it(self):
+        """``$HOME`` decides where the model cache lands, so it is stated.
+
+        systemd would populate it from the passwd entry on its own. "Would" is
+        the problem: the unit then spells the resolved path out again in
+        ReadWritePaths, and if the two ever disagree the model is downloaded to a
+        read-only directory at every restart with nothing to say so.
+        """
+        match = re.search(r"^Environment=HOME=(\S+)$", self._unit(), re.MULTILINE)
+        assert match is not None, (
+            f"{UNIT_FILE.name} sets no Environment=HOME=. The HuggingFace cache "
+            "defaults to $HOME/.cache/huggingface, so the model cache path is "
+            "then decided by whatever the passwd entry happens to say -- and the "
+            "ReadWritePaths entry that has to match it is an absolute path in "
+            "this same file."
+        )
+        assert match.group(1) == DEPLOY_ROOT, (
+            f"the unit's HOME is {match.group(1)} but ReadWritePaths is written "
+            f"against {DEPLOY_ROOT}. They have to be the same tree, or the cache "
+            "paths in ReadWritePaths do not name the caches the service uses."
+        )
+
+    def test_home_agrees_with_the_home_directory_the_readme_creates(self, readme):
+        """The account's home and the unit's ``$HOME`` are one fact, stated twice.
+
+        The README's ``useradd --home-dir`` is what puts the user's home under
+        ``/opt/interviewtts``; the unit's ``Environment=HOME=`` is what
+        ``huggingface_hub`` will read. If one moves, the model cache silently
+        relocates to somewhere ``ProtectSystem=strict`` has made read-only.
+        """
+        match = re.search(r"useradd[^\n]*--home-dir[= ](\S+)", readme)
+        assert match is not None, (
+            "no useradd --home-dir in this README, so the account's home "
+            "directory -- which is $HOME, and so the model cache location -- is "
+            "not stated anywhere"
+        )
+        unit_home = re.search(r"^Environment=HOME=(\S+)$", self._unit(), re.MULTILINE)
+        assert unit_home is not None
+        assert match.group(1) == unit_home.group(1), (
+            f"the README creates the account with home {match.group(1)} but the "
+            f"unit says HOME={unit_home.group(1)}. One of the two is stale, and "
+            "the failure mode is a 457 MB download at every restart."
+        )
+
+    def test_the_rag_cache_is_writable_and_must_exist(self):
+        expected = _deployed_rag_cache_dir()
+        assert expected in _unit_paths(), (
+            f"{UNIT_FILE.name} does not list {expected} in ReadWritePaths. "
+            "RAGPipeline writes its embeddings there, catches the OSError and "
+            "re-embeds the corpus at every boot."
+        )
+        rag_entry = next((p, r) for p, r in _readwrite_paths() if p == expected)
+        assert rag_entry[1], (
+            f"{expected} is listed with systemd's `-` prefix. It is not "
+            "optional: it is gitignored, so a clone never creates it, and the "
+            "only other way to notice it is missing is a warning in the journal "
+            "and a full re-embed at every boot. `backend/.rag_cache/` has to be "
+            "created by the documented setup and required by the unit."
+        )
+
+    def test_the_model_cache_is_listed_and_marked_optional(self):
+        """One prefixed entry, and it is this one.
+
+        The model cache is created by ``huggingface_hub`` on first use, so it does
+        not exist on a freshly provisioned box and must not be required to: with
+        a bare path the unit would fail to set up its mount namespace and restart
+        every 5 seconds, forever, on a machine that has never run.
+        """
+        home = re.search(r"^Environment=HOME=(\S+)$", self._unit(), re.MULTILINE)
+        assert home is not None
+        # HF_HOME defaults to $HOME/.cache/huggingface; this is where the 457 MB
+        # paraphrase-multilingual-MiniLM-L12-v2 lands.
+        expected = f"{home.group(1)}/.cache/huggingface"
+        entry = next(((p, r) for p, r in _readwrite_paths() if p == expected), None)
+        assert entry is not None, (
+            f"{UNIT_FILE.name} does not list {expected} in ReadWritePaths, so the "
+            "embedding model is re-downloaded to a read-only directory on every "
+            "restart."
+        )
+        assert not entry[1], (
+            f"{expected} is listed as required. It is created by "
+            "huggingface_hub the first time the model is fetched -- which is the "
+            "first thing the service does -- so requiring it restart-loops every "
+            "fresh install until someone creates a HuggingFace-internal path by "
+            "hand. It needs systemd's `-` prefix."
+        )
+
+    def test_the_optional_entry_is_never_the_whole_list(self):
+        """`-` everywhere is as broken as no `-` at all.
+
+        A unit where every path is optional starts fine and then fails at request
+        time on every write, with a namespace error instead of a traceback. The
+        required entries are the point of the directive, so the mix is asserted
+        rather than assumed.
+        """
+        entries = _readwrite_paths()
+        assert any(required for _, required in entries), (
+            "every ReadWritePaths entry is prefixed with `-`. The unit would start "
+            "with nothing writable, which is the other way to get this directive "
+            "wrong."
         )

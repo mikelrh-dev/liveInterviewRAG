@@ -25,6 +25,20 @@ ExecStart=/opt/interviewtts/venv/bin/uvicorn backend.main:app --host 127.0.0.1 -
 Restart=always
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
+# HOME is stated rather than inherited, because the embedding model cache lives
+# under it. The user is created with `useradd --home-dir /opt/interviewtts`, and
+# systemd would populate $HOME from that passwd entry on its own -- but "would"
+# is the whole problem: the ReadWritePaths entry below is an absolute path
+# spelling out where that resolution has to land, and if it ever moved, the two
+# would disagree silently and the model would be re-downloaded to a read-only
+# directory on every restart. Stated here, they are checked against each other
+# (tests/test_deploy_path.py).
+#
+# ProtectHome=true does not fight this: it makes /home, /root and /run/user
+# read-only, and this user's home is /opt/interviewtts, which is outside all
+# three. It is ProtectSystem=strict below that makes /opt/interviewtts read-only
+# too, and that is what these paths carve back out.
+Environment=HOME=/opt/interviewtts
 EnvironmentFile=/opt/interviewtts/.env
 
 # Logging
@@ -36,7 +50,46 @@ SyslogIdentifier=interviewtts
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/opt/interviewtts/audio /opt/interviewtts/data /opt/interviewtts/reports
+
+# Every entry here is a namespace operation systemd performs BEFORE ExecStart,
+# and a bare path that does not exist fails the whole unit. With Restart=always
+# and RestartSec=5 that is a restart loop every five seconds, forever, and the
+# journal only says the unit failed -- not which path was missing. So the
+# optional ones carry systemd's "-" prefix ("ignore if missing") and the
+# required ones do not, because the difference is the difference between a
+# directory that is genuinely expected to exist and one that legitimately does
+# not yet.
+#
+#   audio, data, reports
+#       Required. The application writes to all three: TTS output, the SQLite
+#       store, and the Markdown transcripts. README step 3 and scripts/deploy.sh
+#       create them. Left unprefixed on purpose -- a missing audio/ must be a
+#       boot failure, not a service that comes up and silently 500s on every
+#       turn.
+#
+#   backend/.rag_cache
+#       Required, and the whole reason this line is worth reading. RAGPipeline
+#       persists its embeddings here and re-embeds the corpus whenever the cache
+#       cannot be written -- it catches the OSError and logs a warning
+#       (backend/services/rag.py:768), so the symptom is a warning nobody reads
+#       and a full re-embed at every boot. That directory is gitignored, so a
+#       clone never creates it; README step 3 and deploy.sh do. It is a real
+#       directory with a real owner, so its absence is a provisioning mistake
+#       and is left loud.
+#
+#   -/opt/interviewtts/.cache/huggingface
+#       Optional, and prefixed. This one is different in kind: nothing in this
+#       repository creates it, because it is created by huggingface_hub the
+#       first time the model is fetched, which is itself the first thing the
+#       service does. Requiring it would mean a freshly provisioned VPS
+#       restart-loops until an operator hand-created a HuggingFace-internal
+#       path they have no reason to know exists. Its absence has a benign and
+#       self-healing cost -- one download of paraphrase-multilingual-MiniLM-L12-v2
+#       (457 MB), after which the directory exists and every later boot reuses
+#       it. The "-" costs nothing here and removes the failure mode entirely.
+#       README step 3 creates it anyway, so the first download writes to a
+#       directory that already belongs to the service user.
+ReadWritePaths=/opt/interviewtts/audio /opt/interviewtts/data /opt/interviewtts/reports /opt/interviewtts/backend/.rag_cache -/opt/interviewtts/.cache/huggingface
 PrivateTmp=true
 
 [Install]
