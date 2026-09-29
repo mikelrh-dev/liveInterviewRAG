@@ -25,12 +25,14 @@ passes every suite, and is believed by the next person who does not re-measure.
 That is exactly how "214 chunks, median 31" survived long enough to be written
 up as a finding.
 
-The measurement runs against ``wiki/``, which is gitignored, private, and absent
-from a clean clone -- so this test SKIPS there rather than failing. It earns its
-place on the machine that has the corpus, which is the machine whose comment was
-wrong. ``tests/test_rag_chunk_size_sweep.py`` documents why a clean clone
-cannot carry a real-corpus figure at all, and why its own numbers are
-fixture-derived instead.
+The measurement runs against ``wiki/``. This comment used to describe that
+directory as "gitignored, private, and absent from a clean clone" and to skip
+here on that basis. All three were wrong: ``git ls-files wiki`` returns 46
+files, they are in ``origin/main``, and ``actions/checkout`` brings them to
+every CI run. So the measurement runs everywhere, and the skip below is the
+narrow one it should have been all along -- this test is skipped only if the
+corpus is genuinely gone, which is a state that now makes the retrieval guard in
+``tests/test_rag.py`` fail rather than skip.
 
 WHAT IT DOES NOT DO
 -------------------
@@ -113,7 +115,13 @@ def _stated_int(pattern: str, comment: str) -> int:
 
 
 @pytest.mark.skipif(
-    not WIKI_DIR.is_dir(), reason="wiki/ is gitignored and absent from a clean clone"
+    not WIKI_DIR.is_dir(),
+    reason=(
+        "wiki/ is absent from this checkout. It is 46 TRACKED files, so this "
+        "only happens where the corpus was removed -- and there "
+        "TestTheRetrievalGuardActuallyRan in tests/test_rag.py is failing, "
+        "which is the signal. Do not read this skip as a pass."
+    ),
 )
 class TestTheChunkSizeCommentIsTrue:
     """Everything below re-derives the numbers and compares them to the prose."""
@@ -207,13 +215,13 @@ class TestTheChunkSizeCommentIsTrue:
     def test_the_comment_names_the_corpus_it_was_measured_on(self):
         """A figure without its corpus is not a measurement, it is a rumour.
 
-        The corpus is gitignored and absent from a clean clone, so a reader on
-        another machine cannot reproduce these numbers -- and has to be told that
+        The corpus is tracked, so a reader on any other machine CAN reproduce
+        these numbers -- and has to be told which corpus to reproduce them on
         rather than left to assume they are universal.
         """
         comment = _prose(_comment_under_test())
         assert "wiki/" in comment, (
-            "the comment must name the corpus it was measured on; wiki/ is "
-            "gitignored and a reader on a clean clone cannot reproduce the "
-            "figures otherwise"
+            "the comment must name the corpus it was measured on; without it a "
+            "reader cannot tell whether the figures are universal or specific "
+            "to one person's page set"
         )

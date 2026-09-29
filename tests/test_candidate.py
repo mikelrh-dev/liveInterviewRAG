@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from backend.services.candidate import CandidateProfile
-from tests.fixture_corpus import FIXTURE_ROOT, load_documents
+from tests.real_wiki import WIKI_ROOT, load_documents
 
 
 @pytest.fixture
@@ -132,14 +132,16 @@ class TestGeneratedIndexIsNotACandidateDocument:
     as a candidate document it contributed 10 chunks to the default retrieval
     pool on the real wiki.
 
-    CORPUS: the two end-to-end tests below run against
-    ``tests/fixtures/retrieval_corpus/``, not the owner's ``wiki/``. The real
-    wiki is gitignored and private, so a test that reads it is green only on
-    the machine that has it; and the count it asserted (37) was a property of
-    one person's page set, not of the loader. The fixture count below is
-    FIXTURE-DERIVED, and the loader behaviour it pins — index, README and
-    CONVENCIONES skipped, templates skipped, everything else loaded — is the
-    part that is not corpus-specific.
+    CORPUS: the two end-to-end tests below run against the real ``wiki/``,
+    which is 46 tracked files and therefore present on a clean clone and in CI.
+    They used to run against an invented stand-in on the stated ground that
+    the real wiki was private and untracked, which was false.
+
+    The page count they assert is DERIVED from the checkout rather than pinned:
+    four FAQ pages are on disk but untracked, so a clean clone serves 33 and
+    this checkout serves 37. The loader behaviour being pinned — index, README
+    and CONVENCIONES skipped, templates skipped, everything else loaded — is
+    the part that is not a property of one machine.
     """
 
     def _wiki_with_index(self, tmp_path):
@@ -174,16 +176,29 @@ class TestGeneratedIndexIsNotACandidateDocument:
         loaded = {k.replace("\\", "/") for k in profile.documents}
         assert "faq/nivel-ingles.md" in loaded
 
-    def test_the_fixture_index_is_generated_not_authored(self):
-        """Prove the file is a build artifact, from the repo itself."""
-        head = (FIXTURE_ROOT / "index.md").read_text(encoding="utf-8")[:400]
+    def test_the_generated_index_is_generated_not_authored(self):
+        """Prove the skipped artifact is a build artifact, from the repo itself.
+
+        CORPUS: the real ``wiki/``. ``wiki/index.md`` is produced on demand by
+        ``scripts/wiki/generate_index.py``; it is not tracked, which is why a
+        clean clone does not have it, and the loader must skip it whether or
+        not it is present.
+        """
+        index = WIKI_ROOT / "index.md"
+        if not index.exists():
+            pytest.skip(
+                "wiki/index.md has not been generated in this checkout; it is a "
+                "build artifact, not tracked, and the loader's skip of it is "
+                "pinned by test_index_md_is_not_loaded above."
+            )
+        head = index.read_text(encoding="utf-8")[:400]
         assert "AUTO-GENERATED" in head and "do not edit" in head.lower(), (
-            "the fixture's index.md no longer declares itself generated — "
+            "wiki/index.md no longer declares itself generated — "
             "re-check whether it is still safe to skip"
         )
 
-    def test_the_fixture_index_contributes_no_documents(self, fixture_corpus_targets):
-        """End-to-end through the real loader, on the committed corpus."""
+    def test_the_real_index_contributes_no_documents(self, wiki_targets):
+        """End-to-end through the real loader, on the real corpus."""
         documents = load_documents()
 
         assert "index.md" not in documents
@@ -198,8 +213,22 @@ class TestGeneratedIndexIsNotACandidateDocument:
             "a template page is a blank form, not an answer: "
             f"{sorted(k for k in documents if 'templates' in k)}"
         )
-        assert len(documents) == 42, (
-            f"expected the fixture's 42 typed pages, got {len(documents)}. "
-            "The loader is not skipping build artifacts, or a page was added "
-            "without updating this floor."
+        # DERIVED, not pinned: a hard-coded page count would be a property of
+        # one machine's checkout, which is the mistake this test class used to
+        # make. Four FAQ pages here are on disk but untracked, so a clean clone
+        # loads 33 and this checkout loads 37. What must hold on every machine
+        # is that the loader serves exactly the Markdown that is neither a
+        # README/CONVENCIONES/index nor a template form.
+        on_disk = {
+            p.relative_to(WIKI_ROOT).as_posix()
+            for p in WIKI_ROOT.rglob("*.md")
+            if p.name not in {"README.md", "CONVENCIONES.md", "index.md"}
+            and "templates" not in p.parts
+        }
+        assert {k.replace("\\", "/") for k in documents} == on_disk, (
+            f"the loader serves {len(documents)} pages but {len(on_disk)} are "
+            f"eligible on disk. Missing: "
+            f"{sorted(on_disk - {k.replace(chr(92), '/') for k in documents})}. "
+            f"Extra: "
+            f"{sorted({k.replace(chr(92), '/') for k in documents} - on_disk)}."
         )

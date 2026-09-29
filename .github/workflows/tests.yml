@@ -19,18 +19,28 @@ name: tests
 #
 # WHAT CI DOES NOT ESTABLISH
 # --------------------------
-# It does not check that the owner's personal content is correct, and it cannot.
-# The real `wiki/` is private, is not in this repository, and is not this
-# project's business. The retrieval corpus the suite measures is
-# `tests/fixtures/retrieval_corpus/` -- 42 entirely invented pages, committed in
-# full, `index.md` included. That substitution is what makes the suite
-# portable, and it is why this job no longer needs a wiki at all: on a checkout
-# with `wiki/` deleted, pytest gives 592 passed / 2 skipped / 2 xfailed, where
-# the 2 skips are the "nothing to compare against the real wiki" checks in
-# `tests/fixture_corpus.py`. A green run here therefore means the CODE is
-# sound against a corpus anyone can clone. It means nothing about whether the
-# owner's answers are good answers, and no result in this file should be read
-# as if it did.
+# It does not check that the owner's personal content is CORRECT, and it cannot:
+# "the pipeline retrieves the right page for this question" is a statement about
+# retrieval, not about whether the page is a good answer to a human being.
+#
+# It does measure the real `wiki/`, and this section used to say the opposite.
+# It claimed the wiki "is private, is not in this repository, and is not this
+# project's business", and that the corpus the suite retrieves over was
+# `tests/fixtures/retrieval_corpus/` -- 42 invented pages. Both were false:
+# `git ls-files wiki` returns 46 files, they are in `origin/main`, and
+# `actions/checkout` brings them here. Worse, the stand-in was a structural
+# clone of the real wiki -- same directories, 13 identical filenames, 9 of 11
+# FAQ slugs byte-identical -- whose pages were more findable than the real
+# ones (recall@3 0.776 against 0.653). So a retrieval guard had been reading a
+# copy of the thing it was supposed to be measuring, and its floor was rejecting
+# the better chunker while the real corpus went unconsulted.
+#
+# The retrieval guard now runs on the real corpus, in this job, over the 49
+# questions that were authored against those pages. It refuses to run without
+# them and FAILS when it cannot, so this job goes red rather than green on a
+# checkout where the corpus is gone. That is deliberate: a green run that
+# measured nothing is the defect being fixed, and a skip cannot be made loud
+# enough to prevent it from being read as a pass.
 #
 # THERE IS NO KNOWN FAILURE ON THIS PLATFORM
 # -------------------------------------------
@@ -207,30 +217,25 @@ jobs:
           # backend/services/rag.py:14. tests/test_packaging.py asserts the
           # declarations exist, so the omission cannot come back silently.
 
-      # NOT a build prerequisite. The corpus the suite retrieves over is
-      # tests/fixtures/retrieval_corpus/ and it is committed in full,
-      # index.md included, so nothing has to be generated for pytest to run.
-      # (Do not repoint this at the fixture: running the generator over
-      # tests/fixtures/retrieval_corpus/ rewrites that committed index.md --
-      # verified, 48 insertions / 39 deletions -- because the committed index
-      # is a deliberately partial page set, not generator output, and
-      # tests/test_candidate.py:179 asserts on its contents.)
+      # NOT a build prerequisite, and the reason is now factual rather than
+      # convenient. `wiki/` is 46 TRACKED files: actions/checkout brings them
+      # here, and the retrieval guard below measures the real corpus. The
+      # generator is not run over it because `index.md` is a build artifact the
+      # loader deliberately skips, and pytest never needs it.
       #
-      # The owner's real wiki/ is private, is out of this repository, and is
-      # not this job's business. The branch below exists only for a fork that
-      # genuinely tracks its own wiki/, where the generator still runs and can
-      # still fail. When it is absent -- the canonical case -- that is announced
-      # with a ::notice:: annotation, so "absent by design" is visible in the
-      # run summary rather than silent. It is not a suppressed failure: there
-      # is no work here that can fail, and the generator itself is covered by
-      # tests/test_wiki_generate_index.py in the Python suite below.
-      - name: Wiki index (owner's private corpus, not a build prerequisite)
+      # The step runs anyway, and its absence branch now means something real.
+      # If `wiki/` is ever untracked or removed -- the owner has a known open
+      # issue about this dossier being on a public remote and has deferred it --
+      # the Python suite in this same job will FAIL in
+      # TestTheRetrievalGuardActuallyRan rather than skip quietly, so this
+      # branch is a courtesy annotation and not the signal. Do not rely on it.
+      - name: Wiki index (not a build prerequisite; the guard needs the corpus)
         run: |
           if [ -d wiki ]; then
             echo "wiki/ is tracked in this checkout; generating its index."
             python scripts/wiki/generate_index.py --wiki wiki
           else
-            echo "::notice::No wiki/ in this checkout. Expected: the owner's wiki is private and is not in this repository. The retrieval corpus is tests/fixtures/retrieval_corpus/ (committed), and this job does not validate the owner's personal content."
+            echo "::error::No wiki/ in this checkout. The 46 wiki files are tracked, so the retrieval guard in tests/test_rag.py cannot measure anything and this job's Python step will fail. This is not a suppressed failure."
           fi
 
       - name: Cache the sentence-transformer model

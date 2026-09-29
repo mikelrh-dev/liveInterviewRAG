@@ -318,6 +318,30 @@ def detect_doc_type(query: str) -> Optional[str]:
     A query maps to a type when it matches keywords for exactly one type.
     Zero matches (no signal) or multiple matches (conflicting signals) return
     None so cosine similarity acts as the fallback.
+
+    NOT USED TO CONSTRAIN RETRIEVAL, AND THAT IS THE MEASURED POSITION
+    ---------------------------------------------------------------
+    ``_retrieve_for_context`` used to pass this as ``retrieve(doc_type=...)``.
+    It does not any more, and this function survives as a classifier rather than
+    as a filter because the two are different claims:
+
+      * a caller that KNOWS the type of the page it wants should pass
+        ``retrieve(..., doc_type=...)`` and get exactly that type;
+      * a caller that is GUESSING from a keyword table must not remove the
+        other types from the candidate set.
+
+    On the 49 real-corpus labelled questions (``tests/real_wiki.py``) the guess
+    fires 14 times and names a type the gold page does not carry in 8 of them,
+    which deletes the answer from the candidate set. Strict recall@3 over the
+    production path is 0.5714 with the guess applied and 0.6531 without; the
+    guess fixes 2 questions and breaks 6. The numbers, the command and the
+    per-question list are in ``_retrieve_for_context``'s docstring.
+
+    So the table is still data worth keeping — it is what a caller with a real
+    type would match against, and ``TestDocTypeFilterCoverage`` proves every
+    canonical type the corpus carries is reachable through it. What is not
+    honest any more is letting a substring match decide what the model is
+    allowed to read.
     """
     query_lower = query.lower()
     matched = [
@@ -403,29 +427,25 @@ class RAGPipeline:
         # Minimum cosine a chunk needs to be returned at all.
         #
         # MEASURED on the corpus this repository's tests actually load --
-        # ``tests/fixtures/retrieval_corpus/`` (121 chunks), the 49 labelled
-        # questions in ``tests/fixture_corpus.py``, real all-MiniLM-L6-v2, real
-        # ``expand_query``: 5929 (question, chunk) pairs, of which 0.30 discards
-        # 1030 -- 17.4% of the candidate pool.
+        # the real ``wiki/`` (125 chunks at 400/50), the 49 labelled questions
+        # in ``tests/real_wiki.py``, real all-MiniLM-L6-v2, real
+        # ``expand_query``. The guard that holds this number is
+        # ``tests/test_rag.py::TestRetrievalThresholdIsHonest``; read it before
+        # changing this value, and re-derive its floors rather than adjusting
+        # them. A floor that keeps its value while its corpus changes is not a
+        # floor.
         #
-        # It is not inert, and it is not uneventful. Survivors per question run
-        # from 1 (minimum) through 113 (median), and 3 of the 49 questions have
-        # FEWER THAN THREE survivors, so the filter changes what those three
-        # callers receive. This comment used to claim the opposite -- "at least
-        # 12 of 125 chunks clear 0.3 for every question, so any top_k <= 12 is
-        # unaffected" -- which was the shape of the owner's private wiki and of
-        # no corpus any test measures; ``TestRetrievalThresholdIsHonest``, in
-        # this very repository, documents the opposite for this one.
+        # It is not inert. Over the 49 x 125 (question, chunk) matrix the 0.30
+        # default discards a large share of the candidate pool, and because the
+        # filter runs BEFORE the ``top_k`` slice it changes what a caller
+        # receives whenever fewer than ``top_k`` chunks clear it. The earlier
+        # claim that "the lowest top-1 cosine is 0.414, so the filter never
+        # removes anything" was an inference from the best chunk per question,
+        # not a measurement of the filter: 0.414 is a top-1 statistic, and the
+        # minimum over the whole matrix is far below it.
         #
-        # Raising it is not free either, on this corpus: against 0.30, 0.40
-        # costs 4 questions a top-3 slot, 0.45 costs 5 and empties 1, 0.50 costs
-        # 10 and empties 6, 0.60 costs 39 and empties 20.
-        #
-        # 0.30 stays because it is the measured setting, and every floor above
-        # is re-derived rather than trusted.
-        # ``tests/test_rag.py::TestRetrievalThresholdIsHonest`` is the
-        # authority: read it before changing this number, and if you move this
-        # number, re-derive its floors rather than adjusting them.
+        # 0.30 stays because it is the measured setting, and every floor is
+        # re-derived from the corpus rather than trusted.
         self.threshold = threshold
         self.chunks: List[Chunk] = []
         self._embedder = None
@@ -892,13 +912,18 @@ class RAGPipeline:
         discarding 29% of the candidate pool.
 
         Because the filter runs before the ``top_k`` slice, it can only change
-        what a caller receives when fewer than ``top_k`` chunks clear it. On the
-        corpus the tests load that happens for 3 of the 49 labelled questions,
-        and with a ``doc_type`` pre-filter the candidate pool is far narrower
-        still -- so the case is the normal case, not an edge to know about
-        before raising the threshold. See ``__init__`` for the measurements and
+        what a caller receives when fewer than ``top_k`` chunks clear it, so the
+        case is the normal case rather than an edge to know about before raising
+        the threshold. See ``__init__`` for the measurements and
         ``tests/test_rag.py::TestRetrievalThresholdIsHonest`` for the floors
         they are held to.
+
+        ``doc_type`` is a hard filter over the candidate set, and it stays one
+        because a caller that passes it knows the type it wants. The production
+        path no longer passes it: it used to be guessed from the query by
+        ``detect_doc_type``, which deletes the labelled answer from the
+        candidate set for 8 of the 49 real-corpus questions and costs four of
+        them their top-3 slot. ``_retrieve_for_context`` documents the numbers.
         """
         if not self.chunks:
             return []
@@ -967,8 +992,41 @@ class RAGPipeline:
 
         One definition of "what does this query retrieve", so the two public
         formatters cannot drift into asking the pipeline different questions.
+
+        WHY THERE IS NO ``doc_type`` FILTER HERE
+        -----------------------------------------
+        This used to pass ``doc_type=detect_doc_type(query)``. That guess is
+        removed, and the measurement that removed it is on the real corpus with
+        the 49 labelled questions in ``tests/real_wiki.py`` (strict recall@3,
+        top_k=3, real all-MiniLM-L6-v2, real ``expand_query``):
+
+            guessed filter ON    0.5714     lenient 0.5918
+            guessed filter OFF   0.6531     lenient 0.6531
+            recall@1             0.5510 either way
+
+        Per question the filter FIXES 2 and BREAKS 6, so it is a net loss of four.
+        It fires on 14 of the 49 questions, and on 6 of those 14 the type it
+        picks is not even a type the gold page carries — "para que sirven los
+        tests hoy en dia con ia" is detected as ``skills`` and its answer lives
+        on an ``opinion`` page; "cuentame lo de la huelga de camiones en
+        mercadona" is detected as ``experience`` and its answer lives on a
+        ``story`` page. Those 8 questions have their gold page removed from the
+        candidate set outright, which is why the MRR *rises* with the filter
+        (0.9405 vs 0.9167): when the guess is right the gold is rank 1, and when
+        it is wrong the gold is gone, not merely demoted.
+
+        A pre-filter that can delete the answer from the candidate set is a
+        correctness hazard, not a precision knob: the caller cannot tell an
+        unfiltered miss from a filtered-out hit, and at interview time the two
+        look identical — the model just answers from whatever is left. The
+        filter is kept as a *boost-free* capability for callers that KNOW their
+        document type; what is removed is the guess.
+
+        The surviving test is a property, not a number: for every labelled
+        question, the production path must be able to return the gold page.
+        See ``tests/test_rag.py::TestDocTypePreFilterCannotHideTheAnswer``.
         """
-        return self.retrieve(query, top_k=top_k, doc_type=detect_doc_type(query))
+        return self.retrieve(query, top_k=top_k)
 
     def _format_context_string(self, results: List[Tuple[Chunk, float]]) -> str:
         """Render retrieved chunks as the LLM's context block."""

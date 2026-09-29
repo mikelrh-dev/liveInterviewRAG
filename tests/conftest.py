@@ -152,35 +152,35 @@ def isolated_write_targets(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def fixture_corpus_targets(tmp_path, monkeypatch):
+def wiki_targets(tmp_path, monkeypatch):
     """Point every corpus-shaped config at this test's ``tmp_path``.
 
     Layered on the autouse ``isolated_write_targets``, which already moves
     ``AUDIO_DIR`` / ``REPORTS_DIR`` / ``DB_PATH``. What is left are the three
-    paths that name the candidate's own data, and they are the ones that let
-    a test silently fall back to the developer's real checkout:
+    paths that name the candidate's own data, and they are the ones that let a
+    test silently write into the developer's real checkout:
 
     ``WIKI_DIR``
-        read by ``CandidateProfile`` and by the RAG retrieval tests. Left
-        pointing at the repository, a test passes only on the machine whose
-        owner happens to have the gitignored ``wiki/`` present — which is
-        exactly the failure this fixture exists to remove.
+        read by ``CandidateProfile`` and by the RAG corpus tests. The wiki
+        itself is 46 tracked files and IS the measurement corpus, so this
+        fixture only redirects code that would *write* there -- it does not
+        make the corpus optional, and it must not be used as a way to run a
+        corpus-shaped assertion against an empty directory.
     ``CANDIDATE_DIR``
-        the compiled profile written by ``scripts/wiki/compile.py``, also
-        gitignored.
+        the compiled profile written by ``scripts/wiki/compile.py``.
     ``RAG_CACHE_DIR``
         the embedding cache. The pipeline's own default is ``cache_dir=None``,
         so nothing here writes it, but patching it means a future test that
         DOES pass a cache dir cannot reach the real one by omission.
 
-    Returns the tmp root, so a test that needs a writable copy of the corpus
-    says ``fixture_corpus_targets / "wiki"`` rather than reaching for
-    ``config.WIKI_DIR``, which reads the same and stops being isolated the
-    moment this fixture is removed.
+    Returns the tmp root, so a test that needs a writable copy says
+    ``wiki_targets / "wiki"`` rather than reaching for ``config.WIKI_DIR``,
+    which reads the same and stops being isolated the moment this fixture is
+    removed.
     """
     from backend.config import config
 
-    root = tmp_path / "fixture_corpus"
+    root = tmp_path / "wiki_isolation"
     candidate = root / "candidate"
     cache = root / "rag_cache"
     for directory in (root, candidate, cache):

@@ -481,33 +481,67 @@ def test_negation_interposed_in_a_phrase_breaks_the_substring():
 # claim; this cache is a derived store that loses every disagreement, so a
 # divergence is a wrong answer in a real interview.
 #
-# THE REAL WIKI CANNOT BE THE ONLY SUBJECT
-# -----------------------------------------
-# These checks used to read the repository's `wiki/`, which `.gitignore`
-# excludes, which is backed up to a private repository, and which is therefore
-# absent from a clean clone — so a clean clone failed them with a
-# FileNotFoundError on a page that is nobody's business but the owner's.
+# THE REAL WIKI IS THE ONLY SUBJECT, AND IT IS PRESENT
+# ----------------------------------------------------
+# This section used to say the repository's `wiki/` "is excluded by .gitignore,
+# is backed up to a private repository, and is therefore absent from a clean
+# clone", and ran the checks against `tests/fixtures/retrieval_corpus/`
+# instead. All of that was false: 46 wiki files are tracked, in `origin/main`,
+# and `actions/checkout` brings them to every CI run. The stand-in was a
+# structural clone of the real wiki, so these guards were reading a copy of the
+# thing they were supposed to be checking.
 #
-# A wiki-consistency check with no wiki cannot run, and "cannot run" is not
-# "passed". So the invariant is extracted into ``_assert_cache_does_not_
-# overstate`` / ``_assert_cache_does_not_understate`` and applied to TWO
-# subjects:
+# A wiki-consistency check with no wiki still cannot run, and "cannot run" is
+# not "passed", so the invariant stays extracted into ``_assert_cache_does_not_
+# overstate`` / ``_assert_cache_does_not_understate`` and the controls below
+# drive it two ways against the ONE corpus:
 #
-#   * the REAL wiki, when it is present — the owner's own consistency check,
-#     unchanged, skipped (not weakened) where there is no wiki to check against;
-#   * ``tests/fixtures/retrieval_corpus/``, always, with a synthetic cache
-#     injected — so the checker itself is under test on every machine. Without
-#     this, deleting the wiki would silently turn two consistency guards into
-#     two no-ops, and nobody would find out until an interviewer did.
+#   * against the REAL wiki, with the production cache — the candidate's own
+#     consistency check, unchanged, skipped (not weakened) where there is no
+#     wiki to check against;
+#   * against a synthetic cache injected into the same corpus — so the CHECKER
+#     itself is under test, not just the answers. Without this, a corpus edit
+#     that stopped mentioning a database would turn the understated control
+#     into a no-op and nobody would find out until an interviewer did.
+#
+# The stated cost of deleting the stand-in: on a checkout with no wiki at all,
+# these controls skip instead of running against a substitute. That is the
+# correct trade — a substitute made these guards capable of passing while
+# measuring the wrong corpus, which is strictly worse than not running.
 
 WIKI_DIR = Path(__file__).resolve().parents[1] / "wiki"
-FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "retrieval_corpus"
 
 #: The repository root, for the deploy-mechanism evidence globs below. Separate
-#: from WIKI_DIR on purpose: the candidate's real wiki is gitignored and absent
-#: from a clean clone, but the DEPLOYMENT ARTIFACTS ARE COMMITTED, which is
-#: what makes the mechanism scan runnable in CI at all.
+#: from WIKI_DIR because they answer different questions: WIKI_DIR is the
+#: candidate's own content (tracked, and skipped only if removed) while the
+#: DEPLOYMENT ARTIFACTS are a different, also-committed, set whose scan is what
+#: makes the mechanism check runnable in CI.
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+#: Counterexamples the corpus-wide scan must REJECT. Recalibrated against the
+#: real ``wiki/``.
+#:
+#: The ``areas`` counterexample changed because the corpus did. The invented
+#: stand-in these were originally written against never mentioned AI, so
+#: "integracion de la inteligencia artificial" was ungrounded there and made a
+#: clean negative control. The real corpus attributes ``ia``, ``inteligencia``
+#: and ``artificial`` across many pages, so that answer is now GROUNDED by a
+#: union scan and the control proved nothing. It was replaced with a claim on
+#: the three area terms the real corpus genuinely never mentions -- ``nube``,
+#: ``qa`` and ``movilidad`` -- which keeps the control a control.
+#:
+#: That substitution is a small illustration of the limit documented above: a
+#: union scan catches "this term is nowhere in the corpus", which is a weaker
+#: claim than "this answer misstates the page that answers its question". The
+#: instrument for the second is
+#: ``test_the_preferred_area_answer_is_not_left_claiming_more_than_its_page``,
+#: and it is untouched by any of this.
+_OVERSTATED_SUBJECTS: dict[str, str] = {
+    "databases": "Trabajo con PostgreSQL y SQLite.",
+    "areas": "Trabajo en QA y con una nube propia.",
+}
+
 
 # ── The vocabularies a cached answer may not outrun the wiki on ──────────────
 #
@@ -612,24 +646,47 @@ def _corpus_vocabulary(vocabulary: frozenset[str], documents: dict[str, str]) ->
 
 
 def _fixture_documents() -> dict[str, str]:
-    """The committed corpus, loaded through the production loader.
+    """The corpus, loaded through the production loader.
 
     Loaded rather than ``rglob``-ed so the loader's own skip list applies: an
     index page or a template must not be able to attribute a technology to the
     candidate.
+
+    THE SUBJECT USED TO BE A STAND-IN. This section ran the same invariant
+    against two subjects: the real ``wiki/``, skipped where it was absent, and
+    ``tests/fixtures/retrieval_corpus/``, which it claimed to run against
+    "unconditionally" because the real wiki "is gitignored and private". It was
+    neither: 46 wiki files are tracked, in ``origin/main``, and checked out by
+    CI. The stand-in was a structural clone of this very wiki, so these controls
+    were capable of passing while measuring the wrong pages. It is deleted; the
+    controls below run against the real corpus, and skip only where the corpus
+    is genuinely absent.
     """
-    from tests.fixture_corpus import load_documents
+    from tests.real_wiki import load_documents
 
     return load_documents()
 
 
+#: Vocabularies for which the corpus-wide overstatement control can be built:
+#: those with at least one term the real corpus does not attribute.
+#:
+#: Derived, not hard-coded, so that widening a vocabulary or editing the corpus
+#: RE-OPENS the control instead of leaving it silently vacuous. The first
+#: version of this was hard-coded and a corpus edit had already made the
+#: ``areas`` counterexample grounded -- which the control correctly reported as
+#: "proves nothing". Deriving it means the next such edit is a visible,
+#: automatic change rather than a control that quietly stopped testing.
+def _corpus_wide_vocabularies() -> tuple[str, ...]:
+    return tuple(sorted(
+        name
+        for name, terms in _VOCABULARIES.items()
+        if set(terms) - _corpus_vocabulary(terms, _fixture_documents())
+    ))
+
+
 def _real_wiki_documents() -> dict[str, str]:
     """The candidate's real pages, through the production loader."""
-    from backend.services.candidate import CandidateProfile
-
-    profile = CandidateProfile(WIKI_DIR / "candidate", wiki_dir=WIKI_DIR)
-    profile.load()
-    return profile.documents
+    return _fixture_documents()
 
 
 def _wiki_text(relative_path: str) -> str:
@@ -679,16 +736,16 @@ def _real_wiki_databases() -> set[str]:
 
 
 def _fixture_databases() -> set[str]:
-    """Databases the committed fixture corpus attributes, across all its pages.
+    """Databases the corpus attributes, across all its pages.
 
     Measured, not quoted: the corpus names ``postgres`` and ``postgresql`` both,
-    and only four of its 46 pages mention Redis -- none of them the profile
-    summary the original check read.
+    and only some of its pages mention Redis -- none of them the profile summary
+    the original check read. That gap is what the union read exists to cover.
     """
     databases = _corpus_vocabulary(
         _VOCABULARIES["databases"], _fixture_documents()
     )
-    assert databases, "the fixture corpus must attribute at least one database"
+    assert databases, "the corpus must attribute at least one database"
     return databases
 
 
@@ -711,17 +768,17 @@ def _scan_offenders(
     return offenders
 
 
-# The two real-wiki checks, marked not deleted. They are the owner's own
-# consistency guard and they still run wherever the wiki exists; they are
-# skipped, not weakened, where it does not. ``test_the_consistency_checker_
-# itself_works`` below is the reason that is safe.
+# The two real-wiki checks, marked not deleted. The corpus is 46 tracked files,
+# so they run here and in CI; they are skipped, not weakened, only where the wiki
+# is genuinely absent. ``test_the_consistency_checker_itself_works`` below is
+# the reason skipping is safe.
 needs_real_wiki = pytest.mark.skipif(
     not WIKI_DIR.is_dir(),
     reason=(
-        "the candidate's real wiki/ is gitignored and private, so it is "
-        "absent from a clean clone; there is nothing to check the production "
-        "response cache against here. The same invariant is exercised "
-        "unconditionally against tests/fixtures/retrieval_corpus/."
+        "the candidate's real wiki/ is absent here, so there is nothing to "
+        "check the production response cache against. The 46 wiki files are "
+        "tracked, so this only happens on a checkout where the corpus was "
+        "removed."
     ),
 )
 
@@ -750,9 +807,8 @@ def test_cache_answer_names_every_database_the_wiki_lists():
 def test_cache_never_claims_sqlite(monkeypatch):
     """SQLite appears nowhere in the corpus, so it must appear nowhere in the cache.
 
-    Run unconditionally, with the production cache AND with a synthetic one
-    built from the fixture corpus, so the claim is checked on a machine that
-    has never seen the real wiki.
+    Checked against the production cache AND against a synthetic one built from
+    the same real corpus, so the SCANNER is under test and not only the answers.
     """
     offenders = [
         answer for answer in _cached_answers() if "sqlite" in answer.lower()
@@ -803,13 +859,13 @@ def test_pitch_matches_the_wiki_presentation():
 # The defect this section exists to correct is not only that a claim was wrong.
 # It is that 21 of 22 cached answers had NO wiki check at all, and the one that
 # did was hand-picked -- so a future answer that overstated something was
-# invisible by construction, and the check that existed never ran in CI because
-# the wiki is gitignored.
+# invisible by construction, and the check that existed never ran against the
+# corpus it was about.
 #
 # So the two questions are separated and both are asked here:
 #
 #   1. DOES THE SCAN REACH THE ANSWERS?  (hermetic, always runs)
-#   2. ARE THE CLAIMS WITHIN THE CORPUS?  (against whichever corpus exists)
+#   2. ARE THE CLAIMS WITHIN THE CORPUS?  (against the real wiki)
 
 
 def test_an_unknown_vocabulary_name_raises_rather_than_matching_letters():
@@ -857,7 +913,7 @@ def test_the_scan_reaches_the_answers_it_must():
     )
 
 
-@pytest.mark.parametrize("vocabulary", sorted(_VOCABULARIES))
+@pytest.mark.parametrize("vocabulary", _corpus_wide_vocabularies())
 def test_a_new_entry_that_overstates_something_is_caught_without_being_registered(
     monkeypatch, vocabulary
 ):
@@ -869,12 +925,12 @@ def test_a_new_entry_that_overstates_something_is_caught_without_being_registere
     registered anywhere, and this injects exactly that.
     """
     attributed = _corpus_vocabulary(_VOCABULARIES[vocabulary], _fixture_documents())
-    ungrounded = {
-        "databases": "Trabajo con PostgreSQL y SQLite.",
-        "areas": "Prefiero backend e integracion de la inteligencia artificial.",
-    }[vocabulary]
+    ungrounded = _OVERSTATED_SUBJECTS[vocabulary]
     assert _terms_in(ungrounded, _VOCABULARIES[vocabulary]) - attributed, (
-        "the injected answer is grounded, so this control proves nothing"
+        f"the injected answer is grounded in the real corpus, so this control "
+        f"proves nothing. The corpus attributes "
+        f"{sorted(attributed)}; pick a {_OVERSTATED_SUBJECTS[vocabulary]!r} that "
+        f"it does not."
     )
 
     monkeypatch.setattr(
@@ -1179,14 +1235,11 @@ def test_the_preferred_area_answer_is_not_left_claiming_more_than_its_page():
     asserting something no page supports, and an interviewer is the last person
     who should find out.
 
-    The subject is the committed fixture corpus's page for this question, which
-    stands in for the candidate's own ``wiki/faq/area-preferida.md`` (backend
-    and data, twice, enumerating frontend, DevOps and backend). What is under
-    test is the RULE -- an answer may not name an area that the page answering
-    its question does not attribute -- and it is the rule that has to run in CI,
-    because the real wiki never will.
+    The subject is the real ``wiki/faq/area-preferida.md`` -- the candidate's own
+    page for this question. What is under test is the RULE: an answer may not
+    name an area that the page answering its question does not attribute.
     """
-    attributed = _attributed_by(FIXTURE_ROOT / _AREA_PAGE, "areas")
+    attributed = _attributed_by(WIKI_DIR / _AREA_PAGE, "areas")
     assert attributed, (
         f"{_AREA_PAGE} attributes no areas at all, so this check is pointed at "
         "nothing; re-read the page and re-calibrate"
@@ -1258,7 +1311,34 @@ def _assert_within_corpus(answer: str, attributed: set[str], vocabulary: str) ->
     )
 
 
-@pytest.mark.parametrize("vocabulary", sorted(_VOCABULARIES))
+def test_the_area_vocabulary_still_has_terms_the_corpus_never_attributes():
+    """Why the ``areas`` corpus-wide control is still a control, and not a tautology.
+
+    The counterexample it uses claims ``qa``, ``nube`` and ``movilidad``. If a
+    corpus edit ever attributes those, the negative control becomes vacuous and
+    ``test_the_consistency_checker_catches_an_overstated_answer[areas]`` would
+    pass for the wrong reason. This is the tripwire for that, and it is written
+    down rather than left to be rediscovered.
+
+    It also records WHY the counterexample had to change when this file moved
+    off the invented stand-in. The original one claimed "integracion de la
+    inteligencia artificial" as ungrounded; the real corpus attributes AI all
+    over the place, so that answer became grounded and the control reported
+    itself worthless -- which was the correct report. The three terms pinned
+    here are the ones the real corpus genuinely never mentions.
+    """
+    attributed = _corpus_vocabulary(_VOCABULARIES["areas"], _fixture_documents())
+    unattributed = set(_VOCABULARIES["areas"]) - attributed
+    assert unattributed == {"movilidad", "nube", "qa"}, (
+        f"the areas vocabulary's unattributed terms changed: {sorted(unattributed)}. "
+        f"The corpus-wide overstatement control for areas is calibrated on "
+        f"{{'movilidad', 'nube', 'qa'}}; if the corpus now attributes one of "
+        f"them, the counterexample in _OVERSTATED_SUBJECTS has to move to a "
+        f"term the corpus still does not attribute."
+    )
+
+
+@pytest.mark.parametrize("vocabulary", _corpus_wide_vocabularies())
 def test_the_consistency_checker_accepts_a_faithful_answer(vocabulary):
     """The positive control: an answer that agrees with the corpus passes."""
     attributed = _corpus_vocabulary(
@@ -1271,23 +1351,21 @@ def test_the_consistency_checker_accepts_a_faithful_answer(vocabulary):
     _assert_within_corpus(_FIXTURE_SUBJECTS[vocabulary], attributed, vocabulary)
 
 
-@pytest.mark.parametrize("vocabulary", sorted(_VOCABULARIES))
+@pytest.mark.parametrize("vocabulary", _corpus_wide_vocabularies())
 def test_the_consistency_checker_catches_an_overstated_answer(vocabulary):
     """The negative control, per vocabulary: the assertion can be false.
 
-    The overstated answer is the real one this defect shipped -- a preferred
-    area the corpus does not attribute -- rather than an invented string, so
-    the control fails if the vocabulary or the scanner stops matching the way
-    the shipped defect actually was shaped.
+    Each counterexample names a term the real corpus never attributes, so the
+    control fails if the vocabulary or the scanner stops matching that way. For
+    ``areas`` that term set is now narrower than it was on the stand-in this
+    file used to run against -- the real corpus mentions AI, which the
+    stand-in did not -- so the counterexample had to be re-chosen against a
+    measured corpus rather than carried over.
     """
     attributed = _corpus_vocabulary(
         _VOCABULARIES[vocabulary], _fixture_documents()
     )
-    overstated = (
-        "Prefiero backend, datos e integracion de la inteligencia artificial."
-        if vocabulary == "areas"
-        else "Trabajo con PostgreSQL y SQLite."
-    )
+    overstated = _OVERSTATED_SUBJECTS[vocabulary]
     ungrounded = _terms_in(overstated, _VOCABULARIES[vocabulary]) - attributed
     assert ungrounded, (
         f"the counterexample is grounded in the corpus, so the {vocabulary} "
@@ -1311,8 +1389,15 @@ def test_the_checker_catches_an_understated_answer():
     understated = "MySQL y PostgreSQL."
     with pytest.raises(AssertionError) as caught:
         _assert_cache_does_not_understate(understated, corpus_databases)
-    assert "redis" in str(caught.value).lower(), (
-        f"the failure must name the omitted database: {str(caught.value)!r}"
+    omitted = corpus_databases - _terms_in(understated, "databases")
+    assert omitted, (
+        f"the control needs the answer to omit something; it omits nothing out of "
+        f"{sorted(corpus_databases)}"
+    )
+    named = {d for d in omitted if d in str(caught.value).lower()}
+    assert named, (
+        f"the failure must name an omitted database, and it named none of "
+        f"{sorted(omitted)}: {str(caught.value)!r}"
     )
 
 
@@ -1326,7 +1411,7 @@ def test_the_checker_reads_a_union_of_pages_not_one():
     """
     corpus_databases = _fixture_databases()
     profile_only = _terms_in(
-        (FIXTURE_ROOT / "profile" / "nuria-belvis.md").read_text(encoding="utf-8"),
+        (WIKI_DIR / "profile" / "mikel.md").read_text(encoding="utf-8"),
         _VOCABULARIES["databases"],
     )
     assert corpus_databases > profile_only, (
@@ -1339,14 +1424,23 @@ def test_the_checker_reads_a_union_of_pages_not_one():
     )
 
 
-def test_the_fixture_corpus_attributed_databases_are_the_ones_it_lists():
-    """Pin what the fixture attributes, so the controls above stay meaningful.
+def test_the_corpus_attributed_databases_are_the_ones_it_lists():
+    """Pin what the corpus attributes, so the controls above stay meaningful.
 
-    If someone edits the corpus and drops Redis, the understated control stops
-    having anything to omit and starts passing for the wrong reason. That is
-    exactly the silent-coverage-loss this section exists to prevent.
+    If someone edits the corpus and drops a database, the understated control
+    stops having anything to omit and starts passing for the wrong reason. That
+    is exactly the silent-coverage-loss this section exists to prevent.
+
+    Re-derived from the real ``wiki/``: the invented stand-in these were
+    calibrated on attributed only {postgres, postgresql, redis}; the real
+    corpus also mentions MySQL, Oracle, MongoDB and SQLAlchemy. Nothing here
+    was loosened -- the control has more to omit, which makes it a stricter
+    test of the checker, not a weaker one.
     """
-    assert _fixture_databases() == {"postgres", "postgresql", "redis"}, (
-        "the fixture corpus's database list changed; the consistency controls "
-        "above are calibrated on {postgres, postgresql, redis}"
+    assert _fixture_databases() == {
+        "mongodb", "mysql", "oracle", "postgresql", "redis", "sqlalchemy",
+    }, (
+        "the corpus's database list changed; the consistency controls above are "
+        "calibrated on this set. A corpus edit that REMOVES a database makes the "
+        "understated control vacuous; one that ADDS one just widens it."
     )
