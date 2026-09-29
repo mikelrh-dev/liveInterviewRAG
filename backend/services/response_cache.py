@@ -103,6 +103,26 @@ _CACHED_QUESTIONS = [
     {
         "phrases": ["cuales son tus debilidades", "puntos debiles"],
         "keywords": ["debilidades"],
+        # This answer was reported as a fabricated self-disclosed weakness. It
+        # is not fabricated. wiki/faq/fortalezas-y-debilidades.md states it in
+        # full, including the mitigation the answer reproduces:
+        #   line 21: "Soy algo desordenado. Lo reconozco y lo gestiono con
+        #     herramientas -- en desarrollo uso Git, tests y checklists para
+        #     compensarlo."
+        #   line 24: "No inventes debilidades falsas: 'perfeccionista' no
+        #     convence a nadie. 'Desordenado' es real y demostrable que lo
+        #     gestionas."
+        # and line 25 gives the rule this answer already follows ("siempre
+        # acompaña la debilidad con mitigación"). The page is tracked (git ls-
+        # files wiki) and is one of the 37 pages the loader serves, so this is
+        # not a page the candidate has only locally.
+        #
+        # Removing it would have been the defect: a cached answer to "what are
+        # your weaknesses" that discloses nothing, on the strength of a
+        # word-coverage metric that cannot tell a supported claim from an
+        # unsupported one. tests/test_response_cache.py::
+        # test_the_claim_scan_accepts_the_disclosure_the_wiki_makes is the
+        # control that pins this.
         "answer": (
             "Soy algo desordenado, lo reconozco, pero lo gestiono con herramientas: "
             "en desarrollo uso Git, tests y checklists para compensarlo."
@@ -183,10 +203,20 @@ _CACHED_QUESTIONS = [
             "trabajas con python",
         ],
         "keywords": [],
+        # The old answer ended "También lo usé en proyectos del DAM para bases de
+        # datos y scripts". The corpus CONTRADICTS that clause rather than
+        # merely omitting it: wiki/stories/autodidacta-fastapi-docker-async.md:16
+        # lists what the FP actually taught -- "Java, JavaScript, PHP, SQL,
+        # estructura en capas, patrones de diseño" -- and Python is not in it,
+        # while line 28 says "Aprendí Python por mi cuenta". Claiming coursework
+        # the candidate's own page assigns to self-study is the one defect class
+        # a vocabulary scan cannot catch (every term in both sentences is
+        # attributed by the corpus), so it was found by reading the pages.
         "answer": (
             "Python es mi lenguaje principal. Lo uso en InterviewTTS con FastAPI para "
-            "el backend, integración de IA y procesamiento de voz. También lo usé en "
-            "proyectos del DAM para bases de datos y scripts."
+            "el backend, la integración de IA y el procesamiento de voz. Lo aprendí por "
+            "mi cuenta, más allá del temario del FP, hasta tener un proyecto funcional "
+            "con FastAPI."
         ),
     },
     {
@@ -263,6 +293,21 @@ _CACHED_QUESTIONS = [
             "que sabes de sql",
         ],
         "keywords": ["bases de datos"],
+        # "Triggers y procedimientos almacenados" and "Hibernate para ORM en
+        # Java" were both reported as unsupported. Both are attributed:
+        #   triggers / stored procedures -> wiki/skills/backend.md:33 ("SQL
+        #     across MySQL, PostgreSQL, and PL-SQL -- comfortable with complex
+        #     queries, triggers, stored procedures"); "procedimientos
+        #     almacenados" is the Spanish for the same claim on a page written
+        #     in English, not a different one
+        #   Hibernate ORM in Java       -> wiki/skills/backend.md:20,32
+        #     ("Hibernate | working | DAM Java persistence exercises",
+        #     "comfortable with ORM mapping, JPQL, entity relationships")
+        #   MySQL, PostgreSQL, MongoDB   -> wiki/skills/data.md:16-18 and
+        #     wiki/profile/mikel.md:37
+        #   database design, complex queries -> wiki/skills/backend.md:19,33
+        # Kept, with the citations attached so the next reader does not have to
+        # re-derive that these are grounded.
         "answer": (
             "Trabajo con MySQL, PostgreSQL y MongoDB. En el DAM hice diseño de bases de datos, "
             "consultas complejas, triggers y procedimientos almacenados. También usé Hibernate "
@@ -288,9 +333,20 @@ _CACHED_QUESTIONS = [
             "que logro te enorgullece mas",
         ],
         "keywords": [],
+        # The old answer ended "y no tenerle miedo a lo que esté por venir". The
+        # word does not occur anywhere in the corpus -- `rg -i miedo wiki/`
+        # returns nothing -- so it was a self-assessment invented and then
+        # volunteered to a recruiter. The rest is grounded and is kept:
+        # wiki/faq/fortalezas-y-debilidades.md:17 ("Resolutivo: cuando surge un
+        # problema, busco soluciones en vez de quedarme parado. Si no sé algo, lo
+        # investigo hasta resolverlo") and
+        # wiki/stories/aprendizaje-autodidacta.md:21 ("aplico lo aprendido en un
+        # proyecto real lo antes posible"), both of which are now cited in the
+        # answer rather than paraphrased past.
         "answer": (
-            "Mi mayor logro, más allá de lo tangible y de los proyectos concretos, "
-            "es ser autodidacta, resolutivo y no tenerle miedo a lo que esté por venir."
+            "Mi mayor logro es ser autodidacta: aprender por mi cuenta lo que me "
+            "hace falta y aplicarlo en un proyecto real lo antes posible. Y ser "
+            "resolutivo: cuando no sé algo, lo investigo hasta resolverlo."
         ),
     },
     {
@@ -301,10 +357,24 @@ _CACHED_QUESTIONS = [
             "que sabes de api",
         ],
         "keywords": [],
+        # Three clauses removed, all of them ungrounded and none of them
+        # replaced: "y consumo" (no page attributes consuming a third-party
+        # API; `rg -i "consumo|consumir" wiki/` returns nothing),
+        # "gestión de sesiones" (`rg -i "sesion|sesión" wiki/` returns nothing)
+        # and "verbos HTTP ... diseño de contratos" (`rg -i verbo` and
+        # `rg -i contrato` both return nothing).
+        #
+        # "status codes" survives because wiki/skills/testing.md:27 attributes
+        # it -- as something the candidate TESTS ("Endpoints API (integración):
+        # request/response, status codes, errores"). So the answer now says what
+        # he actually does with them instead of claiming a grasp of HTTP verbs
+        # no page records. What is kept: wiki/skills/backend.md:17,23 (FastAPI,
+        # REST API design, chat endpoints, SSE audio streaming) and
+        # wiki/projects/interview-tts.md:32.
         "answer": (
-            "Diseño y consumo APIs REST con FastAPI. En InterviewTTS creé endpoints para "
-            "conversación, streaming de audio con SSE y gestión de sesiones. Entiendo "
-            "verbos HTTP, status codes y diseño de contratos."
+            "Diseño APIs REST con FastAPI. En InterviewTTS creé los endpoints de "
+            "conversación y el streaming de audio con SSE, y los testeo a nivel de "
+            "integración: request, response, status codes y errores."
         ),
     },
     {
@@ -326,12 +396,41 @@ _CACHED_QUESTIONS = [
             "por que te metiste en dam",
         ],
         "keywords": [],
+        # Keyed on WHY THIS PROGRAMME, and the old answer never named it -- it
+        # talked about an attraction to software and to AI and stopped there, so
+        # a recruiter asking "why did you choose DAM" got an answer that could
+        # have been given by anyone who ever liked computers.
+        #
+        # Removed, ungrounded: "A raíz de descubrir la programación, mi cabeza
+        # hizo click y empezó un no parar de querer saber más y aumentar mis
+        # conocimientos" (`rg -i "click|hizo clic" wiki/` returns nothing --
+        # an invented cognitive event, told to an interviewer as a memory), and
+        # "hasta su aplicación en el día a día y en los negocios" (the corpus
+        # attributes AI to *development*, never to business as a field of
+        # application: wiki/stories/autodidacta-fastapi-docker-async.md:18 says
+        # "el mundo de la inteligencia artificial aplicada al desarrollo"; the
+        # only business/AI lines in the corpus,
+        # wiki/projects/pagina-web-practicas.md:24,34, describe a feature built
+        # at the Ceesa internship, not an attraction to the subject).
+        #
+        # What replaces it, every clause cited:
+        #   the programme and the school  -> wiki/profile/mikel.md:24 ("FP
+        #       Superior Desarrollo de Aplicaciones Multiplataforma (DAM) at
+        #       TCIFP TARTANGA LHII (Erandio, presencial) ... finished 2026"),
+        #       and wiki/faq/presentacion-30-segundos.md:15
+        #   "siempre me atrajo la tecnología" -> wiki/faq/por-que-dejar-
+        #       supermercados.md:15,18, which is the candidate's own page for
+        #       exactly this motivation
+        #   what the FP taught               -> wiki/stories/autodidacta-
+        #       fastapi-docker-async.md:16 ("Java, JavaScript, PHP, SQL,
+        #       estructura en capas, patrones de diseño")
+        #   the AI and "de lleno"            -> same page, :18 and :29
         "answer": (
-            "Elegí estudiar desarrollo de software porque siempre me atrajo la tecnología. "
-            "A raíz de descubrir la programación, mi cabeza hizo click y empezó un no parar "
-            "de querer saber más y aumentar mis conocimientos. También me siento muy atraído "
-            "por todo lo relacionado con la inteligencia artificial, desde su desarrollo "
-            "hasta su aplicación en el día a día y en los negocios."
+            "Elegí DAM, el FP Superior de Desarrollo de Aplicaciones Multiplataforma que "
+            "estudié en TCIFP Tartanga LHII, porque siempre me atrajo la tecnología. Es la "
+            "base que me da el cambio de carrera: Java, SQL, estructura en capas y "
+            "patrones de diseño. Y al salir del temario me topé con el mundo de la "
+            "inteligencia artificial aplicada al desarrollo, en el que me he metido de lleno."
         ),
     },
 ]

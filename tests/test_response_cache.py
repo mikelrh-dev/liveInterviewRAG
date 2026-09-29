@@ -750,7 +750,9 @@ def _fixture_databases() -> set[str]:
 
 
 def _scan_offenders(
-    answers: list[str], attributed: dict[str, set[str]]
+    answers: list[str],
+    attributed: dict[str, set[str]],
+    vocabularies: dict[str, frozenset[str]] | None = None,
 ) -> dict[str, dict[str, list[str]]]:
     """Answers naming, per vocabulary, terms the corpus does not attribute.
 
@@ -758,11 +760,22 @@ def _scan_offenders(
     defect this section corrects was partly that the check lived beside one
     hand-picked answer, so there was exactly one thing to get wrong and exactly
     one place to extend.
+
+    ``vocabularies`` is a parameter rather than a closed-over lookup at
+    ``_VOCABULARIES`` because the two are no longer the same set: the claim
+    scanner below registers its own vocabularies, and a helper that resolved
+    names only against ``_VOCABULARIES`` raised ``KeyError`` on those instead of
+    scanning them. A helper whose signature says "per vocabulary" while reading
+    a different one is a helper that will quietly under-scan the day a second
+    vocabulary is added -- which is the class of failure this file exists to
+    prevent, one level down.
     """
+    if vocabularies is None:
+        vocabularies = _VOCABULARIES
     offenders: dict[str, dict[str, list[str]]] = {}
     for answer in answers:
         for name, terms in attributed.items():
-            ungrounded = sorted(_terms_in(answer, _VOCABULARIES[name]) - terms)
+            ungrounded = sorted(_terms_in(answer, vocabularies[name]) - terms)
             if ungrounded:
                 offenders.setdefault(answer, {})[name] = ungrounded
     return offenders
@@ -937,7 +950,9 @@ def test_a_new_entry_that_overstates_something_is_caught_without_being_registere
         "backend.services.response_cache._CACHED_QUESTIONS",
         [{"answer": ungrounded, "phrases": ["x"], "keywords": []}],
     )
-    offenders = _scan_offenders(_cached_answers(), {vocabulary: attributed})
+    offenders = _scan_offenders(
+        _cached_answers(), {vocabulary: attributed}, _VOCABULARIES
+    )
     assert offenders, (
         f"a brand new cache entry claiming something the corpus does not "
         f"attribute was not caught by the {vocabulary} scan. The scan is "
@@ -1279,7 +1294,9 @@ def test_no_cached_answer_names_an_area_the_wiki_does_not_attribute():
     )
     assert attributed, "the wiki attributes no areas at all; the scan is inert"
 
-    offenders = _scan_offenders(_cached_answers(), {"areas": attributed})
+    offenders = _scan_offenders(
+        _cached_answers(), {"areas": attributed}, _VOCABULARIES
+    )
     assert not offenders, (
         f"cached answers naming areas the wiki never attributes: {offenders}"
     )
@@ -1443,4 +1460,284 @@ def test_the_corpus_attributed_databases_are_the_ones_it_lists():
         "the corpus's database list changed; the consistency controls above are "
         "calibrated on this set. A corpus edit that REMOVES a database makes the "
         "understated control vacuous; one that ADDS one just widens it."
+    )
+
+
+# ─── The class: a claim the corpus does not attribute, in ANY entry ──────────
+#
+# WHY A THIRD SCANNER, AND WHY IT IS NOT ANOTHER HANDFUL OF ANSWERS
+# ------------------------------------------------------------------
+# The state this section is written against, measured on the table as it stood:
+#
+#   * 20 cached answers, spoken verbatim to an interviewer.
+#   * The cache is consulted BEFORE retrieval, so RAG grounding cannot see an
+#     answer at all. That is the property every one of these defects depended
+#     on, including the four found by the per-claim audit that produced this
+#     section: an invented self-disclosure ("no tenerle miedo a lo que este por
+#     venir"), an invented cognitive event ("mi cabeza hizo click"), and an
+#     invented technical claim ("endpoints ... de gestion de sesiones", "Entiendo
+#     verbos HTTP").
+#   * The guards that existed covered `databases` and `areas` -- two
+#     hand-registered vocabularies -- plus repo-evidence deploy mechanisms. A
+#     fourth class of claim was reachable by every future entry and by no scan.
+#
+# So the invariant is one step above the ones already here: a cached answer may
+# not name a CONCRETE CLAIM the candidate's own corpus never attributes, in
+# either of two classes of claim.
+#
+#   self_disclosure  a trait or self-assessed psychological state volunteered
+#                    as the candidate's own. Nothing in the repository can
+#                    settle this either way; only the candidate's pages can, and
+#                    they are authoritative. This is the class the audit was
+#                    told to look for.
+#   artefacts        a nameable technical artefact, construct or product. A
+#                    recruiter asking "have you used X" gets a yes or a no, and
+#                    this cache would be the one saying it.
+#
+# Both are SCANNERS, not allowlists, in the sense the rest of this file means
+# it: a term the corpus attributes passes without this test knowing anything
+# about it, and a term the corpus does not attribute turns the suite red. The
+# vocabularies are deliberately separate from ``_VOCABULARIES`` because that one
+# carries a reach requirement and a calibration contract of its own, and a
+# vocabulary with no current violation must be allowed to be quiet.
+#
+# CORPUS ABSENCE IS A FAILURE HERE, NOT A SKIP
+# ----------------------------------------------
+# Every ``needs_real_wiki`` check above is ``skipif``-ed on the corpus being
+# absent, which is why "the one guard that exists" historically never ran in
+# CI: a skip is green, and a green skip is indistinguishable from a pass. This
+# scanner has no such escape. ``wiki/`` is 46 tracked files in ``origin/main``
+# and ``actions/checkout`` brings it to every run, so an absent corpus means the
+# corpus was REMOVED -- which is precisely the event that would silently turn
+# every truthfulness check in this repository into dead code. The failure is
+# raised from inside the test, so it is a red run, and the message says which
+# event it is looking for.
+#
+# THE LIMITS, MEASURED RATHER THAN ASSUMED
+# -----------------------------------------
+#   * A union scan grounds a term the corpus mentions ANYWHERE. So it accepts a
+#     term used in a negating context: ``wiki/faq/fortalezas-y-debilidades.md``
+#     line 24 names "perfeccionista" in order to warn against claiming it, and
+#     that mention alone makes "perfeccionista" scannable-as-grounded. Verified,
+#     not assumed -- the negative control below deliberately does NOT use that
+#     word, and says so where the reader will find it.
+#   * A union scan cannot adjudicate a CONTRADICTION. One cached answer says he
+#     used Python on DAM projects while
+#     ``wiki/stories/autodidacta-fastapi-docker-async.md`` line 28 says he
+#     learned Python on his own account, outside the syllabus. Every term in
+#     both sentences is attributed by the corpus, so no vocabulary scan of any
+#     kind can catch it. Catching it needs the question-to-page binding this
+#     file already documents as the limit of the ``areas`` scan (lines 561-568)
+#     and does not have.
+#   * The scan reports "this term is nowhere in the corpus", which is weaker
+#     than "this answer misstates the page that answers its question". It is
+#     still the class, and it is a failure the cache can be shipped against.
+
+#: Terms the corpus currently attributes, and therefore terms a cached answer is
+#: ALLOWED to name. Recorded so a corpus edit that drops one is a visible,
+#: deliberate change to what the cache may claim, rather than a silent widening.
+#:
+#: Measured against the 37 loaded pages, not chosen. Two of these are grounded
+#: only incidentally, and that is the point of writing them down:
+#: ``desordenado`` is the one trait the candidate actually discloses
+#: (wiki/faq/fortalezas-y-debilidades.md:21, in full, with its mitigation), and
+#: ``perfeccionista`` is grounded by a page that names it in order to WARN
+#: against claiming it (same file, line 24) -- so a union scan accepts it even
+#: though the corpus never attributes it as a trait. That is the limit this
+#: scanner has, exercised in a control rather than described in a comment.
+_SELF_DISCLOSURE_ATTRIBUTED = frozenset({
+    "autodidacta", "constante", "curioso", "desordenado", "perfeccionista",
+    "resolutivo", "trabajador",
+})
+
+_CLAIM_VOCABULARIES: dict[str, frozenset[str]] = {
+    "self_disclosure": frozenset({
+        # Candidate's own words about himself. Includes the terms the corpus
+        # DOES attribute: a vocabulary that omitted them could not check them,
+        # and the positive control below would then pass because it was
+        # scanning nothing -- which is the failure mode of every scanner in
+        # this file, inverted.
+        "ansiedad", "autodidacta", "cabezota", "click", "constante",
+        "curioso", "desordenado", "impaciente", "irresponsable", "miedo",
+        "miedos", "nervios", "obstinado", "perfeccionista", "perezoso",
+        "resolutivo", "supersticion", "terco", "timido", "trabajador",
+    }),
+    "artefacts": frozenset({
+        # Nameable artefacts, constructs and products. Deliberately excludes
+        # the database names and the container/orchestrator terms, which
+        # `_VOCABULARIES["databases"]` and `_MECHANISM_CLAIMS` already own --
+        # two scanners covering one term would be one scanner that could be
+        # removed without the other noticing.
+        "ansible", "aws", "azure", "cassandra", "confluencia", "django",
+        "elasticsearch", "flask", "gcp", "gitlab", "grafana", "graphql", "grpc",
+        "jenkins", "jira", "kafka", "microservicio", "orquestacion",
+        "prometheus", "rabbitmq", "serverless", "sesion", "sesiones", "spring",
+        "terraform", "verbo", "verbos",
+    }),
+}
+
+
+def _require_wiki_corpus() -> dict[str, str]:
+    """The candidate's pages, or a FAILURE explaining that they are gone.
+
+    Not a skip. See the section comment: a skip is green, and the whole point
+    of this scanner is that a guard which cannot run must not be able to look
+    like one that passed.
+    """
+    from tests.real_wiki import load_documents
+
+    try:
+        documents = load_documents()
+    except Exception as exc:  # noqa: BLE001  -- any loader failure is the same event
+        raise AssertionError(
+            f"the candidate's wiki/ is absent or unloadable at {WIKI_DIR} "
+            f"({type(exc).__name__}: {exc}). These 46 files are tracked in "
+            "origin/main and actions/checkout brings them to every run, so an "
+            "absent corpus means the corpus was REMOVED. Failing here on "
+            "purpose: with the corpus gone, every truthfulness check in this "
+            "repository becomes dead code that still looks like coverage, and a "
+            "skip would report that as green."
+        ) from exc
+    assert documents, (
+        f"{WIKI_DIR} loaded zero documents. The cached answers are claims about "
+        "a person; a corpus that attributes nothing cannot support any of them, "
+        "so this is a failure and not an empty set of violations."
+    )
+    return documents
+
+
+def test_the_corpus_attributes_exactly_the_disclosed_traits_this_scan_assumes():
+    """Pin the attributed/unattributed split, so the control stays a control.
+
+    If a corpus edit starts attributing "miedo", the negative control below
+    becomes vacuous and would start passing for the wrong reason. That is a
+    visible change here rather than a control that quietly stopped testing.
+    """
+    attributed = _corpus_vocabulary(
+        _CLAIM_VOCABULARIES["self_disclosure"], _require_wiki_corpus()
+    )
+    assert attributed == _SELF_DISCLOSURE_ATTRIBUTED, (
+        f"the self_disclosure vocabulary's attributed set changed: "
+        f"{sorted(attributed)}. The calibration and the negative control below "
+        f"are both written against {sorted(_SELF_DISCLOSURE_ATTRIBUTED)}; "
+        "re-derive them rather than let a control pass for the wrong reason."
+    )
+
+
+def test_no_cached_answer_makes_a_claim_the_wiki_does_not_support():
+    """The class, as a property of every entry rather than one of them.
+
+    Fails if any cached answer -- present or future, named or not -- names a
+    concrete claim the candidate's own pages never attribute. Every defect this
+    repository has found in this table was a claim of exactly this shape, made
+    in a string that never reaches retrieval.
+    """
+    documents = _require_wiki_corpus()
+    attributed = {
+        name: _corpus_vocabulary(terms, documents)
+        for name, terms in _CLAIM_VOCABULARIES.items()
+    }
+    for name, attributed_terms in attributed.items():
+        unattributed = set(_CLAIM_VOCABULARIES[name]) - attributed_terms
+        assert unattributed, (
+            f"every term of the {name} vocabulary is now attributed by the "
+            f"corpus, so the {name} scan can never turn red and is inert"
+        )
+
+    offenders = _scan_offenders(
+        _cached_answers(), attributed, _CLAIM_VOCABULARIES
+    )
+    assert not offenders, (
+        f"cached answers making a claim the wiki does not support: {offenders}. "
+        "Either the answer names something the candidate's pages never say, or "
+        "the page that says it is not in the corpus. An interviewer is the last "
+        "person who should find out which."
+    )
+
+
+def test_the_claim_scan_rejects_a_disclosure_the_wiki_never_makes():
+    """The negative control, on the shape of the defect that was reported.
+
+    An invented self-disclosure is the worst case this system can ship: it is
+    volunteered to a recruiter as a fact about a person, and no file in the
+    repository can settle it. "Perfeccionista" would be the natural example and
+    is deliberately NOT used -- wiki/faq/fortalezas-y-debilidades.md:24 names it
+    to warn against claiming it, so a union scan grounds it and the control
+    would pass for the wrong reason. That is the limit recorded in the section
+    comment, exercised rather than described.
+    """
+    documents = _require_wiki_corpus()
+    attributed = _corpus_vocabulary(
+        _CLAIM_VOCABULARIES["self_disclosure"], documents
+    )
+    invented = "Mi mayor logro es no tenerle miedo a lo que este por venir."
+    assert "miedo" not in attributed, (
+        "the corpus now attributes 'miedo'; this control proves nothing and the "
+        "negative example has to change"
+    )
+    offenders = _scan_offenders(
+        [invented], {"self_disclosure": attributed}, _CLAIM_VOCABULARIES
+    )
+    assert offenders, (
+        "an invented self-disclosure was not rejected by the scan, so the scan "
+        "is not pointed at the class of defect it was written for"
+    )
+    assert "miedo" in offenders[invented]["self_disclosure"], (
+        f"the failure must name the undisclosed trait: {offenders!r}"
+    )
+
+
+def test_the_claim_scan_accepts_the_disclosure_the_wiki_makes():
+    """The positive control, and the discrimination that makes the guard usable.
+
+    If the scanner banned trait words outright it would be unusable: the
+    candidate's one honestly-disclosed weakness would have to be removed from
+    the answer to a question that asks for it, which is the opposite defect.
+    wiki/faq/fortalezas-y-debilidades.md:21 states the weakness in full,
+    including the mitigation, so the honest answer passes the same scan that
+    rejects the invented one.
+    """
+    documents = _require_wiki_corpus()
+    attributed = {
+        name: _corpus_vocabulary(terms, documents)
+        for name, terms in _CLAIM_VOCABULARIES.items()
+    }
+    honest = get_cached_response("¿Cuáles son tus debilidades?")
+    assert honest is not None
+    assert "desordenado" in honest.lower(), (
+        "the weaknesses answer no longer states the weakness the corpus "
+        f"discloses: {honest!r}"
+    )
+    offenders = _scan_offenders([honest], attributed, _CLAIM_VOCABULARIES)
+    assert not offenders, (
+        "the scan rejected a claim wiki/faq/fortalezas-y-debilidades.md:21 "
+        f"makes verbatim, so it cannot be used to tell a true answer from a "
+        f"false one: {offenders}"
+    )
+
+
+def test_the_claim_scan_rejects_an_artefact_the_wiki_never_mentions():
+    """The artefact class, proved on the claim shape that shipped.
+
+    "Endpoints ... de gestion de sesiones" and "Entiendo verbos HTTP" were both
+    removed from the REST answer with no page behind either. Neither word occurs
+    anywhere in the corpus, which is the whole of the evidence.
+    """
+    documents = _require_wiki_corpus()
+    attributed = _corpus_vocabulary(
+        _CLAIM_VOCABULARIES["artefacts"], documents
+    )
+    invented = (
+        "En InterviewTTS cree endpoints de conversacion, streaming de audio con "
+        "SSE y gestion de sesiones. Entiendo verbos HTTP y status codes."
+    )
+    offenders = _scan_offenders(
+        [invented], {"artefacts": attributed}, _CLAIM_VOCABULARIES
+    )
+    assert offenders, (
+        "an artefact claim the corpus never mentions was accepted, so the scan "
+        "is not pointed at the class of defect it was written for"
+    )
+    assert set(offenders[invented]["artefacts"]) == {"sesiones", "verbos"}, (
+        f"the scan must name exactly the ungrounded constructs: {offenders!r}"
     )
