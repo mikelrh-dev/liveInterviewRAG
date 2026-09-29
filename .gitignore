@@ -85,3 +85,25 @@ node_modules/
 
 # Wiki audit reports (local working docs, not project content)
 AUDITORIA-*.md
+
+# Conversation-database backups. The live database is covered by *.db above, but a
+# timestamped backup ends in .bak-<stamp> and matches nothing, so a plain `git add -A`
+# staged 1.68 MB of transcribed interview history. These are the most sensitive thing
+# this project produces and they are never project content.
+data/*.db.bak-*
+
+# Local clone of the original, kept side by side for comparison. It is a nested git
+# repository: git records it as a gitlink, which is neither useful nor reviewable here.
+original/
+
+# CodeGraph local index and daemon state. codegraph.db alone is 12.5 MB of derived
+# data -- it is a cache of the source, not part of the source.
+.codegraph/
+
+# Local measurement artifacts written by the audit's regression-injection harness.
+.measure/
+
+# Obsidian knowledge vault about this project. Its manifest references the private
+# wiki throughout, so its provenance cannot be shown to be independent of it. Local
+# only until that is established.
+wikiDocs/
