@@ -14,6 +14,18 @@ Deriving the expectation from ``MAX_AUDIO_SIZE`` rather than hardcoding 5m is
 the whole point. If someone raises or lowers the ceiling in the code, this test
 fails until the config is moved with it, instead of the two layers drifting
 apart silently and the drift only surfacing in production.
+
+WHY THE FLOOR IS STRICTER THAN THE CONSTANT
+-------------------------------------------
+This first asserted ``declared >= MAX_AUDIO_SIZE``, and it passed -- at exact
+equality, which is the failing case. ``MAX_AUDIO_SIZE`` bounds the AUDIO FILE.
+What nginx bounds is the multipart/form-data BODY that carries it, and a body
+containing a 5 MiB file is larger than 5 MiB: boundaries, a
+``Content-Disposition`` header per part, the filename, and the other fields the
+client sends with the recording. At exact equality the single largest upload
+the application accepts is the one nginx rejects, with a bare 413 that names
+neither layer and reproduces only at the maximum -- so every smaller recording
+looks fine and the ceiling looks correct right up until it is not.
 """
 
 import re
@@ -29,6 +41,17 @@ NGINX_CONF = REPO_ROOT / "nginx" / "interview.conf"
 #: nginx's own default when the directive is absent entirely. Worth naming so
 #: the failure message can say what the value is being compared against.
 NGINX_DEFAULT_MAX_BODY = 1024 * 1024
+
+#: How far ``client_max_body_size`` must clear ``MAX_AUDIO_SIZE``, in bytes.
+#:
+#: This is the multipart envelope, not a guess at "some slack". A realistic
+#: ``multipart/form-data`` body for one file costs a few hundred bytes: a
+#: boundary delimiter and a ``Content-Disposition`` header per part, plus the
+#: other fields the client sends alongside the recording. 256 KiB is roughly
+#: 200x that, so the requirement survives a client that adds fields this
+#: repository has never seen, while still being small enough that the gap
+#: between the two layers stays obvious to anyone reading the config.
+MIN_MULTIPART_HEADROOM = 256 * 1024
 
 _SIZE_RE = re.compile(r"client_max_body_size\s+(\d+)([kKmMgG]?)\s*;")
 _MULTIPLIERS = {"": 1, "k": 1024, "m": 1024**2, "g": 1024**3}
@@ -143,23 +166,38 @@ class TestUploadCeilingAgreesAcrossLayers:
             "any recording above it before the application sees the request"
         )
 
-    def test_api_ceiling_is_at_least_the_application_ceiling(self, conf):
+    def test_api_ceiling_clears_the_application_ceiling_by_the_envelope(self, conf):
+        """The floor is ``MAX_AUDIO_SIZE + envelope``, not ``MAX_AUDIO_SIZE``.
+
+        Equality is a failure, not a pass, and that is the whole point of this
+        assertion: at exact equality the maximum legitimate upload is the one
+        nginx rejects. The failure is only reproducible at the ceiling, so
+        nothing else in either suite sees it.
+        """
         api = _braced_block(conf, r"location\s+/api/\s*\{")
         declared = _directive_bytes(api)
+        required = MAX_AUDIO_SIZE + MIN_MULTIPART_HEADROOM
 
         assert declared is not None, "client_max_body_size is missing from /api/"
-        assert declared >= MAX_AUDIO_SIZE, (
-            f"nginx allows {declared} bytes but the application accepts "
-            f"{MAX_AUDIO_SIZE} (MAX_AUDIO_SIZE). The outer layer wins, so every "
-            f"upload between {declared} and {MAX_AUDIO_SIZE} bytes is rejected "
-            "by nginx with a 413 the application cannot explain."
+        assert declared >= required, (
+            f"nginx allows {declared} bytes. The application accepts "
+            f"{MAX_AUDIO_SIZE} bytes of audio (MAX_AUDIO_SIZE), and a "
+            "multipart/form-data body carrying that audio is LARGER than the "
+            f"file, so at least {required} bytes are needed "
+            f"(MAX_AUDIO_SIZE + {MIN_MULTIPART_HEADROOM} of envelope). With "
+            f"{declared} bytes, uploads above {declared - MIN_MULTIPART_HEADROOM}"
+            " are rejected by nginx with a bare 413 before FastAPI ever sees "
+            "them -- and the largest legitimate upload fails first, so every "
+            "smaller recording looks fine right up until the ceiling."
         )
 
     def test_exceeding_the_application_ceiling_is_nginx_s_job_to_allow(self, conf):
         """The ceiling is not the ceiling: it is a gate that must not pre-empt.
 
-        Matching exactly would also be correct, but asserting the floor keeps a
-        future, looser nginx from being a silent hole in the limit while
+        Matching the application's limit exactly would NOT be correct -- the
+        two numbers measure different things, which is what the assertion above
+        exists for. What is asserted here is the weaker, separate claim that
+        keeps a future, looser nginx from being a silent hole in the limit while
         documenting which layer is authoritative.
         """
         api = _braced_block(conf, r"location\s+/api/\s*\{")
