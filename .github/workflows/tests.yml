@@ -77,13 +77,17 @@ name: tests
 #
 # MODEL DOWNLOAD
 # --------------
-# The RAG embeds with `all-MiniLM-L6-v2` (~90 MB) and downloads it from
-# HuggingFace on first use. It is NOT vendored, and this workflow does not
-# pretend otherwise. First run downloads it; later runs hit the cache. A
-# transient network failure must not be reported as a test failure, so the
-# download is retried, in its own step, BEFORE any test runs. The tests
-# themselves still run exactly once, with no retry: retrying a download is
-# resilience, retrying a test is hiding a defect.
+# The RAG embeds with `paraphrase-multilingual-MiniLM-L12-v2` (~457 MB) and
+# downloads it from HuggingFace on first use. It is NOT vendored, and this
+# workflow does not pretend otherwise. First run downloads it; later runs hit
+# the cache. A transient network failure must not be reported as a test
+# failure, so the download is retried, in its own step, BEFORE any test runs.
+# The tests themselves still run exactly once, with no retry: retrying a
+# download is resilience, retrying a test is hiding a defect.
+#
+# The deployed unit makes the same download, which is why
+# deployment/interviewtts.service lists the HuggingFace cache in ReadWritePaths:
+# a cache that is not writable is a 457 MB download at every restart.
 #
 # No matrix across Python versions: the project declares `requires-python =
 # ">=3.10"` and 3.10 is what the venv runs. A version matrix here would triple
@@ -122,9 +126,18 @@ jobs:
       # Pinned rather than inherited: ubuntu-latest ships whatever Node it
       # ships, and "the Node suite passed" should not depend on a runner image
       # detail. Nothing in tests/frontend/*.test.mjs needs a build step.
+      #
+      # 22, and the floor is the test runner, not the framework. `node --test`
+      # did not accept a glob in its positional arguments until Node 21
+      # (nodejs/node#50658: "Glob support for the test runner is unfortunately
+      # not part of Node.js 20"). This step runs
+      # `node --test "tests/frontend/*.test.mjs"`, so on the Node 20 that used to
+      # be pinned here the quoted glob was taken as a literal path and the step
+      # died with "Could not find 'tests/frontend/*.test.mjs'". It worked on the
+      # author's machine only because that machine runs 22.
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: npm
 
       - name: Install Node dependencies
@@ -139,10 +152,11 @@ jobs:
         # fails on `Cannot find package 'jsdom'`, and the failure reads as a
         # harness problem rather than a missing install.
         #
-        # jsdom is pinned exactly, and 26.x is the newest line whose Node floor
-        # covers BOTH ends: `engines: {node: ">=18"}`. jsdom 28+ requires
-        # ^20.19 || ^22.12 || >=24 and jsdom 30 requires ^22.22.2, neither of
-        # which the Node 20 pinned above satisfies.
+        # jsdom is pinned exactly in package.json (26.1.0, `engines: {node:
+        # ">=18"}`). The pin is what matters now, not the version: an exact
+        # version cannot drift under a fresh `npm ci`, and neither can its
+        # transitive tree. The Node floor for this job is set by the test runner
+        # above, not by jsdom.
 
       - name: Install Python dependencies
         run: |
@@ -243,19 +257,28 @@ jobs:
         with:
           path: ~/.cache/huggingface
           key: >-
-            ${{ runner.os }}-minilm-l6-v2-${{ hashFiles('backend/requirements.txt') }}
+            ${{ runner.os }}-minilm-l12-paraphrase-multilingual-${{ hashFiles('backend/requirements.txt') }}
           restore-keys: |
-            ${{ runner.os }}-minilm-l6-v2-
+            ${{ runner.os }}-minilm-l12-paraphrase-multilingual-
 
       - name: Pre-fetch the embedding model
+        # The model is whatever backend/config.py's EMBEDDING_MODEL defaults to,
+        # which is paraphrase-multilingual-MiniLM-L12-v2 (~457 MB). This step used
+        # to pre-fetch all-MiniLM-L6-v2, the previous English-only default: it
+        # warmed a cache key nothing read, and the suite then downloaded the real
+        # 457 MB model itself, uncached, after this step had already claimed to
+        # have handled the download. Read the value out of config.py rather than
+        # repeating it here, so the two cannot drift again.
         run: |
+          model="$(python -c 'from backend.config import config; print(config.EMBEDDING_MODEL)')"
+          echo "pre-fetching $model"
           for attempt in 1 2 3; do
-            if python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"; then
-              echo "model ready"
+            if python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('$model')"; then
+              echo "model ready: $model"
               break
             fi
             if [ "$attempt" = "3" ]; then
-              echo "could not download all-MiniLM-L6-v2 after 3 attempts"
+              echo "could not download $model after 3 attempts"
               exit 1
             fi
             echo "model download failed (attempt $attempt); retrying in 10s"
@@ -273,4 +296,60 @@ jobs:
         # reported as a Python failure and read as a harness problem. No
         # retry: test_cleanup_custom_days_override is a real test now, and if
         # it ever fails that is information.
-        run: node --test "tests/frontend/*.test.mjs"
+        #
+        # THE FLOOR BELOW IS NOT OPTIONAL. Fixing the Node pin above is what
+        # makes this step able to run at all; it is also what makes it able to
+        # pass without running a single test. Since Node 21, a glob with magic
+        # characters that matches nothing is not an error -- it is an empty file
+        # list:
+        #
+        #   $ node --test "tests/frontend/nope-*.test.mjs"; echo "exit $?"
+        #   # tests 0
+        #   # pass 0
+        #   exit 0
+        #
+        # (A literal path that does not exist still fails, with "Could not
+        # find". It is specifically a *glob* that matches nothing that is
+        # silent.) So if tests/frontend/ is ever renamed, moved, or emptied,
+        # this step goes green having verified nothing -- strictly worse than
+        # the hard failure it replaced, because it looks like a pass.
+        #
+        # So the count of tests node reports is asserted, against the count of
+        # test files that exist. The floor is derived from the tree rather than
+        # pinned to 263, which means it cannot go stale: every file on disk
+        # must have contributed at least one test, and no file may be missing.
+        # The exact total is pinned where it belongs, in
+        # tests/test_readme_test_counts.py::NODE_TESTS, regenerated with the
+        # same command.
+        run: |
+          set -euo pipefail
+
+          node --test --test-reporter=tap "tests/frontend/*.test.mjs" | tee node-test.tap
+
+          node -e '
+            const fs = require("node:fs");
+            const tap = fs.readFileSync("node-test.tap", "utf8");
+            const ran = Number(/^# tests (\d+)$/m.exec(tap)?.[1] ?? NaN);
+            const files = fs
+              .readdirSync("tests/frontend")
+              .filter((name) => name.endsWith(".test.mjs")).length;
+
+            if (!files) {
+              throw new Error(
+                "tests/frontend holds no *.test.mjs file. The glob matched " +
+                "nothing, and node --test exits 0 in that case, so this step " +
+                "would pass without running a single test."
+              );
+            }
+            if (!(ran >= files)) {
+              throw new Error(
+                `node --test reported ${ran} tests across ${files} files under ` +
+                "tests/frontend. The glob did not expand, and node --test exits " +
+                "0 when a glob matches nothing, so this step would pass without " +
+                "running a single test."
+              );
+            }
+            console.log(`OK: ${ran} tests across ${files} files.`);
+          '
+
+          rm -f node-test.tap

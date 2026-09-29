@@ -43,14 +43,18 @@ is small and one-directional.
 """
 
 import re
+import shutil
 import subprocess
 import sys
+import textwrap
 from pathlib import Path
 
 import pytest
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 READMES = (REPO_ROOT / "README.md", REPO_ROOT / "README_ES.md")
+CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "tests.yml"
 
 #: How many collected tests are expected to fail. See the module docstring:
 #: the collector cannot know this, so it is asserted rather than measured.
@@ -75,6 +79,14 @@ XFAILED = 0
 #: for a count the Node side already prints on its own CI run. Regenerate with
 #:   node --test "tests/frontend/*.test.mjs"
 NODE_TESTS = 263
+
+#: The oldest Node whose ``node --test`` expands a glob in its positional
+#: arguments. Glob support landed in v21 and was explicitly NOT backported to
+#: v20 -- nodejs/node#50658, "Glob support for the test runner is unfortunately
+#: not part of Node.js 20". Before it, a quoted ``"tests/frontend/*.test.mjs"``
+#: is a literal path and the run dies with "Could not find", which is at least
+#: loud. See the class below for why that is not the end of the story.
+NODE_GLOB_FLOOR = 21
 
 #: "716 Python tests", "716 tests de Python".
 _PYTHON_COUNT_RE = re.compile(r"(\d+)\s+(?:Python\s+tests|tests\s+de\s+Python)", re.I)
@@ -234,3 +246,173 @@ def test_the_two_readmes_agree_with_each_other():
     assert len({frozenset(found) for found in counts.values()}) == 1, (
         f"the READMEs state different Python test counts: {counts}"
     )
+
+
+# ─── The CI Node step cannot pass without running anything ───────────────────
+#
+# It lives here rather than in a new module because this is the same claim from
+# the other side: NODE_TESTS above is "how many tests the frontend suite has",
+# and this is "the CI step that runs it must actually have run that many". The
+# count is only worth stating if something executes it.
+
+
+def _workflow_steps() -> list[dict]:
+    """The steps of the tests job, parsed.
+
+    Parsed rather than scanned, so a malformed workflow is a failure here with a
+    YAML error attached instead of a regex quietly matching the wrong step. The
+    ``on:`` key becomes ``True`` under PyYAML's YAML 1.1 boolean rules; nothing
+    below looks at it, and that is why parsing is safe here.
+    """
+    document = yaml.safe_load(CI_WORKFLOW.read_text(encoding="utf-8"))
+    return document["jobs"]["tests"]["steps"]
+
+
+def _setup_node_step() -> dict:
+    step = next(
+        (s for s in _workflow_steps() if "actions/setup-node" in str(s.get("uses", ""))),
+        None,
+    )
+    assert step is not None, f"{CI_WORKFLOW.name} has no actions/setup-node step"
+    return step
+
+
+def _frontend_step() -> str:
+    """The ``run`` script of the step that invokes ``node --test``."""
+    runs = [str(s.get("run", "")) for s in _workflow_steps() if "node --test" in str(s.get("run", ""))]
+    assert len(runs) == 1, (
+        f"expected exactly one step running `node --test`, found {len(runs)}; "
+        "the floor below is attached to one of them and the other would be "
+        "unguarded"
+    )
+    return runs[0]
+
+
+def _floor_program() -> str:
+    """The JS the frontend step runs to check that tests actually executed.
+
+    Extracted from the workflow rather than restated here. The whole point is
+    that this is the program CI runs: a copy in this file would be a second
+    implementation that could disagree with the first, and the disagreement
+    would be invisible -- the Python side would keep passing while CI ran
+    whatever the YAML actually says.
+    """
+    match = re.search(r"node -e '\n(.*?)\n\s*'", _frontend_step(), re.DOTALL)
+    assert match is not None, (
+        f"the `node --test` step in {CI_WORKFLOW.name} has no `node -e` check "
+        "after it, so nothing asserts that the glob matched anything. On Node "
+        "21+ a glob that matches nothing prints an empty TAP stream and exits 0, "
+        "which turns a renamed tests/frontend/ into a green step that verified "
+        "nothing."
+    )
+    return textwrap.dedent(match.group(1))
+
+
+class TestTheCiNodeStepCannotPassOnNothing:
+    def test_the_pinned_node_expands_globs(self):
+        """The pin is the first half of the fix; without it the step cannot run.
+
+        It was ``'20'``, and Node 20's test runner does not expand a glob in its
+        positional arguments (nodejs/node#50658). The command below therefore
+        failed with "Could not find 'tests/frontend/*.test.mjs'" on every CI run
+        and passed on the author's machine, which runs 22.
+        """
+        version = str(_setup_node_step()["with"]["node-version"])
+        major = int(re.match(r"(\d+)", version).group(1))
+        assert major >= NODE_GLOB_FLOOR, (
+            f"{CI_WORKFLOW.name} pins node-version {version!r}, but `node --test` "
+            f"only expanded globs in positional arguments from Node "
+            f"{NODE_GLOB_FLOOR}. The frontend step runs "
+            '`node --test "tests/frontend/*.test.mjs"`, which on Node 20 is a '
+            "literal path and fails with 'Could not find'."
+        )
+
+    def test_the_step_checks_how_many_tests_ran(self):
+        assert _floor_program().strip(), "the extracted floor program is empty"
+
+    @staticmethod
+    def _tap_summary(pattern: str) -> str:
+        """A real TAP stream from a real ``node --test`` run, as CI would see it."""
+        if shutil.which("node") is None:
+            pytest.skip("node not available")
+        result = subprocess.run(
+            ["node", "--test", "--test-reporter=tap", pattern],
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        return result.stdout
+
+    def _run_floor_against(self, tmp_path: Path, tap: str, files: int) -> subprocess.CompletedProcess:
+        """Run the workflow's own floor program over a synthetic workspace.
+
+        The program reads ``node-test.tap`` and lists ``tests/frontend`` relative
+        to the working directory, so the workspace is built in a tmp dir and node
+        is run there. The real directory is never touched and the real suites are
+        never re-run.
+        """
+        (tmp_path / "node-test.tap").write_text(tap, encoding="utf-8")
+        suite_dir = tmp_path / "tests" / "frontend"
+        suite_dir.mkdir(parents=True)
+        for index in range(files):
+            (suite_dir / f"synthetic{index}.test.mjs").write_text(
+                "import { test } from 'node:test';\n", encoding="utf-8"
+            )
+        if shutil.which("node") is None:
+            pytest.skip("node not available")
+        return subprocess.run(
+            ["node", "-e", _floor_program()],
+            cwd=str(tmp_path),
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+
+    def test_a_run_that_executed_the_suite_passes(self, tmp_path):
+        """The floor must not be a floor that fails a healthy run."""
+        files = len(list((REPO_ROOT / "tests" / "frontend").glob("*.test.mjs")))
+        result = self._run_floor_against(
+            tmp_path, self._tap_summary("tests/frontend/*.test.mjs"), files
+        )
+        assert result.returncode == 0, (
+            f"the workflow's floor rejects a healthy run.\n"
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        )
+
+    def test_a_glob_that_matched_nothing_fails(self, tmp_path):
+        """The silent hole, proven rather than described.
+
+        ``node --test --test-reporter=tap "tests/frontend/nope-*.test.mjs"``
+        exits 0 and reports ``# tests 0``. That is the whole reason the floor
+        exists: fix the Node pin alone and a renamed or moved ``tests/frontend/``
+        turns the frontend step into a green no-op, which is strictly worse than
+        the hard failure it replaced. The tap stream is generated by really
+        running node against a glob that matches nothing, so this test measures
+        the current Node rather than trusting the comment in the workflow.
+        """
+        files = len(list((REPO_ROOT / "tests" / "frontend").glob("*.test.mjs")))
+        result = self._run_floor_against(
+            tmp_path, self._tap_summary("tests/frontend/nope-*.test.mjs"), files
+        )
+        assert result.returncode != 0, (
+            "the floor ACCEPTED a run that executed nothing. `node --test` "
+            "reported '# tests 0' and this step would go green having verified "
+            "nothing at all."
+        )
+        assert "did not expand" in result.stderr, (
+            "the floor failed, but not for the reason this test exists; the "
+            f"message has to name the empty glob.\nstderr:\n{result.stderr}"
+        )
+
+    def test_an_empty_suite_directory_fails(self, tmp_path):
+        """The other way the glob goes empty: the files are gone entirely."""
+        result = self._run_floor_against(
+            tmp_path, self._tap_summary("tests/frontend/nope-*.test.mjs"), files=0
+        )
+        assert result.returncode != 0, (
+            "the floor accepted a tests/frontend/ with no *.test.mjs in it"
+        )
+        assert "no *.test.mjs" in result.stderr, (
+            f"the failure has to say the suite directory is empty.\nstderr:\n{result.stderr}"
+        )
