@@ -3,6 +3,7 @@
 import fnmatch
 import os
 import re
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -1577,6 +1578,23 @@ _CLAIM_VOCABULARIES: dict[str, frozenset[str]] = {
 }
 
 
+#: The two corpus populations this guard is calibrated for, matching the ones
+#: ``tests/real_wiki.py`` records for the retrieval floor: 37 pages on the
+#: author's tree, and 33 on a clean clone, where the four FAQ pages that exist
+#: on disk but are not in the index (``_UNTRACKED_FAQ_PAGES``) are absent.
+#:
+#: This is not a count for tidiness. It closes the SUBSTITUTE-CORPUS hole, and
+#: that hole was found by trying to break it: pointing ``WIKI_ROOT`` at a
+#: directory holding a single unrelated Markdown file makes ``load_documents()``
+#: return successfully, and a guard that only checked "did it load?" would
+#: cheerfully scan the substitute and report the real cache as clean. Measuring
+#: the wrong corpus while appearing to pass is the exact outcome the header of
+#: this file calls "strictly worse than not running" -- so an unrecognised
+#: population is a failure, in the same spirit as ``measurement_for`` returning
+#: ``None`` rather than scoring a third population against a foreign floor.
+_CALIBRATED_CORPUS_POPULATIONS = frozenset({33, 37})
+
+
 def _require_wiki_corpus() -> dict[str, str]:
     """The candidate's pages, or a FAILURE explaining that they are gone.
 
@@ -1603,7 +1621,44 @@ def _require_wiki_corpus() -> dict[str, str]:
         "a person; a corpus that attributes nothing cannot support any of them, "
         "so this is a failure and not an empty set of violations."
     )
+    assert len(documents) in _CALIBRATED_CORPUS_POPULATIONS, (
+        f"the corpus loaded {len(documents)} documents, which is not a "
+        f"population this guard is calibrated for "
+        f"({sorted(_CALIBRATED_CORPUS_POPULATIONS)}: 37 on the author's tree, "
+        "33 on a clean clone where the four untracked FAQ pages are absent). "
+        "Either wiki/ was replaced with something else that still loads, or it "
+        "was edited. This is a failure on purpose: a substituted corpus would "
+        "let this scan report the real cache as clean while measuring a "
+        "different set of pages, which is worse than not running at all."
+    )
     return documents
+
+
+def test_the_claim_scan_refuses_a_substituted_corpus(monkeypatch):
+    """The substitute-corpus hole, closed and pinned.
+
+    A directory containing one unrelated Markdown file makes the production
+    loader succeed. Without the population assertion in ``_require_wiki_corpus``
+    every claim scan in this section would have run against that file, found
+    nothing, and reported the cache as clean -- a green run measuring the
+    wrong subject, which is the outcome this file's header calls out as worse
+    than a skipped guard.
+    """
+    import tests.real_wiki as real_wiki
+
+    with tempfile.TemporaryDirectory() as empty:
+        substitute = Path(empty)
+        (substitute / "notes.md").write_text(
+            "Nothing the candidate has ever said lives here.", encoding="utf-8"
+        )
+        monkeypatch.setattr(real_wiki, "WIKI_ROOT", substitute)
+        monkeypatch.setattr(real_wiki, "CANDIDATE_ROOT", substitute)
+
+        with pytest.raises(AssertionError) as caught:
+            _require_wiki_corpus()
+        assert "calibrated" in str(caught.value), (
+            f"the failure must say the population is uncalibrated: {caught.value!r}"
+        )
 
 
 def test_the_corpus_attributes_exactly_the_disclosed_traits_this_scan_assumes():
