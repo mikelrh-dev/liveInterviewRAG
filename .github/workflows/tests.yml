@@ -66,10 +66,35 @@ name: tests
 # TWO ENVIRONMENT TRAPS THIS REPRODUCES ON PURPOSE
 # ------------------------------------------------
 # 1. `PYTEST_DISABLE_PLUGIN_AUTOLOAD` is NOT set. With it set, pytest-asyncio
-#    is never auto-loaded and 8 async tests fail with a misleading
+#    is never auto-loaded and 28 async tests fail with a misleading
 #    "async def functions are not natively supported" error. There is no
 #    `-p no:cacheprovider`-style fix; the variable simply must stay unset, so
 #    it is called out here rather than left to be re-introduced.
+#
+#    WHY 28, AND WHY THEY FAIL RATHER THAN SKIP. pytest only recognises a
+#    coroutine test function as such when a plugin claims it: without
+#    pytest-asyncio, `async def test_x` is a FUNCTION pytest will happily
+#    collect, call, and receive a coroutine object back from. The failure comes
+#    from pytest's own check that the return value is None, and its message
+#    names the SYMPTOM -- "async def functions are not natively supported" --
+#    without naming the cause, so it reads like a pytest limitation rather than
+#    a missing plugin. Nothing skips, because nothing is unrecognised: the
+#    functions are collected as ordinary tests and each one fails when it is
+#    called. 28 of them, in five files:
+#      test_audio_limit_honesty.py   3
+#      test_conversation_memory.py   5
+#      test_max_body.py              7
+#      test_sse_keepalive.py         9
+#      test_tts.py                   4
+#    The other 974 pass, so the blast radius is exactly the async population and
+#    nothing else -- which is what makes the diagnosis "a plugin did not load"
+#    rather than "the environment is broken". This workflow deliberately does
+#    not set the variable, so the count is a description of what an operator
+#    would hit, not something CI asserts on every run.
+#    tests/test_async_test_count.py counts the 28 with ast and fails if either
+#    this file or RUNBOOK.md stops saying 28, so the number cannot rot silently
+#    the way the previous 8 did (an audit of 2026-09-27, before eleven of these
+#    tests existed).
 # 2. The interpreter is the one `actions/setup-python` provisioned, and it is
 #    the one that received the dependencies below. Running `pytest` from a
 #    different interpreter — a system python, a sibling venv — produces
