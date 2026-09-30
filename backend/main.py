@@ -176,7 +176,16 @@ async def lifespan(app: FastAPI):
     candidate_profile.load()
     if candidate_profile.documents:
         rag_pipeline.ingest_documents(candidate_profile.documents)
-        logger.info("RAG pipeline initialized with %d chunks", len(rag_pipeline.chunks))
+        # The mode rides on the startup line because a chunk count cannot
+        # distinguish the two. This one read as "RAG pipeline initialized with
+        # 20 chunks" whether the embedder had loaded or the pipeline had fallen
+        # back to TF-IDF, so the one fact an operator needs at boot was the one
+        # fact the log did not carry.
+        logger.info(
+            "RAG pipeline initialized with %d chunks (mode: %s)",
+            len(rag_pipeline.chunks),
+            rag_pipeline.mode,
+        )
     else:
         logger.warning("No candidate documents found — RAG will return empty results")
 

@@ -643,13 +643,47 @@ class RAGPipeline:
                 "Sentence-transformer model %s loaded successfully", self._embedding_model
             )
         except Exception as e:
-            logger.warning("Sentence-transformers unavailable (%s), falling back to TF-IDF", e)
+            # ERROR, not warning, and it names the CONSEQUENCE rather than the
+            # condition. This used to be one `warning` reading
+            # "Sentence-transformers unavailable, falling back to TF-IDF",
+            # which is a description of a cause and says nothing about what the
+            # operator now has: retrieval running in a different, weaker space,
+            # the on-disk cache unusable, and a health endpoint that reported
+            # `status: ok` with an unchanged chunk count. A quality regression
+            # that nobody can see is not a handled condition.
+            logger.error(
+                "Sentence-transformers unavailable (%s); falling back to TF-IDF. "
+                "Retrieval quality is reduced and the on-disk embedding cache "
+                "cannot be used: a TF-IDF space is rebuilt on every ingest, so "
+                "vectors from two runs share no geometry.",
+                e,
+            )
             self._use_tfidf = True
             from sklearn.feature_extraction.text import TfidfVectorizer
             self._tfidf_vectorizer = TfidfVectorizer(
                 max_features=self.TFIDF_MAX_FEATURES
             )
         self._initialized = True
+
+    @property
+    def mode(self) -> str:
+        """Which retrieval space is actually in use: the one thing to report.
+
+        Read by ``/api/health``, the startup log and the status rail, because a
+        pipeline that quietly fell back to TF-IDF is otherwise indistinguishable
+        from a healthy one: the chunk count is identical, and the health
+        endpoint's ``status: ok`` is still true in the only sense that matters
+        for liveness.
+
+        Three values, and the third is deliberate. ``uninitialized`` exists so
+        that asking before ``initialize()`` cannot produce the answer
+        ``embeddings`` -- a claim about a model that has not been loaded yet is
+        the same class of lie this property was added to stop, and it would be
+        the first one anyone reads.
+        """
+        if not self._initialized:
+            return "uninitialized"
+        return "tfidf" if self._use_tfidf else "embeddings"
 
     @property
     def embedder(self):

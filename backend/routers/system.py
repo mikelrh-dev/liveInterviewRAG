@@ -14,11 +14,20 @@ router = APIRouter()
 
 @router.get("/api/health")
 async def health_check():
-    """Return service health status."""
+    """Return service health status.
+
+    ``rag_mode`` is the field that makes a degraded pipeline visible. It used to
+    be absent, and everything else here is invariant under the TF-IDF fallback:
+    the chunk count is the same, the profile still loads, and Whisper still has
+    its model. So a deployment that had lost its embedding model answered
+    ``status: "ok"`` and the status rail painted a green dot over a retrieval
+    pipeline that was no longer the one it claimed to be.
+    """
     return {
         "status": "ok",
         "whisper_loaded": container.stt_service().is_loaded,
         "rag_chunks": len(container.rag_pipeline().chunks),
+        "rag_mode": container.rag_pipeline().mode,
         "candidate_loaded": container.candidate_profile().profile_data is not None,
     }
 

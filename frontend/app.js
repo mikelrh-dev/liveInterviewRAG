@@ -317,6 +317,24 @@ function createHealthStatus(el, options) {
         if (payload.whisper_loaded !== true) problems.push("STT sin modelo");
         if (payload.candidate_loaded !== true) problems.push("perfil no cargado");
 
+        // The retrieval mode. Without this the rail reported a deployment that
+        // had lost its embedding model as fully healthy, because every other
+        // field is invariant under the TF-IDF fallback: the chunk count is the
+        // same, the profile still loads, and `status` is still "ok". The page
+        // said "Sistema OK · RAG 20 chunks" over a pipeline that was no longer
+        // the one it claimed to be.
+        //
+        // An ABSENT rag_mode is not a problem: /api/health gained the field
+        // later than some deployments were built, and a server that has not
+        // heard of it is an older server, not a broken one. Only a value that
+        // is present and is not the healthy one degrades the rail.
+        const mode = payload.rag_mode;
+        if (mode === "tfidf") {
+            problems.push("RAG degradado: recuperación por TF-IDF, no embeddings");
+        } else if (mode === "uninitialized") {
+            problems.push("RAG sin inicializar");
+        }
+
         const chunks = Number(payload.rag_chunks);
         if (!Number.isFinite(chunks) || chunks <= 0) {
             problems.push("RAG sin índice");
