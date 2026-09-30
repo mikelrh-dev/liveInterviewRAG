@@ -186,7 +186,7 @@ class TestReportServiceCleanup:
         #
         # This is a test-side fix on purpose. Adding a tolerance to
         # cleanup_expired() would change production to serve a test: the only
-        # callers (backend/main.py:205, backend/maintenance.py:88) never pass
+        # callers (backend/main.py:230, backend/maintenance.py:187) never pass
         # `days`, so the zero-day window this flake needed does not exist in
         # production, and a 30-day window is not sensitive to 238 ns by any
         # measure that matters.

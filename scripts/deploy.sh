@@ -103,7 +103,7 @@ deploy() {
     # starts, and the unit is what needs the directory to exist first.
     #
     # Created, NOT rsynced. audio/ is TTS output and periodic_cleanup unlinks
-    # files from it (backend/maintenance.py:24-32), so a --delete mirror of a
+    # files from it (backend/maintenance.py:162), so a --delete mirror of a
     # repository-side tree would restore everything the sweep just pruned, on
     # every deploy, forever.
     #

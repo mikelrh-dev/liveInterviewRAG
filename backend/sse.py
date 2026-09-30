@@ -54,7 +54,7 @@ def sse_keepalive() -> str:
     Per the SSE grammar a line beginning with ``:`` is a comment and is ignored
     by ``EventSource`` and by every hand-rolled reader -- including this
     repository's, which skips any line that does not start with ``data: ``
-    (``frontend/app.js:1728``). So the frame costs 13 bytes, keeps an idle
+    (``frontend/app.js:2541``). So the frame costs 13 bytes, keeps an idle
     connection warm, and requires no client to know it exists.
     """
     return ": keepalive\n\n"
@@ -125,7 +125,7 @@ async def with_keepalive(
         # in-flight TTS tasks and unlinks the staged upload. Without this call
         # every client that disconnects mid-turn leaks a file and a synthesis
         # task, which is the exact failure the inner module documents at
-        # streaming.py:505-525.
+        # streaming.py:722-789.
         aclose = getattr(iterator, "aclose", None)
         if aclose is not None:
             try:

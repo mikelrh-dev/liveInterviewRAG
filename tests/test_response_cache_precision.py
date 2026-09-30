@@ -36,7 +36,7 @@ unrelated questions returned a pre-generated answer:
 
 WHERE THE HITS LAND
 -------------------
-``backend/turns/streaming.py:288`` consults the cache at Step 2 and RETURNS
+``backend/turns/streaming.py:458`` consults the cache at Step 2 and RETURNS
 before Step 3, RAG. So these are not answers that merely look cached: the
 retrieval that would have grounded the reply in the candidate's own corpus
 never runs. The module's own header already says the policy that was broken:
@@ -100,7 +100,7 @@ class TestUnrelatedQuestionsReachTheRetriever:
         assert answer is None, (
             f"the literal cache answered a question it does not recognise: "
             f"{question!r}\n  -> {answer!r}\n"
-            "This short-circuits RAG (streaming.py:288), so the reply the "
+            "This short-circuits RAG (streaming.py:458), so the reply the "
             "recruiter hears is a pre-generated answer to a different question."
         )
 

@@ -72,7 +72,7 @@ _CACHED_QUESTIONS = [
         #   "el proyecto PRESENTA una arquitectura de tres capas"  -> the pitch
         #   "qué PRESENTACIÓN usaste para el pitch"                 -> the pitch
         # Both were answered with "Soy Mikel, desarrollador junior DAM..." by a
-        # literal cache that short-circuits RAG (streaming.py:288), so the
+        # literal cache that short-circuits RAG (streaming.py:458), so the
         # grounded answer never ran. "presentate" survives because it is a
         # whole word the candidate says about himself, and it is a phrase, so
         # it needs its neighbours to match.
@@ -135,7 +135,7 @@ _CACHED_QUESTIONS = [
         # self-assessment, so the question has to be about the candidate.
         # "el sistema tiene dos puntos debiles que describo abajo" asks about
         # the system, and it was answered with "Soy algo desordenado" by a
-        # literal cache that short-circuits RAG (streaming.py:288). The phrase
+        # literal cache that short-circuits RAG (streaming.py:458). The phrase
         # that remains names the referent explicitly.
         "keywords": [],
         # This answer was reported as a fabricated self-disclosed weakness. It

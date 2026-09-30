@@ -8,7 +8,7 @@ THE DEFECT
 (``backend/turns/streaming.py:125``) and only THEN yields its first event, at
 ``:130``. The quiet window is therefore the whole of STT: upload plus Whisper on
 CPU. With the shipped defaults -- ``WHISPER_MODEL=small`` on
-``WHISPER_DEVICE=cpu`` (``backend/config.py:41-42``) and a 30 s ceiling
+``WHISPER_DEVICE=cpu`` (``backend/config.py:60-62``) and a 30 s ceiling
 (``:120``) -- a slow transcription of a full-length recording can sit silent for
 more than nginx's 60 s ``proxy_read_timeout``. nginx then closes the connection,
 the browser's ``reader.read()`` rejects, and the client renders its
@@ -36,7 +36,7 @@ THE FRAME
 A comment-only SSE frame: ``": keepalive\\n\\n"``. Per the HTML spec a line
 beginning with ``:`` is a comment, ignored by ``EventSource`` and by every
 hand-rolled reader. This repository's own reader skips it at
-``frontend/app.js:1728`` (``if (!trimmed || !trimmed.startsWith("data: "))
+``frontend/app.js:2541`` (``if (!trimmed || !trimmed.startsWith("data: "))
 continue;``), which is asserted here by re-implementing that filter rather than
 by importing it -- the point is that the frame is dropped by the *filter*, not
 by a lucky parser.
@@ -78,7 +78,7 @@ MIN_TIMEOUT_TO_KEEPALIVE_RATIO = 3
 
 
 def frontend_reads(raw: str) -> list:
-    """Exactly the line filter in ``frontend/app.js:1726-1735``.
+    """Exactly the line filter in ``frontend/app.js:2539-2548``.
 
     Reproduced rather than imported: the assertion is that the frame is dropped
     by the client's own filter, so the filter has to be the client's, written

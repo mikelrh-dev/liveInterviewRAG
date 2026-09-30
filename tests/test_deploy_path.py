@@ -208,9 +208,9 @@ def _unit_paths() -> set[str]:
 def _deployed_rag_cache_dir() -> str:
     """Where ``RAGPipeline`` persists embeddings once deployed, as an absolute path.
 
-    ``Config.RAG_CACHE_DIR`` is the single source of truth (backend/config.py:106,
+    ``Config.RAG_CACHE_DIR`` is the single source of truth (backend/config.py:148,
     overridable with ``RAG_CACHE_DIR``), and it is built from ``BASE_DIR``, which
-    is the repository root (``config.py:90``). Deployed, the repository root IS
+    is the repository root (``config.py:133``). Deployed, the repository root IS
     ``DEPLOY_ROOT`` -- that is what the clone target and the unit's
     ``WorkingDirectory`` are. So the path the unit file has to name is
     ``DEPLOY_ROOT / <RAG_CACHE_DIR relative to BASE_DIR>``, computed here rather
@@ -365,7 +365,7 @@ class TestTheUnitCanActuallyStart:
         """Audio is runtime output. Mirroring it would fight the sweep.
 
         ``periodic_cleanup`` unlinks stale ``.mp3``/``.webm``/``.wav`` files
-        (backend/maintenance.py:24-32). An rsync of a repository-side audio/
+        (backend/maintenance.py:162). An rsync of a repository-side audio/
         tree with ``--delete`` would restore files the sweep just pruned, on
         every deploy, forever.
         """
@@ -489,7 +489,7 @@ class TestTheUnitStatesWhereItsCachesLive:
     service cannot write is not a cache. Both of these fail silently:
 
     * ``backend/.rag_cache`` -- ``RAGPipeline._save_cache`` catches the OSError
-      and logs a warning (backend/services/rag.py:768), so the corpus is
+      and logs a warning (backend/services/rag.py:816-817), so the corpus is
       re-embedded at every boot and the only symptom is a log line.
     * the HuggingFace model cache -- ``paraphrase-multilingual-MiniLM-L12-v2`` is
       457 MB, so a non-persistent cache is 457 MB down on every restart.
