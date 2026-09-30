@@ -29,9 +29,29 @@ version number. These tests make the coincidence impossible:
    floors. Two manifests describing one install is one too many to keep honest;
    before this guard they had already diverged (``python-dotenv`` missing from
    ``pyproject.toml`` entirely, ``httpx`` at two different floors).
-3. THE FALLBACK IS LIVE -- ``sklearn`` is declared, so the next reader has to
+3. NO ORPHANS -- the other direction, which the first two do not cover: every
+   declared distribution is imported by this repository, or is one of the
+   written-down exceptions in ``DECLARED_WITHOUT_AN_IMPORT``. See below.
+4. THE FALLBACK IS LIVE -- ``sklearn`` is declared, so the next reader has to
    know the TF-IDF path is reachable code, not dead weight. See
    ``TestTfidfFallbackIsLiveCode``.
+
+WHY 3 IS A SEPARATE TEST AND NOT A CONSEQUENCE OF 1
+---------------------------------------------------
+``pydub>=0.25.1`` was declared in both manifests and imported nowhere -- not in
+``backend/``, not in ``tests/``, not in ``scripts/``. ``TestEveryImportIsDeclared``
+passed, because there was no import to fail it, and
+``TestManifestsDoNotDrift`` passed, because both manifests agreed on the orphan.
+Nothing in the file could see it. The dependency had been designed out in June
+(``openspec/changes/archive/2026-06-10-ai-mikel-mvp/verify-report.md``: the
+recorded decision was to hand webm straight to Whisper, "no pydub dependency
+needed") and the declaration outlived the design.
+
+An orphan is not harmless the way a missing declaration is not harmless, and it
+is worse in one specific way: it is a false statement about what the application
+needs. Every clean install resolves a package, a resolver constraint and a
+supply-chain surface for code that does not exist, and the next reader of the
+manifest concludes the audio path uses a converter that was never built.
 
 Deliberately NOT asserted: that a clean install can import the package. That
 would be a test of pip's resolver, it needs its own environment to mean
@@ -59,6 +79,38 @@ LOCAL_PACKAGES = frozenset({"backend", "tests"})
 # imports it opportunistically and degrades to ``tomli``, so its absence from
 # that 3.10 set is a version artifact, not a third-party dependency.
 STDLIB_SUPERSET = frozenset({"tomllib"})
+
+#: Distributions that are correctly declared and correctly never imported, each
+#: with the reason it is correct. A name added here is a CLAIM, and
+#: ``TestEveryExemptionIsStillTrue`` checks the claim rather than trusting it --
+#: otherwise the exception list is where a new orphan goes to hide, and the
+#: guard this adds would be a guard with a hole in it shaped like a dict.
+DECLARED_WITHOUT_AN_IMPORT = {
+    "uvicorn": (
+        "an entry point, not a library. It is never imported: the deployed unit "
+        "runs it as a program (the ExecStart in deployment/interviewtts.service) "
+        "and so does RUNBOOK step 2. A distribution you exec is a real "
+        "dependency that an import scan cannot see."
+    ),
+    "python-multipart": (
+        "imported by FastAPI rather than by us. backend/routers/turns.py "
+        "declares `audio: UploadFile = File(...)` on both turn routes, and "
+        "FastAPI imports the multipart parser when it builds a route carrying a "
+        "File/Form parameter -- at request time, which is why no line in this "
+        "repository imports it and why the suite passes without it being visible."
+    ),
+    "pytest-asyncio": (
+        "a pytest plugin, discovered through its entry point, never imported. It "
+        "is the dependency behind the 28 async tests, and "
+        "tests/test_async_test_count.py is what states that count."
+    ),
+}
+
+#: Roots scanned for the import side of the orphan check. ``scripts/`` has no
+#: Python today; it is listed because a manifest entry justified by a script
+#: must not read as an orphan the day the script is deleted, and must not be
+#: invisible the day one is written.
+IMPORT_ROOTS = ("backend", "tests", "scripts")
 
 # Top-level import name -> distribution that provides it. Only names that
 # differ from their distribution need an entry; anything absent is assumed to
@@ -244,7 +296,145 @@ class TestManifestsDoNotDrift:
             assert not pinned, f"{source} pins exact versions: {pinned}"
 
 
-class TestTfidfFallbackIsLiveCode:
+def _imported_distributions() -> dict:
+    """``{normalized distribution: ["path:line", ...]}`` across every scanned root."""
+    found: dict[str, list[str]] = {}
+    for root in IMPORT_ROOTS:
+        for module, locations in third_party_imports(root).items():
+            dist = _normalize(IMPORT_TO_DISTRIBUTION.get(module, module))
+            found.setdefault(dist, []).extend(locations)
+    return found
+
+
+def _orphans(declared: dict) -> list:
+    imported = _imported_distributions()
+    return sorted(set(declared) - set(imported) - set(DECLARED_WITHOUT_AN_IMPORT))
+
+
+class TestNoDeclaredDependencyIsOrphaned:
+    """The direction ``TestEveryImportIsDeclared`` cannot see.
+
+    That class asks "is every import declared?". This one asks the reverse --
+    "is every declaration imported?" -- and the two are not the same test. An
+    orphan is invisible to the first by construction: there is no import to
+    fail it, which is exactly why ``pydub`` sat in both manifests for the life
+    of the project without anything noticing.
+    """
+
+    def test_no_runtime_dependency_is_orphaned(self):
+        orphans = _orphans(declared_runtime())
+
+        assert not orphans, (
+            "these distributions are declared in backend/requirements.txt (and "
+            "therefore in pyproject.toml, which TestManifestsDoNotDrift keeps in "
+            "agreement) and imported NOWHERE in "
+            f"{', '.join(IMPORT_ROOTS)}:\n  - "
+            + "\n  - ".join(
+                f"{name}: {DECLARED_WITHOUT_AN_IMPORT.get(name, 'no reason recorded')}"
+                for name in orphans
+            )
+            + "\nAn orphan is a false statement about what the application needs: "
+            "every clean install resolves a package, a resolver constraint and a "
+            "supply-chain surface for code that does not exist, and the next "
+            "reader of the manifest concludes a code path exists that was "
+            "designed out.\nRemove the declaration. If the dependency really is "
+            "needed and simply not imported -- executed rather than imported, or "
+            "pulled in by a framework -- add it to "
+            "DECLARED_WITHOUT_AN_IMPORT with the reason, and "
+            "TestEveryExemptionIsStillTrue will check the reason."
+        )
+
+    def test_no_dev_dependency_is_orphaned(self):
+        orphans = _orphans(declared_dev())
+
+        assert not orphans, (
+            "these distributions are declared in the pyproject dev extra and "
+            f"imported nowhere in {', '.join(IMPORT_ROOTS)}:\n  - "
+            + "\n  - ".join(orphans)
+            + "\nSame reasoning as the runtime manifest: a dev dependency nobody "
+            "imports is a declaration nobody checks."
+        )
+
+    def test_every_exemption_is_declared_somewhere(self):
+        """An exemption for a distribution that is no longer declared is a lie.
+
+        Cheap, and it stops the table from accumulating entries for problems
+        that were solved by removing the declaration -- at which point the entry
+        starts exempting a name that could be reintroduced by accident.
+        """
+        declared = {**declared_runtime(), **declared_dev()}
+        stale = sorted(set(DECLARED_WITHOUT_AN_IMPORT) - set(declared))
+
+        assert not stale, (
+            f"DECLARED_WITHOUT_AN_IMPORT names distributions no manifest declares: "
+            f"{stale}. Each entry is a claim that a real dependency is invisible "
+            "to an import scan; if the declaration is gone, so is the claim. "
+            "Delete the entry rather than leaving it to excuse a future orphan."
+        )
+
+    def test_every_exemption_is_still_true(self):
+        """The reasons, checked -- otherwise the exception list is a hole.
+
+        Each exemption names a specific fact about the repository. If that fact
+        stops holding, the exemption is wrong even though the name is still
+        declared, and that is the case nobody would otherwise notice: the
+        dependency would go on being declared for a reason that had expired.
+        """
+        def _read(relative: str) -> str:
+            """Every text file under ``relative``, or the file itself.
+
+            Directories are walked because the claims below are about code
+            (``backend/``) and unit files (``deployment/``); reading a directory
+            as if it were a file would silently yield an empty string and make
+            every assertion that consults it pass for the wrong reason.
+            """
+            path = REPO_ROOT / relative
+            if path.is_file():
+                return path.read_text(encoding="utf-8")
+            if path.is_dir():
+                return "\n".join(
+                    child.read_text(encoding="utf-8", errors="replace")
+                    for child in sorted(path.rglob("*"))
+                    if child.is_file() and child.suffix in {".py", ".service", ".md", ".toml"}
+                )
+            return ""
+
+        backend = _read("backend")
+        deployment = _read("deployment")
+        runbook = _read("RUNBOOK.md")
+        pyproject = _read("pyproject.toml")
+
+        assert backend, "backend/ must be readable; the exemptions below are checked against it"
+        assert runbook, "RUNBOOK.md must be readable"
+        assert pyproject, "pyproject.toml must be readable"
+
+        if "uvicorn" in DECLARED_WITHOUT_AN_IMPORT:
+            invoked = re.search(
+                r"^ExecStart=.*\buvicorn\b", deployment, re.M
+            ) or re.search(r"^\s*uvicorn\s+backend\.main:app", runbook, re.M)
+            assert invoked, (
+                "uvicorn is exempted as an entry point that is exec'd, but nothing "
+                "in deployment/interviewtts.service or RUNBOOK.md runs it as a "
+                "program any more. If it is no longer invoked, it is an orphan "
+                "and belongs out of the manifest."
+            )
+
+        if "python-multipart" in DECLARED_WITHOUT_AN_IMPORT:
+            reached = re.search(r"=\s*(File|Form)\(", backend)
+            assert reached, (
+                "python-multipart is exempted because FastAPI imports it when a "
+                "route declares a File/Form parameter. No backend/ route does any "
+                "more, so nothing imports it: it is an orphan."
+            )
+
+        if "pytest-asyncio" in DECLARED_WITHOUT_AN_IMPORT:
+            configured = re.search(r"asyncio_mode\s*=\s*[\"']auto[\"']", pyproject)
+            assert configured, (
+                "pytest-asyncio is exempted as the plugin behind asyncio_mode = "
+                '"auto". That setting is gone from pyproject.toml, so the plugin '
+                "has no work to do and the extra entry is dead weight."
+            )
+
     """Why ``scikit-learn`` is a hard dependency and not an optional extra.
 
     ``RAGPipeline.initialize()`` catches every exception around building the
