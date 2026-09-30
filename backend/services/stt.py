@@ -1,18 +1,60 @@
 """Speech-to-Text service using Faster Whisper."""
 
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class Transcription:
+    """What one decode produced: the words, and how long they took to say.
+
+    ``duration_seconds`` is not measured here. It is read off the
+    ``TranscriptionInfo`` that ``faster_whisper`` returns from the call the
+    transcription already had to make, so carrying it costs nothing and no
+    second decode of the same file is introduced.
+
+    It matters because the duration is the one measurement the upload path
+    cannot make. ``uploads.stage_upload`` sees bytes -- it has not parsed the
+    container and does not know the bitrate the browser encoded at -- so every
+    claim it can make about a recording's length is an inference. The only
+    component that knows how long a recording really is, for free, is the one
+    that just decoded it.
+    """
+
+    text: str
+    duration_seconds: float
+
+
 class STTService:
     """Faster Whisper wrapper for speech-to-text transcription."""
 
-    def __init__(self, model_name: str = "small", device: str = "cpu", compute_type: str = "int8"):
+    def __init__(
+        self,
+        model_name: str = "small",
+        device: str = "cpu",
+        compute_type: str = "int8",
+        max_duration_seconds: float | None = None,
+    ):
         self.model_name = model_name
         self.device = device
         self.compute_type = compute_type
+        #: The recording limit this deployment advertises, in seconds, or None
+        #: to not check. Injected rather than read from ``backend.config``
+        #: because the services do not import configuration: the composition
+        #: root owns the wiring, which is what makes the value testable and
+        #: swappable.
+        #:
+        #: It is compared against, and reported, never enforced by rejection. A
+        #: recording that arrives over the limit is one the page failed to cut --
+        #: a stale cached page, or a client that is not this one -- and refusing
+        #: it after the decode has already run would throw away a turn the
+        #: candidate can still be answered from, in exchange for bounding work
+        #: this process is already doing. So it is recorded, loudly, with both
+        #: numbers, and the turn proceeds.
+        self.max_duration_seconds = max_duration_seconds
         self._model = None
 
     def load_model(self):
@@ -39,14 +81,14 @@ class STTService:
     def is_loaded(self) -> bool:
         return self._model is not None
 
-    def transcribe(self, audio_path: str | Path) -> str:
-        """Transcribe audio file to text.
+    def transcribe_measured(self, audio_path: str | Path) -> Transcription:
+        """Transcribe, and report the duration the decode already returned.
 
         Args:
             audio_path: Path to audio file (wav, webm, ogg).
 
         Returns:
-            Transcribed text string.
+            The transcribed text and the audio duration in seconds.
 
         Raises:
             RuntimeError: If model not loaded or transcription fails.
@@ -76,10 +118,42 @@ class STTService:
                 text_parts.append(segment.text.strip())
 
             result = " ".join(text_parts)
-            logger.info("Transcribed %.1fs audio -> %d chars", info.duration, len(result))
-            return result
+            duration = float(info.duration)
+            logger.info("Transcribed %.1fs audio -> %d chars", duration, len(result))
+            self._report_over_limit(duration)
+            return Transcription(text=result, duration_seconds=duration)
 
         except Exception as e:
             # Logged, not carried in the message: see backend/services/tts.py.
             logger.error("Transcription failed: %s", e, exc_info=True)
             raise RuntimeError("Could not transcribe audio") from e
+
+    def transcribe(self, audio_path: str | Path) -> str:
+        """Transcribe audio file to text.
+
+        A thin wrapper over :meth:`transcribe_measured` for the callers that
+        only want the words. It is not a second decode -- the measurement rides
+        along with the text, and there is one call to ``faster_whisper`` either
+        way.
+        """
+        return self.transcribe_measured(audio_path).text
+
+    def _report_over_limit(self, duration: float) -> None:
+        """Say so when a recording is longer than the limit this server claims.
+
+        A warning rather than a rejection, and the log carries both numbers.
+        The measured one is the fact; the configured one is the promise it broke.
+        A line that said only "over limit" would leave a reader unable to tell a
+        marginally long answer from a client that never cut at all.
+        """
+        limit = self.max_duration_seconds
+        if limit is None or duration <= limit:
+            return
+        logger.warning(
+            "Recording is %.1fs, over the %.0fs limit this server advertises "
+            "(MAX_AUDIO_DURATION). The page cuts at that limit, so a longer "
+            "recording means a client that did not -- a cached page, or "
+            "something that is not this page.",
+            duration,
+            limit,
+        )

@@ -68,6 +68,25 @@ let lastBlendVolume = null;
 let vadAnimationId = null;
 let silenceStart = null;
 let hasSpoken = false;
+// The room's own noise level, in RMS, as an exponential minimum. See
+// `updateNoiseFloor` for the algorithm and `loudPeakRms` for why estimating it
+// is only half the problem.
+let noiseFloor = 0;
+// The loudest RMS this turn has seen while it still counted as speech.
+//
+// A pause is a DROP, not a level, and this is what makes the difference
+// decidable: a frame only counts as silence if something louder came before it.
+// Without that, a candidate who talks for several seconds without pausing lets
+// the noise floor climb to their own voice -- every tracker that converges to
+// the signal does, that is what convergence means -- and from then on their
+// voice reads as silence and the turn is cut mid-word.
+//
+// A running maximum with no decay, deliberately. It only ever makes the
+// detector MORE willing to end a turn, never less, so the failure it could
+// introduce (an early loud word pinning the bar high) costs a slightly later
+// cut, not a wrong one. It is reset per recording, so a previous turn's shout
+// cannot leave the next one unendable.
+let loudPeakRms = 0;
 // The recording cap's own state. Separate from the VAD's on purpose: the VAD
 // answers "has the speaker stopped?", this answers "has this recording had
 // enough?", and the second must still work in a room that never goes quiet.
@@ -75,32 +94,67 @@ let recordingCapTimer = null;
 let recordedBytes = 0;
 let recordingCapped = false;
 const SILENCE_TIMEOUT_MS = 1200;
+// The absolute floor on the cut threshold, in RMS.
+//
+// It is a floor and not the threshold: a fixed number cannot be both above a
+// quiet room and below a loud one, and the code that had only this is what made
+// a noisy room unendable. It survives as the LOWER bound on the relative
+// threshold below, so a silent room behaves exactly as it always did -- its own
+// noise floor collapses towards zero, the relative term never wins, and the
+// threshold is this same number.
 const RMS_THRESHOLD = 0.015;
+// How far above the estimated noise floor counts as speech.
+//
+// 2x is 6 dB of signal-to-noise, which is a low bar on purpose: this only has
+// to separate the room from someone talking in it, and a bar set high enough to
+// be comfortable would sit inside the quietest speech in a loud room -- cutting
+// candidates off because they spoke softly. Too LOW is the safe direction: the
+// recording is bounded by maxRecordingMs whatever the VAD decides, so a
+// threshold that lingers costs a longer answer, never a lost one.
+const NOISE_FLOOR_MULTIPLE = 2;
+// How fast the floor may RISE towards the signal, as a fraction of the gap per
+// frame.
+//
+// Slow, so a word opening does not become the room. 0.02 is a ~0.8 s time
+// constant at 60 fps, so a room at four times the absolute threshold is
+// characterised in about a second -- fast enough that a pause inside it is seen,
+// slow enough that speech is not.
+const NOISE_FLOOR_RISE_RATE = 0.02;
+// How fast the floor may FALL, as a fraction of the gap per frame.
+//
+// Four times the rise rate, and asymmetric on purpose. Coming down has to be
+// quick or a door closing leaves the page deaf for the rest of the interview: a
+// door is the loudest silence in a building, and the frame after it is exactly
+// when the floor must already have moved. 0.08 is a ~0.2 s time constant, so a
+// single pause is enough to re-characterise a room.
+const NOISE_FLOOR_FALL_RATE = 0.08;
 
 // ─── The recording ceiling ───────────────────────────────────────────────────
 //
 // WHY THIS EXISTS
-// `MAX_AUDIO_DURATION = 30` (backend/config.py) is enforced by nobody, and the
-// only real ceiling is `MAX_AUDIO_SIZE = 5 MiB`. The VAD cannot be relied on to
-// find the end of a turn: it ends one after SILENCE_TIMEOUT_MS of RMS below
-// RMS_THRESHOLD, and in a room with background noise the RMS never drops, so it
-// never fires. The recorder keeps running, the blob grows to 5 MiB, the server
-// answers 413, 413 is not retryable, and `stopInterview()` throws away the
-// interview and the whole recording.
+// A recording has to end for a reason, and there are exactly two. The VAD finds
+// the end of an ordinary turn -- the candidate stops talking -- and this bounds
+// the ones it cannot. The second case is not hypothetical: with an absolute
+// silence threshold, a room with background noise never reads as silent, the
+// recorder keeps running, the blob grows to `MAX_AUDIO_SIZE`, the proxy answers
+// 413, 413 is not retryable, and `stopInterview()` throws away the interview
+// and the whole recording.
 //
-// So the bound is applied here, where the data is. 240 s against a 5 MiB
-// ceiling at the recorder's own `audioBitsPerSecond: 128000` (16 kB/s) is
-// ~3.8 MB, roughly 80% of the budget: a candidate who talks for four minutes
-// gets a truncated answer and keeps the interview, instead of losing it.
+// WHERE THE NUMBER COMES FROM
+// `MAX_AUDIO_DURATION` in backend/config.py, published by GET /api/config and
+// applied here. One number, not two: a page-side limit that disagreed with the
+// server's would cut a recording in one deployment and refuse it in the next.
 //
-// It is deliberately a page-side constant and not a number fetched from
-// /api/config. The page has to be able to enforce the bound before, during and
-// independently of any network round trip; a cap that arrives by HTTP is a cap
-// that does not apply to the first recording of a session, which is exactly the
-// one that needs it. If this ever has to move, MAX_AUDIO_SIZE and
-// `audioBitsPerSecond` below move with it, and the equality is asserted in
-// tests/frontend/recording_cap.test.mjs so the two cannot drift apart quietly.
-const MAX_RECORDING_MS = 240000;
+// The constant below is the FALLBACK, and it is not decoration. `init()` fires
+// the sidebar fetch without awaiting it, so a deployment that is slow, down or
+// erroring still has to bound the recording -- and the first recording of a
+// session is exactly the one that needs the cap. It is a copy of the server's
+// default because a fallback that disagreed with the server would be a second
+// limit, and `tests/test_recording_duration_limit.py` fails if the two drift.
+const MAX_RECORDING_MS = 60000;
+// The limit actually enforced. Starts at the fallback and is replaced by the
+// server's value as soon as /api/config answers.
+let maxRecordingMs = MAX_RECORDING_MS;
 // Asked of MediaRecorder so `dataavailable` fires while recording instead of
 // only at stop. Without it the size of a recording is unobservable until the
 // moment it is already too late, which is how a blob reaches 5 MiB unnoticed.
@@ -421,6 +475,8 @@ const healthStatus = createHealthStatus(
 /**
  * Populate the left sidebar with real data from the backend.
  * - Model names come from GET /api/config
+ * - The recording duration limit comes from there too, and is applied to the
+ *   page: a limit the server holds and the browser does not is not a limit.
  * - VU meter is driven by mic RMS via startVisualizationLoop
  * - Session ID and turn count update when interview starts
  */
@@ -429,6 +485,15 @@ async function populateStaticSidebar() {
         const res = await fetch(`${API_BASE}/api/config`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const cfg = await res.json();
+        // Validated, not trusted. A zero, a negative or a string would either
+        // disarm the cap for the rest of the session or stop every recording
+        // where it stands, and both are worse than the fallback this replaces.
+        // A page that obeys a bad response is a page that obeys anything.
+        if (typeof cfg.max_audio_duration === "number" &&
+            Number.isFinite(cfg.max_audio_duration) &&
+            cfg.max_audio_duration > 0) {
+            maxRecordingMs = cfg.max_audio_duration * 1000;
+        }
         if (cfg.tts_voice) setText("sidebar-tts", `TTS: ${cfg.tts_voice}`);
         if (cfg.stt_model)
             setText(
@@ -1364,13 +1429,19 @@ function stopRecording() {
 // continue, and it is the only bound that holds when the VAD cannot see a
 // silence. Reaching it stops the recorder the same way a press of STOP does,
 // so the audio collected so far is uploaded instead of discarded by a 413.
+//
+// `maxRecordingMs` rather than the constant: the limit is the server's, and
+// `populateStaticSidebar` replaces this before the first answer is due. Read at
+// arm time, not at module time, so a limit that arrives late is still applied
+// to the recording it applies to.
 
 function armRecordingCap() {
     disarmRecordingCap();
+    const limitMs = maxRecordingMs;
     recordingCapTimer = setTimeout(() => {
         recordingCapTimer = null;
         recordingCapped = true;
-        const seconds = Math.round(MAX_RECORDING_MS / 1000);
+        const seconds = Math.round(limitMs / 1000);
         setStatus(
             "Grabación cortada por el límite de " + seconds +
                 " s — enviando lo grabado…",
@@ -1378,7 +1449,7 @@ function armRecordingCap() {
         );
         setState("processing");
         stopRecording();
-    }, MAX_RECORDING_MS);
+    }, limitMs);
 }
 
 function disarmRecordingCap() {
@@ -1390,10 +1461,64 @@ function disarmRecordingCap() {
 
 // ─── VAD ───────────────────────────────────────────────
 
+/**
+ * Move the noise-floor estimate by one frame, and return the cut threshold.
+ *
+ * THE ALGORITHM, AND WHY THIS ONE
+ * -------------------------------
+ * An exponential minimum: the floor chases the signal, quickly downwards and
+ * slowly upwards, so it settles at the level the room has recently been rather
+ * than at the level someone is making right now.
+ *
+ * That asymmetry is the whole design. The direction that must be fast is the
+ * one that recovers from a sudden quiet -- a door, a colleague stepping out --
+ * because a floor that lags there leaves the page deaf for the rest of the
+ * interview. The direction that must be slow is the one that would otherwise
+ * follow a word opening, because a floor that follows speech is a floor that
+ * calls speech silence.
+ *
+ * WHY NOT A PERCENTILE OF A RECENT WINDOW
+ * ---------------------------------------
+ * It was the other candidate, and it fails in a way that is hard to see. A low
+ * percentile of the last N frames IS a minimum over a window, so it has the
+ * same weakness as any minimum: during N frames of unbroken speech there is no
+ * quiet in the window, the percentile is the speech level, and the detector
+ * declares the speaker silent. The window bounds how long that lasts; it does
+ * not stop it. A per-frame CAP on how far the floor may climb has the same fate
+ * by a different route -- it just arrives at the speech level a few seconds
+ * later instead of immediately -- which is worth knowing before choosing it,
+ * because the cap is the more obvious-looking of the two.
+ *
+ * So the floor alone cannot be the fix, and the second half of the fix is in
+ * `vadLoop`: a frame only counts as silence if the turn has been LOUDER than the
+ * threshold at some point. A tracker that has run away to the signal's own
+ * level therefore cannot produce a cut, because the loudest thing recorded is
+ * the signal and the threshold is twice the floor. Estimating the room and
+ * recognising a pause are two separate problems, and only the first one is an
+ * estimation problem.
+ *
+ * WHY THE ABSOLUTE THRESHOLD STILL EXISTS
+ * --------------------------------------
+ * It is the lower bound of the pair, not a replacement. In a genuinely quiet
+ * room the floor collapses towards zero, the relative term never wins, and the
+ * threshold is RMS_THRESHOLD -- the same number, and the same behaviour, that
+ * always worked.
+ */
+function updateNoiseFloor(rms) {
+    const rate = rms > noiseFloor ? NOISE_FLOOR_RISE_RATE : NOISE_FLOOR_FALL_RATE;
+    noiseFloor += (rms - noiseFloor) * rate;
+    return Math.max(RMS_THRESHOLD, noiseFloor * NOISE_FLOOR_MULTIPLE);
+}
+
 function startVad() {
     if (!analyserNode) return;
     silenceStart = null;
     hasSpoken = false;
+    // Per recording, never carried across. The room the previous turn was in is
+    // not evidence about this one, and a stale floor inherited into a quieter
+    // room would keep the page deaf for the length of a turn.
+    noiseFloor = 0;
+    loudPeakRms = 0;
     vadAnimationId = requestAnimationFrame(vadLoop);
 }
 
@@ -1408,11 +1533,18 @@ function vadLoop() {
         sum += v * v;
     }
     const rms = Math.sqrt(sum / buf.length);
+    // The floor moves on EVERY frame, including the loud ones. Restricting the
+    // update to frames already judged silent is circular: in a noisy room there
+    // are no such frames, which is the bug.
+    const threshold = updateNoiseFloor(rms);
 
-    if (rms >= RMS_THRESHOLD) {
+    if (rms >= threshold) {
         hasSpoken = true;
+        if (rms > loudPeakRms) loudPeakRms = rms;
         silenceStart = null;
-    } else if (hasSpoken) {
+    } else if (hasSpoken && loudPeakRms > threshold) {
+        // Below the threshold AND this turn has been louder than it, so this is
+        // a pause and not merely a level the room happens to sit at.
         if (silenceStart === null) silenceStart = Date.now();
         else if (Date.now() - silenceStart >= SILENCE_TIMEOUT_MS) {
             setStatus("Procesando…");
@@ -1420,6 +1552,13 @@ function vadLoop() {
             stopRecording();
             return;
         }
+    } else {
+        // Neither. The floor has run away to the signal's own level, so nothing
+        // can be concluded from this frame -- and in particular the silence
+        // timer is cleared, because a pause has to be CONTINUOUS: a run of
+        // undecidable frames in the middle of one must not be papered over by
+        // the clock.
+        silenceStart = null;
     }
 
     vadAnimationId = requestAnimationFrame(vadLoop);
@@ -1431,6 +1570,8 @@ function stopVad() {
         vadAnimationId = null;
     }
     silenceStart = null;
+    noiseFloor = 0;
+    loudPeakRms = 0;
 }
 
 // ─── Audio queue ───────────────────────────────────────

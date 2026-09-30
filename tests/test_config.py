@@ -14,6 +14,11 @@ def test_config_defaults(monkeypatch):
     # not whatever the operator has in their .env (which load_dotenv
     # from backend.main may have injected into os.environ).
     monkeypatch.delenv("WHISPER_MODEL", raising=False)
+    # Same reason, same trap. A local .env carrying MAX_AUDIO_DURATION=30 --
+    # which is exactly what the value was before it became a real limit -- was
+    # reported here as a failing default rather than as an operator override,
+    # because the test could not tell the two apart.
+    monkeypatch.delenv("MAX_AUDIO_DURATION", raising=False)
     with patch.dict(os.environ, {"GOOGLE_API_KEY": ""}, clear=False):
         cfg = Config()
     assert cfg.WHISPER_MODEL == "small"
@@ -24,7 +29,7 @@ def test_config_defaults(monkeypatch):
     assert cfg.CHUNK_SIZE == 400
     assert cfg.CHUNK_OVERLAP == 50
     assert cfg.RATE_LIMIT_PER_MINUTE == 10
-    assert cfg.MAX_AUDIO_DURATION == 30
+    assert cfg.MAX_AUDIO_DURATION == 60
     assert cfg.GOOGLE_API_KEY == ""
     assert cfg.GOOGLE_MODEL == "gemini-3.1-flash-lite"
 

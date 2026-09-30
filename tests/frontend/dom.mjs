@@ -103,7 +103,15 @@ export function baseState(overrides = {}) {
         // in tests/frontend/recording_cap.test.mjs, because a harness that
         // quietly tested a different number than the page enforces is a test
         // that passes for the wrong reason.
-        MAX_RECORDING_MS: 240000,
+        //
+        // It is the FALLBACK: the limit GET /api/config publishes, applied to
+        // `maxRecordingMs` when that request answers. Both must carry the same
+        // number, because the page has to be able to bound a recording before
+        // that request does -- and a fallback that disagreed with the server
+        // would be a second limit. `maxRecordingMs` is declared alongside it for
+        // the same reason.
+        MAX_RECORDING_MS: 60000,
+        maxRecordingMs: 60000,
         RECORDING_TIMESLICE_MS: 1000,
         conversationId: null,
         mediaRecorder: null,
@@ -125,6 +133,12 @@ export function baseState(overrides = {}) {
         vadAnimationId: null,
         silenceStart: null,
         hasSpoken: false,
+        // The VAD's noise-floor estimate and the loudest RMS this turn has
+        // seen. Both are per-recording state the lifted `vadLoop` reads and
+        // writes, so they are declared here for the same reason every other
+        // module-level name in this file is.
+        noiseFloor: 0,
+        loudPeakRms: 0,
         recordingCapTimer: null,
         recordedBytes: 0,
         recordingCapped: false,

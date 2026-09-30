@@ -34,7 +34,16 @@ async def health_check():
 
 @router.get("/api/config")
 async def get_config():
-    """Return active model configuration for the sidebar UI."""
+    """Return active model configuration for the sidebar UI.
+
+    ``max_audio_duration`` is the one field here that is not a model name, and
+    it earns its place: the page has to bound a recording before it is uploaded,
+    and a limit that only exists on the server is a limit the server learns
+    about too late. The page already fetches this endpoint on load, so publishing
+    the value costs one request that was being made anyway -- and a limit
+    published in two places is a limit that will eventually disagree with
+    itself.
+    """
     return {
         "tts_voice": config.TTS_VOICE,
         "stt_model": config.WHISPER_MODEL,
@@ -43,4 +52,5 @@ async def get_config():
         "google_model": config.GOOGLE_MODEL,
         "rag_top_k": config.RAG_TOP_K,
         "max_tokens": config.LLM_MAX_TOKENS,
+        "max_audio_duration": config.MAX_AUDIO_DURATION,
     }

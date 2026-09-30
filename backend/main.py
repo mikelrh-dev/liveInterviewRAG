@@ -79,6 +79,10 @@ stt_service = STTService(
     model_name=config.WHISPER_MODEL,
     device=config.WHISPER_DEVICE,
     compute_type=config.WHISPER_COMPUTE_TYPE,
+    # The only component that can measure a recording's duration, handed the
+    # only number that defines one. Without this the limit is a setting the
+    # deployment reads and nothing compares anything against.
+    max_duration_seconds=config.MAX_AUDIO_DURATION,
 )
 llm_service = LLMService(
     api_key=config.OPENROUTER_API_KEY,

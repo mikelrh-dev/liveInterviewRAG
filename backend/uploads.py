@@ -57,19 +57,27 @@ async def stage_upload(conversation_id: str, audio: UploadFile) -> Path:
     # declared oversize bodies before parsing, so this only fires for chunked
     # uploads.
     #
-    # The message names BYTES because the check is a byte count. It used to say
-    # "Audio too long (max 30 seconds)", which was false twice: no code enforces
-    # a duration limit (config.MAX_AUDIO_DURATION is read by nothing), and at
-    # the recorder's own audioBitsPerSecond this ceiling is minutes, not
-    # seconds. Telling a candidate to shorten a five-minute answer by a factor
-    # of ten is worse than telling them nothing, so the number here is the one
-    # that actually rejected the body.
+    # The message names BYTES because the check is a byte count, and it says so
+    # explicitly: this code has the audio in a byte array and nothing else. It
+    # has not parsed the container and does not know the bitrate the browser
+    # encoded at, so it cannot convert 5 MiB into seconds and does not pretend
+    # to. It used to say "Audio too long (max 30 seconds)", which was false
+    # twice -- nothing enforced a duration, and this ceiling is minutes, not
+    # seconds -- and telling a candidate to shorten a five-minute answer by a
+    # factor of ten is worse than telling them nothing.
+    #
+    # It also names the duration the page was told, because that limit now
+    # exists and is enforced, and a candidate reading "too large" deserves to
+    # know which rule they met. The number comes from the configured constant
+    # rather than from prose, so moving the limit moves the message.
     if len(audio_bytes) > MAX_AUDIO_SIZE:
         raise HTTPException(
             status_code=422,
             detail=(
                 f"Audio too large ({len(audio_bytes)} bytes, max "
-                f"{MAX_AUDIO_SIZE} bytes / 5 MB). The recording was cut off."
+                f"{MAX_AUDIO_SIZE} bytes / 5 MB) -- rejected on size, not on "
+                f"duration. The page stops a recording at "
+                f"{config.MAX_AUDIO_DURATION} s."
             ),
         )
 

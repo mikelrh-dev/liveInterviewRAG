@@ -187,7 +187,28 @@ class Config:
         )
 
         # Audio limits
-        self.MAX_AUDIO_DURATION: int = _env_int("MAX_AUDIO_DURATION", "30")
+        #
+        # MAX_AUDIO_DURATION is the ONE limit on a recording, in seconds, and
+        # it used to be read by nobody. Its only appearance in the code was this
+        # assignment; the only ceiling that ever fired was MAX_AUDIO_SIZE, which
+        # is a byte count. So the page invented its own number instead, and the
+        # two were free to disagree.
+        #
+        # It is now published by GET /api/config and cut at by the page, which
+        # has to do it itself: the duration is not knowable without decoding the
+        # container, and a request that arrives at 5 MiB is already too late to
+        # answer with advice.
+        #
+        # 60, not 30. Thirty was never checked against anything, and the byte
+        # ceiling it sat above permits 5.4 minutes at the recorder's own
+        # audioBitsPerSecond -- so it was arbitrarily strict rather than
+        # deliberately strict. It is also now a safety net rather than the
+        # mechanism: the VAD finds the end of an ordinary turn, and this only
+        # catches the turn it cannot (a room too noisy for any silence to
+        # register). Cutting an answer at 30 s would throw away most of what a
+        # candidate said in order to prevent a failure that the floor already
+        # handles.
+        self.MAX_AUDIO_DURATION: int = _env_int("MAX_AUDIO_DURATION", "60")
 
 
 config = Config()
