@@ -2,10 +2,19 @@
 
 Pre-generated answers for common recruiter questions, so the LLM call can be
 skipped entirely (instant response instead of 4-8s). The cache is an in-memory
-dict with substring/keyword matching — no external dependencies.
+dict with word-anchored phrase matching and whole-word keyword matching — no
+external dependencies.
 
 Answers are written in the candidate's voice, matching the tone of the system
 prompt: concise, first person, plain text (no Markdown, no emoji).
+
+A HIT SKIPS RETRIEVAL, WHICH IS WHY PRECISION IS THE WHOLE COST HERE
+-------------------------------------------------------------------
+``backend/turns/streaming.py`` consults this cache at Step 2 and RETURNS
+before Step 3, RAG. So a wrong hit is not merely a stale answer: the grounding
+that would have answered the question from the candidate's own corpus never
+runs. Being fast at answering a question nobody asked is a worse outcome than
+being slow at answering the right one.
 """
 
 import re
@@ -13,17 +22,27 @@ import unicodedata
 
 # Entries are checked in order — more specific entries come first so a keyword
 # never shadows a more precise phrase. Each entry has:
-#   phrases:  normalized substrings that trigger the answer (strong match)
+#   phrases:  normalized whole-word runs that trigger the answer (strong match)
 #   keywords: normalized keywords that trigger the answer (weaker match)
 #   answer:   pre-generated response in the candidate's voice
 #
-# Keyword vocabulary is deliberately tiny. A keyword matches as a whole word
-# anywhere in the question, so a generic technical word ("tests", "python",
-# "docker", "sql", "api", "rest", "rag", "dam") selects a pre-generated answer
-# for questions it does not address — "¿Qué cobertura de tests tiene el
-# proyecto de fraude?" is not "¿Haces tests?". Those questions belong to the
-# LLM. Only contextually specific terms belong in `keywords`; anything broader
-# belongs in `phrases`, which require the surrounding words to match.
+# PHRASES ARE WORD-ANCHORED, NOT SUBSTRINGS. `if phrase in normalized` was
+# satisfied by a longer word that happens to contain the phrase: "¿Qué es
+# ragged?" contains "que es rag", and "Háblame de tía" contains "hablame de ti".
+# Both were answered with a pre-generated reply. A real question contains its
+# phrase on word boundaries, so anchoring both ends costs no hit and stops the
+# vocabulary from matching itself.
+#
+# Keyword vocabulary is deliberately tiny — three terms. A keyword matches as a
+# whole word anywhere in the question, so a generic word selects a
+# pre-generated answer for questions it does not address. "¿Qué cobertura de
+# tests tiene el proyecto de fraude?" is not "¿Haces tests?", and "el sistema
+# presenta una arquitectura de tres capas" is not "¿Cuéntame sobre ti?". Six
+# keywords that did exactly that (`presenta`, `la ia`, `ia generativa`,
+# `aprendiste`, `bases de datos`, `debilidades`) have been removed, and the
+# questions they used to serve are now covered by phrases. Only contextually
+# specific terms belong in `keywords`; anything broader belongs in `phrases`,
+# which require the surrounding words to match.
 _CACHED_QUESTIONS = [
     {
         # Combined question — must come before the separate strengths/weakness entries
@@ -46,9 +65,18 @@ _CACHED_QUESTIONS = [
             "quien eres",
             "quien sos",
             "presentate",
-            "presentacion",
         ],
-        "keywords": ["presenta"],
+        # `presenta` and `presentacion` are gone, and this is the reason they
+        # were ever here: they are not contextually specific, they are just
+        # Spanish words that a sentence about a SYSTEM also contains.
+        #   "el proyecto PRESENTA una arquitectura de tres capas"  -> the pitch
+        #   "qué PRESENTACIÓN usaste para el pitch"                 -> the pitch
+        # Both were answered with "Soy Mikel, desarrollador junior DAM..." by a
+        # literal cache that short-circuits RAG (streaming.py:288), so the
+        # grounded answer never ran. "presentate" survives because it is a
+        # whole word the candidate says about himself, and it is a phrase, so
+        # it needs its neighbours to match.
+        "keywords": [],
         "answer": (
             "Soy Mikel, desarrollador junior DAM. Estudié Desarrollo de Aplicaciones "
             "Multiplataforma en Tartanga y antes era gerente en Mercadona, liderando un equipo "
@@ -101,8 +129,15 @@ _CACHED_QUESTIONS = [
         ),
     },
     {
-        "phrases": ["cuales son tus debilidades", "puntos debiles"],
-        "keywords": ["debilidades"],
+        "phrases": ["cuales son tus debilidades"],
+        # `puntos debiles` and the `debilidades` keyword are gone for the same
+        # reason they were wrong everywhere else: the answer is the CANDIDATE'S
+        # self-assessment, so the question has to be about the candidate.
+        # "el sistema tiene dos puntos debiles que describo abajo" asks about
+        # the system, and it was answered with "Soy algo desordenado" by a
+        # literal cache that short-circuits RAG (streaming.py:288). The phrase
+        # that remains names the referent explicitly.
+        "keywords": [],
         # This answer was reported as a fabricated self-disclosed weakness. It
         # is not fabricated. wiki/faq/fortalezas-y-debilidades.md states it in
         # full, including the mitigation the answer reproduces:
@@ -169,8 +204,17 @@ _CACHED_QUESTIONS = [
             "cual es tu opinion sobre la ia",
             "opinion de la ia",
             "como ves la ia",
+            "has usado ia generativa",
         ],
-        "keywords": ["la ia", "ia generativa"],
+        # `la ia` and `ia generativa` are gone, and neither was ever a question:
+        # both are nouns that appear inside questions ABOUT the AI, which is
+        # the opposite of a question FOR the candidate's opinion of it.
+        #   "cual es la IA que usas para recuperar el contexto"  -> the opinion
+        #   "la IA generativa genera la respuesta final"         -> the opinion
+        # "has usado ia generativa" is added as a PHRASE to keep the one
+        # positive those keywords used to serve, which is the trade the module
+        # asks for: a question that needs its neighbours, not a bare noun.
+        "keywords": [],
         "answer": (
             "Para mí la IA es una palanca enorme e inevitable en el desarrollo. "
             "Me gusta aplicarla en todas las áreas posibles y creo que el futuro pasa "
@@ -186,7 +230,13 @@ _CACHED_QUESTIONS = [
             "como te formas",
             "como estudias",
         ],
-        "keywords": ["aprendes", "aprendiste"],
+        # `aprendiste` is gone and `aprendes` stays. The difference is the whole
+        # point: this answer is about a METHODOLOGY, so the question has to ask
+        # how. "que aprendiste del proyecto de Mercadona" is a question about
+        # the content of one project, and it was answered with "Soy
+        # autodidacta...". The phrase "como aprendiste" still covers the
+        # methodology asked in the past tense.
+        "keywords": ["aprendes"],
         "answer": (
             "Soy autodidacta: busco información en YouTube, sobre todo en inglés, "
             "sigo referentes y código open source, uso la IA como tutor y, sobre todo, "
@@ -290,9 +340,19 @@ _CACHED_QUESTIONS = [
             "que sabes de bases de datos",
             "que experiencia tienes con bases de datos",
             "has usado bases de datos",
+            "bases de datos has usado",
             "que sabes de sql",
         ],
-        "keywords": ["bases de datos"],
+        # `bases de datos` is gone as a keyword. It is a topic name, and this
+        # answer is the candidate's EXPERIENCE with it, so the two have to be
+        # told apart by the words around them:
+        #   "como modelarias las BASES DE DATOS de un inventario" -> the stacks
+        # That question asks for a schema design, and a literal list of the
+        # tools he has touched is not an answer to it -- but the positive
+        # "que bases de datos has usado" has to keep hitting, so it is added
+        # above as a phrase. That is the whole trade this module documents:
+        # broad words belong in phrases, never in keywords.
+        "keywords": [],
         # "Triggers y procedimientos almacenados" and "Hibernate para ORM en
         # Java" were both reported as unsupported. Both are attributed:
         #   triggers / stored procedures -> wiki/skills/backend.md:33 ("SQL
@@ -451,10 +511,17 @@ def get_cached_response(question: str) -> str | None:
     """Return a pre-generated answer for a common question, or None.
 
     Matching is case/accent-insensitive and ignores punctuation. An entry
-    matches when any of its phrases appears as a substring of the normalized
-    question, or any of its keywords appears as a whole word (word-boundary
-    match). Entries are checked in order. Returns None when there is no
-    match, so the caller can fall back to the LLM.
+    matches when any of its phrases appears in the normalized question as a run
+    of WHOLE WORDS, or any of its keywords appears as a whole word. Entries are
+    checked in order. Returns None when there is no match, so the caller can
+    fall back to the LLM.
+
+    Phrases are word-anchored, and that is not a detail. As a bare substring,
+    "que es rag" was satisfied by "¿Qué es ragged?" and "hablame de ti" by
+    "Háblame de tía": the cache answered a question built around a longer word
+    that happens to contain the phrase. Anchoring both ends costs nothing --
+    a real question contains its phrase on whole-word boundaries -- and stops
+    the vocabulary from matching itself.
     """
     normalized = normalize_text(question)
     if not normalized:
@@ -462,7 +529,7 @@ def get_cached_response(question: str) -> str | None:
 
     for entry in _CACHED_QUESTIONS:
         for phrase in entry["phrases"]:
-            if phrase in normalized:
+            if re.search(rf"\b{re.escape(phrase)}\b", normalized):
                 return entry["answer"]
         for keyword in entry["keywords"]:
             if re.search(rf"\b{re.escape(keyword)}\b", normalized):

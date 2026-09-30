@@ -249,7 +249,17 @@ def test_keyword_rest_inside_word_misses():
 
 
 def test_keyword_presenta_inside_word_misses():
-    """Keyword 'presenta' inside 'representa' must NOT trigger the pitch."""
+    """'representa' must NOT trigger the pitch.
+
+    It no longer could: the `presenta` keyword was removed outright, because
+    "el proyecto presenta una arquitectura de tres capas" answered with the
+    pitch. So this now passes for a stronger reason than the one it was
+    written for, and the word-boundary guarantee it originally demonstrated
+    lives on in ``test_response_cache_precision.py`` for phrases, which are
+    matched with anchors rather than exclusions. Kept because the sentence is
+    worth pinning either way: it is the shape of question that used to
+    misroute, and it must keep falling through.
+    """
     assert get_cached_response("Este proyecto representa mucho para mí") is None
 
 
@@ -261,7 +271,15 @@ def test_keyword_exact_word_hits():
 
 
 def test_multiword_keyword_hits():
-    """Multi-word keyword 'ia generativa' still triggers the AI answer."""
+    """'has usado ia generativa' still triggers the AI answer.
+
+    This was a keyword match and is now a phrase. The assertion is unchanged
+    and deliberately so: the question is one a recruiter really asks and the
+    answer is right, so the fast path must survive the cleanup that removed
+    `ia generativa` as a bare noun. What the test no longer claims is that a
+    multi-word KEYWORD exists -- there are none, which is the point of the
+    vocabulary.
+    """
     answer = get_cached_response("¿Has usado IA generativa en tus proyectos?")
     assert answer is not None
     assert "IA" in answer
@@ -367,24 +385,51 @@ def test_no_phrase_was_removed():
 
     Snapshot of the phrase count (20 entries, 85 phrases). Bump it when an
     entry or phrase is added on purpose; never to silence a deletion.
+
+    THE TOTAL IS UNCHANGED AND THAT IS NOW A TRAP, NOT A REASSURANCE. Two
+    phrases WERE removed -- `presentacion` and `puntos debiles`, both of which
+    matched inside longer sentences about other things -- and two were added
+    (`has usado ia generativa`, `bases de datos has usado`) to keep the
+    positives those matchers used to serve. The arithmetic cancels, so this
+    assertion cannot tell a substitution from a no-op, and it used to. The
+    removals are pinned by name in
+    ``tests/test_response_cache_precision.py::TestTheGenericVocabularyStaysGone``;
+    this count only guards the size of the corpus now.
     """
     assert len(_CACHED_QUESTIONS) == 20
     assert sum(len(entry["phrases"]) for entry in _CACHED_QUESTIONS) == 85
 
 
 def test_only_contextually_specific_keywords_remain():
-    """The keyword vocabulary is exactly the nine contextually specific terms."""
+    """The keyword vocabulary is exactly the three terms that survive scrutiny.
+
+    This set was NINE, and every one of the other six has been removed after
+    being measured answering questions it does not address -- `presenta` and
+    `presentacion` against "el proyecto presenta una arquitectura", `la ia` and
+    `ia generativa` against "cuál es la IA que usas", `aprendiste` against
+    "qué aprendiste del proyecto de Mercadona", `bases de datos` against "cómo
+    modelarías las bases de datos", `debilidades` against "el sistema tiene dos
+    puntos débiles".
+
+    What is left is the shortest list that has survived a real objection:
+
+      * ``fortalezas``  -- the strengths answer is about the candidate and
+        every use of the word in an interview is a question FOR it.
+      * ``aprendes``    -- present tense of "how do you learn", the
+        methodology the entry answers. Its past-tense twin did not survive:
+        "qué aprendiste del proyecto X" is about a project's content.
+      * ``interviewtts``-- the project's proper noun, named in the entry's
+        own first phrase as well.
+
+    These are not lowered to zero on principle. They are what is left after the
+    generic ones went, and a keyword list that cannot grow back into a
+    misroute is the deliverable.
+    """
     remaining = sorted({kw for entry in _CACHED_QUESTIONS for kw in entry["keywords"]})
     assert remaining == [
         "aprendes",
-        "aprendiste",
-        "bases de datos",
-        "debilidades",
         "fortalezas",
-        "ia generativa",
         "interviewtts",
-        "la ia",
-        "presenta",
     ]
 
 
@@ -419,10 +464,15 @@ def test_english_question_reaches_the_llm(question):
 # "¿Por qué no usaste Docker?" matched on `docker` and returned a positive
 # Docker answer. The keyword is gone, so it falls through on its own. No
 # negation detector was added: a fixed token window either misses the
-# demonstrated case (window=1: the token before "bases de datos" is "usaste",
+# demonstrated case (window=1: the token before "bases de datos" was "usaste",
 # not "no") or rejects legitimate questions (window=2: "¿No puedes diseñar
 # bases de datos?"). Resolving scope properly needs parsing, which contradicts
 # this module's "no external dependencies" design.
+#
+# That example is now history: `bases de datos` was itself removed as too
+# generic, so the window=1 case it illustrated no longer exists. The reasoning
+# for not writing a negation guard is unchanged, and it is what the one
+# surviving exposure below has to live with.
 
 
 @pytest.mark.parametrize(
@@ -432,6 +482,14 @@ def test_english_question_reaches_the_llm(question):
         pytest.param("¿Por qué no dejaste Mercadona?", id="mercadona"),
         pytest.param("¿Por qué no elegiste DAM?", id="dam"),
         pytest.param("¿Has usado alguna vez RAG?", id="rag-not-used"),
+        # These two were the documented negation exposure, listed as a known
+        # limitation because `bases de datos` was considered specific enough to
+        # keep. It was not: it answered "cómo modelarías las bases de datos de
+        # un inventario" with a list of the tools, and dropping it closed this
+        # exposure as a side effect. They belong here now because they are
+        # questions the cache must decline, not because a guard was written.
+        pytest.param("¿Por qué no usaste bases de datos?", id="db-why-not"),
+        pytest.param("¿Nunca has trabajado con bases de datos?", id="db-never"),
     ],
 )
 def test_negated_question_never_returns_a_positive_cached_answer(question):
@@ -442,25 +500,25 @@ def test_negated_question_never_returns_a_positive_cached_answer(question):
 @pytest.mark.parametrize(
     "question",
     [
-        pytest.param("¿Por qué no usaste bases de datos?", id="why-not"),
-        pytest.param("¿Nunca has trabajado con bases de datos?", id="never"),
         pytest.param("Que no es InterviewTTS?", id="what-is-not"),
     ],
 )
 def test_known_residual_negation_exposure_on_a_kept_keyword(question):
     """KNOWN LIMITATION, needs the owner's call — negation on a kept keyword.
 
-    The eight removed keywords are fixed, but a negation that scopes over one
-    of the nine *kept* keywords still selects a positive answer, because
-    `bases de datos` and `interviewtts` are contextually specific enough to
-    keep and are matched as whole words with no regard to negation.
+    A negation that scopes over `interviewtts` still selects a positive
+    answer: it is the project's proper noun, matched as a whole word with no
+    regard to negation, and the entry above it is the project's description.
 
     This is the case a negation guard would fix, and the case a naive guard
-    would break: "no" also occurs in legitimate questions ("¿No puedes diseñar
-    bases de datos?"), so a keyword-level negation check would reject those
-    too. Recorded here so the exposure stays visible and deliberate rather
-    than accidental. Asserted as current behaviour on purpose — if a guard is
-    ever added, this test is the one that should flip.
+    would break: "no" also occurs in legitimate questions, so a keyword-level
+    negation check would reject those too. Recorded here so the exposure stays
+    visible and deliberate rather than accidental. Asserted as current
+    behaviour on purpose — if a guard is ever added, this test is the one that
+    should flip.
+
+    It was one of three; the two `bases de datos` cases left with their keyword
+    and are now asserted to return nothing above.
     """
     assert get_cached_response(question) is not None
 
@@ -470,7 +528,7 @@ def test_negation_interposed_in_a_phrase_breaks_the_substring():
 
     This is why the phrase fast path needs no negation guard. Inserting the
     negation between two words of a multi-word phrase breaks contiguity, so
-    the phrase cannot match. The residual exposure is limited to the nine kept
+    the phrase cannot match. The residual exposure is limited to the three kept
     keywords, which are contextually specific.
     """
     assert get_cached_response("¿Por qué no dejaste Mercadona?") is None
