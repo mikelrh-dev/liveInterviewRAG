@@ -20,6 +20,11 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+#: Recorded in ``PRAGMA user_version`` so a migration can tell whether it has
+#: already run. It was 0 everywhere and nothing read it, which left every future
+#: migration with no way to know the state of a deployed file.
+SCHEMA_VERSION = 1
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS conversations (
     id TEXT PRIMARY KEY,
@@ -49,6 +54,57 @@ CREATE TABLE IF NOT EXISTS reports (
     created_at TEXT NOT NULL
 );
 """
+
+
+def _drop_legacy_semantic_cache(con: sqlite3.Connection) -> None:
+    """v1 -- remove the table an older schema created and no code now uses.
+
+    ``semantic_cache`` held ``(question, embedding, answer, hit_count,
+    created_at)``: the recruiter's question text, a float32 vector of it, and
+    the candidate's answer, written on every first-substantive turn. The code
+    that wrote it is gone, and ``_SCHEMA`` deliberately does not recreate it --
+    but a database FILE deployed before that removal still has the table, and
+    nothing here ever dropped it.
+
+    The consequence was that the retention story had a hole in it: the
+    transcript containing the same exchange is pruned after
+    SESSION_TTL_HOURS (2h by default), while a copy of the candidate's
+    questions did not expire at all. That is a privacy defect, not untidiness,
+    which is why this warns when it finds something.
+
+    The warning is conditional on finding the table on purpose. Emitted every
+    boot it would mean nothing, and an operator learns to skip the one line
+    that tells them their stored questions were deleted.
+    """
+    present = con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='semantic_cache'"
+    ).fetchone()
+    if present is None:
+        return
+
+    con.execute("DROP TABLE semantic_cache")
+    logger.warning(
+        "Dropped the legacy semantic_cache table: it stored recruiter questions, "
+        "their embeddings and the candidate's answers, and unlike the transcript "
+        "it had no retention. Its rows are gone and the capability is not coming "
+        "back without a re-measurement."
+    )
+
+
+def _migrate(con: sqlite3.Connection) -> None:
+    """Bring an existing database file up to :data:`SCHEMA_VERSION`.
+
+    Idempotent by construction, which matters because this runs on every
+    ``initialize`` rather than once: each step checks the live schema rather
+    than trusting the recorded version alone, so a file that was hand-edited,
+    restored from a partial backup, or created by an older build is still
+    brought to the right state.
+    """
+    _drop_legacy_semantic_cache(con)
+
+    current = con.execute("PRAGMA user_version").fetchone()[0]
+    if current != SCHEMA_VERSION:
+        con.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
 
 def _replay_summary(turns: list) -> str:
@@ -129,10 +185,18 @@ class PersistenceService:
         return con
 
     def _ensure_schema(self, con: sqlite3.Connection) -> None:
-        """Apply DDL once per service instance (idempotent CREATE IF NOT EXISTS)."""
+        """Apply DDL and migrations once per service instance.
+
+        The CREATE statements are idempotent, so they cover a database that
+        predates the current schema. They cannot cover one that predates a
+        REMOVAL: ``CREATE TABLE IF NOT EXISTS`` leaves an unwanted table exactly
+        where it is, which is how ``semantic_cache`` outlived the code that
+        created it. That is what ``_migrate`` is for.
+        """
         if self._schema_ready:
             return
         con.executescript(_SCHEMA)
+        _migrate(con)
         con.commit()
         self._schema_ready = True
 
