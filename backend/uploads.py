@@ -56,8 +56,22 @@ async def stage_upload(conversation_id: str, audio: UploadFile) -> Path:
     # Defence in depth: the MaxBodySizeMiddleware guard already rejected
     # declared oversize bodies before parsing, so this only fires for chunked
     # uploads.
+    #
+    # The message names BYTES because the check is a byte count. It used to say
+    # "Audio too long (max 30 seconds)", which was false twice: no code enforces
+    # a duration limit (config.MAX_AUDIO_DURATION is read by nothing), and at
+    # the recorder's own audioBitsPerSecond this ceiling is minutes, not
+    # seconds. Telling a candidate to shorten a five-minute answer by a factor
+    # of ten is worse than telling them nothing, so the number here is the one
+    # that actually rejected the body.
     if len(audio_bytes) > MAX_AUDIO_SIZE:
-        raise HTTPException(status_code=422, detail="Audio too long (max 30 seconds)")
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Audio too large ({len(audio_bytes)} bytes, max "
+                f"{MAX_AUDIO_SIZE} bytes / 5 MB). The recording was cut off."
+            ),
+        )
 
     ext = _audio_extension(audio.content_type)
     temp_audio = config.AUDIO_DIR / f"input_{conversation_id}_{uuid.uuid4().hex}{ext}"

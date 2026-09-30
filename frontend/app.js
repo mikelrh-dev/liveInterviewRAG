@@ -68,8 +68,43 @@ let lastBlendVolume = null;
 let vadAnimationId = null;
 let silenceStart = null;
 let hasSpoken = false;
+// The recording cap's own state. Separate from the VAD's on purpose: the VAD
+// answers "has the speaker stopped?", this answers "has this recording had
+// enough?", and the second must still work in a room that never goes quiet.
+let recordingCapTimer = null;
+let recordedBytes = 0;
+let recordingCapped = false;
 const SILENCE_TIMEOUT_MS = 1200;
 const RMS_THRESHOLD = 0.015;
+
+// ─── The recording ceiling ───────────────────────────────────────────────────
+//
+// WHY THIS EXISTS
+// `MAX_AUDIO_DURATION = 30` (backend/config.py) is enforced by nobody, and the
+// only real ceiling is `MAX_AUDIO_SIZE = 5 MiB`. The VAD cannot be relied on to
+// find the end of a turn: it ends one after SILENCE_TIMEOUT_MS of RMS below
+// RMS_THRESHOLD, and in a room with background noise the RMS never drops, so it
+// never fires. The recorder keeps running, the blob grows to 5 MiB, the server
+// answers 413, 413 is not retryable, and `stopInterview()` throws away the
+// interview and the whole recording.
+//
+// So the bound is applied here, where the data is. 240 s against a 5 MiB
+// ceiling at the recorder's own `audioBitsPerSecond: 128000` (16 kB/s) is
+// ~3.8 MB, roughly 80% of the budget: a candidate who talks for four minutes
+// gets a truncated answer and keeps the interview, instead of losing it.
+//
+// It is deliberately a page-side constant and not a number fetched from
+// /api/config. The page has to be able to enforce the bound before, during and
+// independently of any network round trip; a cap that arrives by HTTP is a cap
+// that does not apply to the first recording of a session, which is exactly the
+// one that needs it. If this ever has to move, MAX_AUDIO_SIZE and
+// `audioBitsPerSecond` below move with it, and the equality is asserted in
+// tests/frontend/recording_cap.test.mjs so the two cannot drift apart quietly.
+const MAX_RECORDING_MS = 240000;
+// Asked of MediaRecorder so `dataavailable` fires while recording instead of
+// only at stop. Without it the size of a recording is unobservable until the
+// moment it is already too late, which is how a blob reaches 5 MiB unnoticed.
+const RECORDING_TIMESLICE_MS = 1000;
 
 // Visualization state
 let currentState = "idle"; // idle | listening | speaking | processing
@@ -1263,16 +1298,24 @@ async function startRecording() {
         });
 
         mediaRecorder.ondataavailable = (e) => {
-            if (e.data.size > 0) audioChunks.push(e.data);
+            if (e.data.size > 0) {
+                audioChunks.push(e.data);
+                // Accumulated on every slice, so the running size is a number
+                // rather than a surprise discovered by the server.
+                recordedBytes += e.data.size;
+            }
         };
         mediaRecorder.onstop = () => {
             stopVad();
             processRecordingStream();
         };
 
-        mediaRecorder.start();
+        mediaRecorder.start(RECORDING_TIMESLICE_MS);
         isRecording = true;
         hasSpoken = false;
+        recordedBytes = 0;
+        recordingCapped = false;
+        armRecordingCap();
         startVad();
         setStatus("Escuchando…");
         setState("listening");
@@ -1291,9 +1334,40 @@ async function startRecording() {
 }
 
 function stopRecording() {
+    disarmRecordingCap();
     if (mediaRecorder && mediaRecorder.state !== "inactive")
         mediaRecorder.stop();
     isRecording = false;
+}
+
+// ─── The recording cap ───────────────────────────────────────────────────────
+//
+// The VAD decides when a turn ENDS. This decides when a recording may not
+// continue, and it is the only bound that holds when the VAD cannot see a
+// silence. Reaching it stops the recorder the same way a press of STOP does,
+// so the audio collected so far is uploaded instead of discarded by a 413.
+
+function armRecordingCap() {
+    disarmRecordingCap();
+    recordingCapTimer = setTimeout(() => {
+        recordingCapTimer = null;
+        recordingCapped = true;
+        const seconds = Math.round(MAX_RECORDING_MS / 1000);
+        setStatus(
+            "Grabación cortada por el límite de " + seconds +
+                " s — enviando lo grabado…",
+            true,
+        );
+        setState("processing");
+        stopRecording();
+    }, MAX_RECORDING_MS);
+}
+
+function disarmRecordingCap() {
+    if (recordingCapTimer !== null) {
+        clearTimeout(recordingCapTimer);
+        recordingCapTimer = null;
+    }
 }
 
 // ─── VAD ───────────────────────────────────────────────
@@ -2229,7 +2303,24 @@ async function processRecordingStream() {
         // Transport-level failure (HTTP error, network drop). We do not know
         // what the server did, so the interview cannot be trusted to be in a
         // clean state; end it rather than let the candidate talk into a void.
-        stopInterview();
+        //
+        // A 413 IS THE EXCEPTION, and it used not to be. The server refused the
+        // body on SIZE -- it never ran the pipeline and wrote no turn -- so the
+        // conversation on disk is intact and ending the session destroys turns
+        // the candidate already completed. The cap in `armRecordingCap` is the
+        // real fix, but it cannot be the only one: a browser can encode faster
+        // than the budget assumes, and nginx has its own ceiling above ours.
+        // So the recovery is here too: say what happened, keep the interview,
+        // and let the `finally` hand the mic back.
+        if (e.status === 413) {
+            setStatus(
+                "La grabación era demasiado grande para el servidor (413) — " +
+                    "el audio se ha cortado. La entrevista continúa.",
+                true,
+            );
+        } else {
+            stopInterview();
+        }
     } finally {
         // Backstop: settles if neither a terminal event nor a clean EOF was
         // reached (e.g. the catch above took over).

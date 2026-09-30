@@ -94,6 +94,17 @@ export function baseState(overrides = {}) {
         // see a first-time visitor and the returning-visitor path would be
         // untestable.
         DISCLAIMER_KEY: "interviewtts.disclaimerAccepted",
+        // app.js's recording ceiling, and the timeslice it asks the recorder
+        // for so the recorded size is observable while recording rather than
+        // only at the end. Lifted code reads these as globals; a test that
+        // needs a different ceiling passes its own value.
+        //
+        // MAX_RECORDING_MS must stay equal to app.js's. The drift is asserted
+        // in tests/frontend/recording_cap.test.mjs, because a harness that
+        // quietly tested a different number than the page enforces is a test
+        // that passes for the wrong reason.
+        MAX_RECORDING_MS: 240000,
+        RECORDING_TIMESLICE_MS: 1000,
         conversationId: null,
         mediaRecorder: null,
         audioChunks: [],
@@ -114,6 +125,9 @@ export function baseState(overrides = {}) {
         vadAnimationId: null,
         silenceStart: null,
         hasSpoken: false,
+        recordingCapTimer: null,
+        recordedBytes: 0,
+        recordingCapped: false,
         currentState: "idle",
         statusIsError: false,
         waveformBars: [],
@@ -255,15 +269,25 @@ function installAudioFakes(window, recorder) {
             this.state = "inactive";
             this.ondataavailable = null;
             this.onstop = null;
+            // The timeslice `start()` was called with, so a test can assert the
+            // recorder is asked to deliver data periodically. A real recorder
+            // without one fires `dataavailable` only on stop, which is exactly
+            // the property that lets a blob grow unnoticed.
+            this.startedWithTimeslice = undefined;
             recorder.recorders++;
         }
-        start() {
+        start(timeslice) {
+            this.startedWithTimeslice = timeslice;
             this.state = "recording";
         }
         stop() {
             this.state = "inactive";
             recorder.stops++;
             if (this.onstop) this.onstop();
+        }
+        /** Deliver a chunk, as a real recorder does on each timeslice. */
+        emit(bytes) {
+            if (this.ondataavailable) this.ondataavailable({ data: { size: bytes } });
         }
     }
 

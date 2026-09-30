@@ -271,7 +271,12 @@ class TestMaxBodySizeEndToEnd:
             asyncio.run(main.send_message(cid, OversizedUpload()))
 
         assert excinfo.value.status_code == 422
-        assert excinfo.value.detail == "Audio too long (max 30 seconds)"
+        # The detail must name the limit that actually rejected the body. It
+        # used to be the exact string "Audio too long (max 30 seconds)", which
+        # described a duration ceiling no code enforces; the check is a byte
+        # count, so the message is one too.
+        assert str(MAX_AUDIO_SIZE) in excinfo.value.detail
+        assert "30 second" not in excinfo.value.detail
         main.conversations.pop(cid, None)
 
     def test_in_route_check_still_rejects_empty_audio(self, client, mock_services):
@@ -304,5 +309,6 @@ class TestMaxBodySizeEndToEnd:
             asyncio.run(main.send_message_stream(cid, OversizedUpload()))
 
         assert excinfo.value.status_code == 422
-        assert excinfo.value.detail == "Audio too long (max 30 seconds)"
+        assert str(MAX_AUDIO_SIZE) in excinfo.value.detail
+        assert "30 second" not in excinfo.value.detail
         main.conversations.pop(cid, None)
