@@ -28,6 +28,11 @@ def mock_services(isolated_write_targets):
         mock_rag.get_context_string.return_value = "Built InterviewTTS with Python and FastAPI."
         stub_rag_context_shapes(mock_rag)
         mock_rag.chunks = [MagicMock()]  # Non-empty
+        # A MagicMock attribute is not a mode, and /api/health now DERIVES its
+        # status from the fields it publishes, so an unanswered `mode` would
+        # report this fixture's otherwise-healthy deployment as degraded. The
+        # fixture describes a working system; it has to say which one.
+        mock_rag.mode = "embeddings"
 
         # LLM mock
         mock_llm.generate.return_value = "I built InterviewTTS using Python and FastAPI."
@@ -69,12 +74,29 @@ def client(mock_services):
 class TestHealthEndpoint:
     """Tests for GET /api/health"""
 
-    def test_health_returns_ok(self, client):
-        """Health endpoint returns status ok."""
-        response = client.get("/api/health")
+    def test_health_returns_ok(self, client, mock_services):
+        """A fully loaded deployment answers ok -- and ok is now computed.
+
+        This asserted the literal the endpoint used to return unconditionally.
+        The full derivation, including every degradation, is in
+        ``tests/test_health_is_computed.py``; what is guarded here is that the
+        common case over HTTP is still ok, and that the fields it has always
+        published are still published.
+
+        The store is stubbed only here rather than in ``mock_services``:
+        several tests below rely on the REAL one, because a MagicMock store
+        answers "here is your conversation" to every lookup.
+        """
+        store = MagicMock()
+        store.health.return_value = "ok"
+
+        with patch("backend.main.persistence", store):
+            response = client.get("/api/health")
+
         assert response.status_code == 200
         data = response.json()
-        assert data["status"] == "ok"
+        assert data["status"] == "ok", data
+        assert data["problems"] == [], data
         assert "whisper_loaded" in data
         assert "rag_chunks" in data
 

@@ -394,6 +394,38 @@ function createHealthStatus(el, options) {
             problems.push("RAG sin índice");
         }
 
+        // The store. `PersistenceService` never raises — every method swallows
+        // its exception, logs it and returns a sentinel — so an unreachable
+        // database used to be invisible to every reader of this endpoint. Turns
+        // that never reach the store are exactly what that policy protects, and
+        // nothing else on the page could tell.
+        //
+        // `disabled` is a decision, not a fault: the deployment has said not to
+        // write, so nothing that would have been written is missing.
+        if (payload.persistence === "error") {
+            problems.push("base de datos inaccesible: los turnos no se guardan");
+        }
+
+        // The server's own verdict, read last, and only to fill a gap this build
+        // has no specific wording for. `/api/health` now derives `status` from
+        // the fields above, and rendering green over a body it called
+        // `degraded` would make the page contradict the thing it is reading.
+        // A degradation the page can already name keeps its own line: the
+        // specific wording is more use than "and also degraded".
+        //
+        // An ABSENT `status` is not a problem, for the same reason an absent
+        // `rag_mode` is not: a server that has not heard of the field is an
+        // older server, not a broken one. A status this build cannot read as
+        // healthy -- anything that is not the string "ok" -- degrades the rail,
+        // which is the rule this function already applies to every other field.
+        if (payload.status !== undefined && payload.status !== "ok" && problems.length === 0) {
+            const named = Array.isArray(payload.problems) ? payload.problems : [];
+            problems.push(
+                "el servidor se declara degradado" +
+                    (named.length ? " (" + named.join(", ") + ")" : ""),
+            );
+        }
+
         if (problems.length === 0) {
             return {
                 tone: "dot-green",

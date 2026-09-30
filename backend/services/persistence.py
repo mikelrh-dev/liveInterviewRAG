@@ -197,6 +197,50 @@ class PersistenceService:
         """
         return self._enabled
 
+    # ── Reachability ──────────────────────────────────────
+
+    def health(self) -> str:
+        """Can this store be opened right now? ``"ok"``, ``"disabled"`` or ``"error"``.
+
+        A LIVE probe, and the only one that can be. The alternative -- a flag
+        flipped by whatever failed last -- is not derivable from anything this
+        class already knows, because of the failure policy at the top of the
+        module: every public method, ``initialize`` included, swallows its
+        exception, logs it, and returns a sentinel. A store that cannot be
+        opened therefore leaves no exception anywhere for a caller to observe
+        and no state on the instance for a flag to read. ``/api/health`` used to
+        answer ``status: "ok"`` over exactly that process.
+
+        So this opens a connection and asks. It is one short-lived connection
+        and one statement, on an endpoint that is already behind the rate
+        limiter and polled once a minute; measured against the alternative --
+        guessing -- it is the only version of the answer that can be false.
+
+        ``SELECT 1`` is the probe rather than a schema read on purpose: it
+        touches the file (an unopenable one raises here) without depending on
+        the schema being present, so it still answers for a store whose
+        ``initialize`` never got as far as creating its tables.
+
+        ``"disabled"`` is deliberately not a fault. The deployment has said not
+        to write, so nothing that would have been written is missing, and
+        reporting it as broken would paint a health rail amber over a working
+        instance every time an operator turns a flag off.
+
+        Never raises. A health probe that can fail is not a probe.
+        """
+        if not self._enabled:
+            return "disabled"
+        try:
+            con = self._connect()
+            try:
+                con.execute("SELECT 1").fetchone()
+            finally:
+                con.close()
+        except Exception as e:
+            logger.error("Persistence store at %s is not reachable: %s", self.db_path, e)
+            return "error"
+        return "ok"
+
     # ── Connection / schema plumbing ─────────────────────────
 
     def _connect(self, *, autocommit: bool = False) -> sqlite3.Connection:
