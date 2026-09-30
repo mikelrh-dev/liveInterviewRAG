@@ -103,16 +103,21 @@ class TestThePipelineReportsItsMode:
 
 class TestHealthReportsTheMode:
     def test_health_includes_rag_mode(self):
+        import asyncio
+
         from backend.routers.system import health_check
 
-        import anyio
-
-        payload = anyio.run(health_check)
+        # asyncio.run, not anyio: anyio arrives with starlette but is declared
+        # nowhere in requirements.txt, and tests/test_packaging.py enforces
+        # that. A transitive dependency is not a dependency this project has.
+        payload = asyncio.run(health_check())
         assert "rag_mode" in payload, (
             f"/api/health cannot report a degraded pipeline: {sorted(payload)}"
         )
 
     def test_health_reports_the_pipeline_mode(self, monkeypatch):
+        import asyncio
+
         from backend import container
         from backend.routers import system
 
@@ -122,9 +127,7 @@ class TestHealthReportsTheMode:
 
         monkeypatch.setattr(container, "rag_pipeline", lambda: Stub())
 
-        import anyio
-
-        payload = anyio.run(system.health_check)
+        payload = asyncio.run(system.health_check())
         assert payload["rag_mode"] == "tfidf", (
             f"the health payload does not carry the pipeline's mode: {payload}"
         )
