@@ -329,22 +329,25 @@ def test_demonstrated_misroute_reaches_the_llm(question):
     assert get_cached_response(question) is None
 
 
-def test_misroute_more_about_interviewtts_still_hits_kept_keyword():
-    """'Cuéntame más sobre InterviewTTS' is NOT fixed by the keyword change.
+def test_misroute_more_about_interviewtts_now_falls_through():
+    """The owner's call has been made, and the keyword is gone.
 
-    Verified against the running cache: this question matches on the keyword
-    ``interviewtts``, which the removal list explicitly keeps, and on no
-    phrase. The answer it returns is the InterviewTTS project description —
-    topically correct, but the same text the candidate already heard, which is
-    why it was reported as a misroute.
+    This test used to pin the opposite: 'Cuéntame más sobre InterviewTTS'
+    matched on the keyword ``interviewtts`` and on no phrase, and the answer it
+    returned was the project description — topically correct, but the same text
+    the candidate already heard. It was left hitting on purpose because the fix
+    was to drop the keyword, and that was the owner's call rather than a silent
+    edit. The call has been made and the keyword is removed, so the question
+    reaches the retriever, which can be asked for more without repeating itself.
 
-    It is left hitting on purpose: the fix would be to drop the ``interviewtts``
-    keyword, and that is the owner's call, not a silent edit here. Recorded as
-    a test so the behaviour cannot drift unnoticed.
+    The questions that genuinely ask WHAT the project is still hit, on their
+    phrases; see ``tests/test_response_cache_precision.py``.
     """
-    answer = get_cached_response("Cuéntame más sobre InterviewTTS")
-    assert answer is not None
-    assert answer is get_cached_response("¿Qué es InterviewTTS?")
+    assert get_cached_response("Cuéntame más sobre InterviewTTS") is None, (
+        "the keyword is back: any question naming the project would receive the "
+        "project's definition, including the ones about its stack, its cost or "
+        "its tests"
+    )
 
 
 # ─── Positive control: the legitimate fast path must survive ──
@@ -401,15 +404,18 @@ def test_no_phrase_was_removed():
 
 
 def test_only_contextually_specific_keywords_remain():
-    """The keyword vocabulary is exactly the three terms that survive scrutiny.
+    """The keyword vocabulary is exactly the two terms that survive scrutiny.
 
-    This set was NINE, and every one of the other six has been removed after
+    This set was NINE, and every one of the other seven has been removed after
     being measured answering questions it does not address -- `presenta` and
     `presentacion` against "el proyecto presenta una arquitectura", `la ia` and
     `ia generativa` against "cuál es la IA que usas", `aprendiste` against
     "qué aprendiste del proyecto de Mercadona", `bases de datos` against "cómo
     modelarías las bases de datos", `debilidades` against "el sistema tiene dos
-    puntos débiles".
+    puntos débiles", and `interviewtts` against the five questions about the
+    stack, the technologies, the Docker story, the hosting bill and the tests
+    that all contain the project's name and all received the project's
+    DEFINITION.
 
     What is left is the shortest list that has survived a real objection:
 
@@ -418,8 +424,15 @@ def test_only_contextually_specific_keywords_remain():
       * ``aprendes``    -- present tense of "how do you learn", the
         methodology the entry answers. Its past-tense twin did not survive:
         "qué aprendiste del proyecto X" is about a project's content.
-      * ``interviewtts``-- the project's proper noun, named in the entry's
-        own first phrase as well.
+
+    ``interviewtts`` did not survive the same objection the other seven failed,
+    which is why it is the one worth stating: a proper noun can be exactly as
+    generic as a common noun. It is the name of the flagship project, so it
+    occurs in almost every question asked about that project, and a keyword
+    that fires on almost every question about a topic discriminates nothing
+    between them. It is a topic label, and topic labels belong in `phrases`,
+    where the surrounding words have to match too. Pinned by name in
+    ``tests/test_response_cache_precision.py::TestAKeywordHasToDiscriminate``.
 
     These are not lowered to zero on principle. They are what is left after the
     generic ones went, and a keyword list that cannot grow back into a
@@ -429,7 +442,6 @@ def test_only_contextually_specific_keywords_remain():
     assert remaining == [
         "aprendes",
         "fortalezas",
-        "interviewtts",
     ]
 
 
@@ -490,6 +502,11 @@ def test_english_question_reaches_the_llm(question):
         # questions the cache must decline, not because a guard was written.
         pytest.param("¿Por qué no usaste bases de datos?", id="db-why-not"),
         pytest.param("¿Nunca has trabajado con bases de datos?", id="db-never"),
+        # The third keyword the negation paragraph below used to call out as a
+        # live exposure. It left with the `interviewtts` keyword, so the
+        # question no longer needs a guard to decline: it falls through on the
+        # same footing as every other question that merely names the project.
+        pytest.param("Que no es InterviewTTS?", id="project-what-is-not"),
     ],
 )
 def test_negated_question_never_returns_a_positive_cached_answer(question):
@@ -500,15 +517,16 @@ def test_negated_question_never_returns_a_positive_cached_answer(question):
 @pytest.mark.parametrize(
     "question",
     [
-        pytest.param("Que no es InterviewTTS?", id="what-is-not"),
+        pytest.param("Que no tienes fortalezas?", id="no-strengths"),
+        pytest.param("No aprendes nada nuevo?", id="no-learning"),
     ],
 )
 def test_known_residual_negation_exposure_on_a_kept_keyword(question):
-    """KNOWN LIMITATION, needs the owner's call — negation on a kept keyword.
+    """KNOWN LIMITATION — negation on a kept keyword, and it is still live.
 
-    A negation that scopes over `interviewtts` still selects a positive
-    answer: it is the project's proper noun, matched as a whole word with no
-    regard to negation, and the entry above it is the project's description.
+    A negation that scopes over a kept keyword still selects a positive
+    answer: the keyword is matched as a whole word with no regard to negation,
+    and the entry it belongs to answers affirmatively.
 
     This is the case a negation guard would fix, and the case a naive guard
     would break: "no" also occurs in legitimate questions, so a keyword-level
@@ -517,8 +535,14 @@ def test_known_residual_negation_exposure_on_a_kept_keyword(question):
     behaviour on purpose — if a guard is ever added, this test is the one that
     should flip.
 
-    It was one of three; the two `bases de datos` cases left with their keyword
-    and are now asserted to return nothing above.
+    It was three probes over three keywords. Two of them, both `bases de
+    datos`, left with their keyword and are asserted to return nothing above.
+    The third was `interviewtts` on "Que no es InterviewTTS?", and it left for
+    a better reason: the keyword is gone, so the question now falls through
+    with every other question that merely names the project. What replaced it
+    here are the two keywords that survive, so the limitation is still pinned
+    against a keyword that actually exists rather than documented in prose
+    about one that no longer does.
     """
     assert get_cached_response(question) is not None
 
@@ -528,7 +552,7 @@ def test_negation_interposed_in_a_phrase_breaks_the_substring():
 
     This is why the phrase fast path needs no negation guard. Inserting the
     negation between two words of a multi-word phrase breaks contiguity, so
-    the phrase cannot match. The residual exposure is limited to the three kept
+    the phrase cannot match. The residual exposure is limited to the two kept
     keywords, which are contextually specific.
     """
     assert get_cached_response("¿Por qué no dejaste Mercadona?") is None

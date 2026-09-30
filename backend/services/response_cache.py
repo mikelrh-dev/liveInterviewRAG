@@ -92,7 +92,33 @@ _CACHED_QUESTIONS = [
             "hablame de interviewtts",
             "que es tu proyecto",
         ],
-        "keywords": ["interviewtts"],
+        # `interviewtts` is gone as a keyword, and it is the exact case the rule
+        # above is about: the proper noun of the flagship project occurs in
+        # almost EVERY question a recruiter asks about that project, so as a
+        # keyword it stopped saying which question was being asked. Measured,
+        # before this change, over the nine real questions about the project:
+        # it matched eight, and the five that ask about a FACET of it were
+        # answered with the project's DEFINITION.
+        #   "que stack tiene interviewtts en produccion"      -> the definition
+        #   "que tecnologias usa interviewtts"                 -> the definition
+        #   "el proyecto interviewtts de docker lo dirigiste tu" -> definition
+        #   "cuanto cuesta alojar interviewtts en un vps"      -> the definition
+        #   "que pruebas tiene interviewtts"                   -> the definition
+        # None of those five is the definition of the project, and none is
+        # answered by it. Because a hit RETURNS before Step 3, RAG
+        # (streaming.py:458, ahead of :463), this was not a stale answer but a
+        # SUPPRESSED correct one: the retriever was measured to hold the page
+        # for every one of them (projects/interview-tts.md in the top 3 for
+        # four, skills/testing.md second for the fifth), and
+        # tests/real_wiki.py carries "que tecnologias usa interviewtts" as a
+        # hand-authored retrieval label for exactly that page.
+        #
+        # What keeps the four questions that DO identify the project hitting is
+        # the phrases above: they name the project and require their
+        # neighbours. A word that occurs in most questions about a topic
+        # discriminates nothing; pinned by
+        # tests/test_response_cache_precision.py::TestAKeywordHasToDiscriminate.
+        "keywords": [],
         "answer": (
             "InterviewTTS es mi proyecto de portfolio: una simulación de entrevista por voz "
             "en la que un reclutador conversa con un gemelo digital del candidato. Transcribe "
