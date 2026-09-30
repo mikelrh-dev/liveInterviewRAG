@@ -421,14 +421,16 @@ def _score(rag: RAGPipeline) -> Metrics:
 
     Retrieval goes through ``retrieve()`` with no ``doc_type``, matching
     ``TestRetrievalRegressionGuard`` so the numbers are comparable in direction
-    with the 0.724 / 0.690 figures the H1 change was measured against. The
-    production entry points (``get_chunks_with_scores`` / ``get_context_string``)
-    additionally apply ``detect_doc_type``; that is a separate mechanism which
-    chunk size does not touch, and it is exercised separately below rather than
-    folded in here.
+    with the 0.724 / 0.690 figures the H1 change was measured against. There is
+    no other mechanism between this call and the model any more: the production
+    entry points (``get_chunks_with_scores`` / ``get_context_string``) reach
+    ``retrieve()`` through ``_retrieve_for_context``, and that used to pass
+    ``doc_type=detect_doc_type(query)``. Both the guess and the filter it fed are
+    gone, so this sweep now measures the whole production path rather than a
+    slightly narrower one.
     """
     assert not rag._use_tfidf, "TF-IDF fallback would silently measure a different retriever"
-    assert rag.embedder is not None, "embedder unavailable — the measurement is meaningless"
+    assert rag._embedder is not None, "embedder unavailable — the measurement is meaningless"
 
     words = sorted(len(c.content.split()) for c in rag.chunks)
     n = len(_scored_cases())
@@ -815,7 +817,7 @@ def test_shrinking_the_chunk_cannot_recover_the_title_only_retrieval_key(sweep):
     fortalezas 0.806->0.647, nivel-ingles 0.778->0.565, por-que-contratarte
     0.805->0.752, disponibilidad 0.514->0.499.
     """
-    encoder = sweep.pipelines[CURRENT_CONFIG].embedder
+    encoder = sweep.pipelines[CURRENT_CONFIG]._embedder
     assert encoder is not None
 
     def cosine(a: str, b: str) -> float:
@@ -1014,52 +1016,49 @@ def test_the_measurement_uses_the_real_embedder_not_the_tfidf_fallback(sweep):
     """
     for cfg, rag in sweep.pipelines.items():
         assert not rag._use_tfidf, f"{cfg} fell back to TF-IDF"
-        assert rag.embedder is not None, f"{cfg} has no sentence embedder"
+        assert rag._embedder is not None, f"{cfg} has no sentence embedder"
         assert len(rag.chunks) == sweep.metrics[cfg].n_chunks
 
 
-def _live_recall3(rag: RAGPipeline) -> List[bool]:
-    """Same 0/1 vector, measured through the production entry point.
+def test_there_is_exactly_one_retrieval_path(sweep):
+    """``retrieve()`` and the production entry points must rank identically.
 
-    ``get_chunks_with_scores`` applies ``detect_doc_type`` and pre-filters by
-    document type, which ``retrieve()`` does not. That filter is a real,
-    separate mechanism which chunk size does not touch — so if the sweep's
-    ranking only appears when the filter is skipped, the sweep measured a path
-    the product never takes.
+    This replaces ``test_conclusion_holds_on_the_production_retrieval_path``,
+    which compared the sweep's ranking against the production entry point's and
+    existed only because the two could disagree: ``get_chunks_with_scores``
+    reached ``_retrieve_for_context``, which passed ``doc_type=detect_doc_type(q)``
+    into a hard filter that ``retrieve()`` itself did not apply. Both the guess
+    and the filter are gone, so the two paths are now the same call and the old
+    test compared a thing with itself -- it could not fail, whatever the numbers
+    said.
+
+    A comparison that cannot fail is worse than no comparison, because it reads
+    as coverage. This asserts the property that made the old divergence a
+    defect in the first place: there is ONE retrieval, and the panel, the
+    context string and the guard all see it. If a pre-filter is ever added to
+    ``_retrieve_for_context`` again, this is what notices -- and the question it
+    should raise is the one the removed filter failed, which is whether it can
+    delete the gold page.
     """
-    out = []
+    rag = sweep.pipelines[CURRENT_CONFIG]
+    divergent = []
     for case in _scored_cases():
-        sources = [
+        direct = [_norm(c.source) for c, _ in rag.retrieve(case.question, top_k=3)]
+        through_the_panel = [
             c["source"].replace("\\", "/")
             for c in rag.get_chunks_with_scores(case.question, top_k=3)
         ]
-        rank = _rank(sources, frozenset({case.primary}))
-        out.append(rank is not None and rank <= 3)
-    return out
+        if direct != through_the_panel:
+            divergent.append((case.question, direct, through_the_panel))
 
-
-def test_conclusion_holds_on_the_production_retrieval_path(sweep):
-    """No challenger may win by the margin on the live path either.
-
-    Deliberately a weaker bar than the main decision test: this one asks only
-    "does any configuration become clearly better once the doc_type pre-filter
-    is included", not "is this the best configuration", so it cannot fail merely
-    because the filter moves a couple of borderline questions.
-    """
-    base_live = _live_recall3(sweep.pipelines[CURRENT_CONFIG])
-    winners = {}
-    for cfg, rag in sweep.pipelines.items():
-        if cfg == CURRENT_CONFIG:
-            continue
-        live = _live_recall3(rag)
-        margin = sum(live) - sum(base_live)
-        if margin >= len(_scored_cases()) * MIN_RECALL3_MARGIN:
-            winners[cfg] = margin
-    assert not winners, (
-        f"on the production retrieval path these configs beat the current one by "
-        f"more than the margin (wins in questions): {winners}. Re-run the whole "
-        f"sweep before believing it — the main decision test measures "
-        f"retrieve() without the doc_type pre-filter."
+    assert not divergent, (
+        f"{len(divergent)} of {len(_scored_cases())} questions rank differently "
+        f"depending on which entry point asks:\n  "
+        + "\n  ".join(f"{q!r}: {a} vs {b}" for q, a, b in divergent[:5])
+        + "\nSomething between retrieve() and the entry points is filtering the "
+        "candidate set. If it is a pre-filter, check first whether it can remove "
+        "the gold page -- that is the defect the removed doc_type filter was, and "
+        "it is invisible in every response that still returns results."
     )
 
 

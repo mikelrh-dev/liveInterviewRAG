@@ -28,49 +28,6 @@ QUERY_EXPANSIONS: Dict[str, List[str]] = {
     "proyecto": ["project", "entrevista", "prácticas"],
 }
 
-# Canonical document types -> the frontmatter ``type:`` spellings that map to
-# them. Data-driven from the ``type:`` values actually present in wiki/ (all
-# SINGULAR: profile, project, experience, skills, story, opinion, decision, faq),
-# extended with the plural spellings authors reach for naturally.
-#
-# This table replaces the old ``if doc_type == "projects" ...`` special-case that
-# only ever covered project: because QUERY_TYPE_KEYWORDS used PLURAL keys
-# ("stories", "opinions", "decisions") while the wiki used singular values, a
-# recruiter question about a story, opinion or decision produced a filter that
-# matched nothing and returned [] with no warning at all — the LLM then answered
-# with zero grounding from the candidate's own profile.
-DOC_TYPE_ALIASES: Dict[str, Tuple[str, ...]] = {
-    "profile": ("profile", "profiles"),
-    "project": ("project", "projects"),
-    "experience": ("experience", "experiences"),
-    "skills": ("skill", "skills"),
-    "story": ("story", "stories"),
-    "opinion": ("opinion", "opinions"),
-    "decision": ("decision", "decisions"),
-    "faq": ("faq", "faqs"),
-}
-
-# Reverse index: every accepted spelling -> its canonical type.
-_TYPE_LOOKUP: Dict[str, str] = {
-    alias: canonical
-    for canonical, aliases in DOC_TYPE_ALIASES.items()
-    for alias in aliases
-}
-
-
-def canonical_doc_type(value: Optional[str]) -> str:
-    """Normalise a frontmatter ``type:`` or a filter request to canonical form.
-
-    Unknown or absent types are returned lowercased and unchanged, so an
-    unfamiliar type still compares by exact match (and, if nothing matches,
-    retrieve() will warn loudly rather than silently returning nothing).
-    """
-    if not value:
-        return ""
-    key = str(value).strip().lower()
-    return _TYPE_LOOKUP.get(key, key)
-
-
 # ── Placeholder filtering (read-time, never destructive) ─────────────────────
 #
 # The wiki marks unwritten content with `[TODO: ...]` markers and rates each page
@@ -378,68 +335,6 @@ def strip_placeholders(text: str) -> Tuple[str, int]:
     return "\n".join(kept_lines), removed
 
 
-# Query keywords -> canonical document type. Used to pre-filter chunks before
-# similarity search when a query clearly maps to a single type.
-# Keys are CANONICAL types (see DOC_TYPE_ALIASES), so every filter this table
-# can emit is reachable from the wiki corpus.
-QUERY_TYPE_KEYWORDS: Dict[str, List[str]] = {
-    "skills": ["tests", "testing", "test", "pytest", "tdd", "skills", "lenguajes", "frameworks"],
-    "experience": ["experiencia", "mercadona", "encargado", "gerente", "retail"],
-    "project": ["proyecto", "proyectos", "project", "projects", "portfolio"],
-    "story": ["historia", "anécdota", "story", "situación"],
-    "opinion": ["opinión", "opinion", "piensas", "crees"],
-    "decision": ["decisión", "decision", "dejaste", "dejar"],
-    "faq": ["presentación", "presentacion", "fortalezas", "debilidades", "área preferida"],
-    "profile": ["sobre ti", "quién eres", "quien eres", "presentate", "preséntate"],
-}
-
-
-def detect_doc_type(query: str) -> Optional[str]:
-    """Return the document type a query clearly maps to, or None if ambiguous.
-
-    A query maps to a type when it matches keywords for exactly one type.
-    Zero matches (no signal) or multiple matches (conflicting signals) return
-    None so cosine similarity acts as the fallback.
-
-    NOT USED TO CONSTRAIN RETRIEVAL, AND THAT IS THE MEASURED POSITION
-    ---------------------------------------------------------------
-    ``_retrieve_for_context`` used to pass this as ``retrieve(doc_type=...)``.
-    It does not any more, and this function survives as a classifier rather than
-    as a filter because the two are different claims:
-
-      * a caller that KNOWS the type of the page it wants should pass
-        ``retrieve(..., doc_type=...)`` and get exactly that type;
-      * a caller that is GUESSING from a keyword table must not remove the
-        other types from the candidate set.
-
-    On the 49 real-corpus labelled questions (``tests/real_wiki.py``) the guess
-    fires 14 times and names a type the gold page does not carry in 8 of them,
-    which deletes the answer from the candidate set. Strict recall@3 over the
-    production path is 0.5714 with the guess applied and 0.6531 without; the
-    guess fixes 2 questions and breaks 6. The numbers, the command and the
-    per-question list are in ``_retrieve_for_context``'s docstring.
-
-    Those figures were taken with the previous English embedder, which is what
-    the pipeline shipped when the guess was removed. They are kept because they
-    are the measurement the decision rests on, and they are labelled here so
-    nobody reads them as what the code produces today; the current
-    configuration's numbers are in the floors of ``tests/real_wiki.py``.
-
-    So the table is still data worth keeping — it is what a caller with a real
-    type would match against, and ``TestDocTypeFilterCoverage`` proves every
-    canonical type the corpus carries is reachable through it. What is not
-    honest any more is letting a substring match decide what the model is
-    allowed to read.
-    """
-    query_lower = query.lower()
-    matched = [
-        doc_type
-        for doc_type, keywords in QUERY_TYPE_KEYWORDS.items()
-        if any(re.search(rf"\b{re.escape(kw)}\b", query_lower) for kw in keywords)
-    ]
-    return matched[0] if len(matched) == 1 else None
-
-
 def expand_query(query: str) -> str:
     """Expand a query with synonyms for known topics to improve embedding recall.
 
@@ -699,21 +594,6 @@ class RAGPipeline:
         if not self._initialized:
             return "uninitialized"
         return "tfidf" if self._use_tfidf else "embeddings"
-
-    @property
-    def embedder(self):
-        """Active sentence-transformer embedder, or None when unusable.
-
-        Returns None before initialization and in TF-IDF fallback mode. The
-        fallback is reported as None rather than as a vector because the two
-        are not comparable: a TF-IDF space is rebuilt on every ingest, so
-        vectors from two runs do not share a geometry. Callers that need a
-        readiness check (the retrieval sweeps, the packaging guard) read this
-        instead of ``_embedder`` so the fallback stays visible.
-        """
-        if not self._initialized or self._use_tfidf:
-            return None
-        return self._embedder
 
     # ── Embedding cache helpers ──────────────────────────────────────────
 
@@ -1136,15 +1016,12 @@ class RAGPipeline:
         for i, chunk in enumerate(self.chunks):
             chunk.embedding = normalized[i]
 
-    def retrieve(self, query: str, top_k: int = 3,
-                 doc_type: Optional[str] = None) -> List[Tuple[Chunk, float]]:
+    def retrieve(self, query: str, top_k: int = 3) -> List[Tuple[Chunk, float]]:
         """Retrieve the most relevant chunks for a query.
 
         Args:
             query: Search query.
             top_k: Number of results to return.
-            doc_type: If given, only chunks of this document type are
-                considered (pre-filter before similarity search).
 
         Returns:
             List of (Chunk, score) tuples ordered by descending similarity.
@@ -1165,12 +1042,25 @@ class RAGPipeline:
         ``tests/test_rag.py::TestRetrievalThresholdIsHonest`` for the floors
         they are held to.
 
-        ``doc_type`` is a hard filter over the candidate set, and it stays one
-        because a caller that passes it knows the type it wants. The production
-        path no longer passes it: it used to be guessed from the query by
-        ``detect_doc_type``, which deletes the labelled answer from the
-        candidate set for 8 of the 49 real-corpus questions and costs four of
-        them their top-3 slot. ``_retrieve_for_context`` documents the numbers.
+        NOTE ON THE ABSENCE OF A DOCUMENT-TYPE FILTER
+        ----------------------------------------------
+        This signature used to take ``doc_type``, and the only caller that ever
+        passed it was guessing: ``detect_doc_type`` matched the question against
+        a keyword table and handed the guess straight to a hard filter over the
+        candidate set. On the 49 real-corpus labelled questions the guess fired
+        14 times and named a type the gold page does not carry in 8 of them,
+        which deletes the answer from the candidate set; strict recall@3 over
+        the production path was 0.5714 with the guess applied and 0.6531
+        without. Two questions fixed, six broken.
+
+        The filter was removed rather than repaired because a substring match
+        has no business deciding what the model is allowed to read, and because
+        the only honest fix for a filter that removes the right answer some of
+        the time is to not filter. The keyword table went with it: keeping a
+        table whose every key named a type nothing could filter on would be
+        keeping a lookup nobody calls. ``Chunk.type`` stays -- it is read from
+        frontmatter, shown in the context header, and part of the embedding
+        cache's identity; what is gone is the filter over it.
         """
         if not self.chunks:
             return []
@@ -1178,35 +1068,6 @@ class RAGPipeline:
         threshold = self.threshold
 
         candidates = self.chunks
-        if doc_type:
-            # Normalise both sides through canonical_doc_type so wiki docs using
-            # either singular or plural frontmatter (story/stories, project/
-            # projects, ...) are all reachable, for EVERY type — not just
-            # project, which was the only one previously special-cased.
-            wanted = canonical_doc_type(doc_type)
-            candidates = [
-                c for c in self.chunks if canonical_doc_type(c.type) == wanted
-            ]
-            if not candidates:
-                # Documented fallback: RETRIEVE UNFILTERED rather than return [].
-                #
-                # A filter matching nothing means the very next step hands the
-                # LLM zero context, and an interview answer with no grounding
-                # from the candidate's own profile is worse than a slightly less
-                # precise one. Retrieval semantics are therefore NOT changed
-                # silently: the substitution is logged as a warning naming the
-                # requested type and the available ones, so the owner sees the
-                # mapping gap instead of the hole quietly disappearing.
-                available = sorted({c.type for c in self.chunks if c.type})
-                logger.warning(
-                    "doc_type filter %r matched no chunks (canonical %r); "
-                    "available types: %s. Falling back to unfiltered retrieval "
-                    "so the answer stays grounded in the candidate's profile.",
-                    doc_type,
-                    wanted,
-                    ", ".join(available) if available else "<none>",
-                )
-                candidates = self.chunks
 
         # Expand the query with synonyms before embedding to improve recall
         expanded_query = expand_query(query)
@@ -1276,46 +1137,21 @@ class RAGPipeline:
         One definition of "what does this query retrieve", so the two public
         formatters cannot drift into asking the pipeline different questions.
 
-        WHY THERE IS NO ``doc_type`` FILTER HERE
-        -----------------------------------------
-        This used to pass ``doc_type=detect_doc_type(query)``. That guess is
-        removed, and the measurement that removed it is on the real corpus with
-        the 49 labelled questions in ``tests/real_wiki.py`` (strict recall@3,
-        top_k=3, real ``expand_query``):
+        It used to pass ``doc_type=detect_doc_type(query)`` -- a guess from a
+        keyword table, fed straight into a hard filter over the candidate set.
+        That is gone, along with the guess, the table and the filter itself; the
+        measurement that removed them is recorded on ``retrieve()``, which is
+        where the argument used to live and where a reader now looks.
 
-            guessed filter ON    0.5714     lenient 0.5918
-            guessed filter OFF   0.6531     lenient 0.6531
-            recall@1             0.5510 either way
-
-        Those figures predate the embedder change and are kept as the
-        measurement the decision rests on, not as a description of today's
-        numbers: they were taken with the English embedder this pipeline used
-        to ship. Re-measuring the guess against the current embedder is a
-        separate piece of work and is NOT done here — what is done is the
-        property below, which holds whatever the numbers are, and which is the
-        claim the decision actually rests on.
-
-        Per question the filter FIXES 2 and BREAKS 6, so it is a net loss of four.
-        It fires on 14 of the 49 questions, and on 6 of those 14 the type it
-        picks is not even a type the gold page carries — "para que sirven los
-        tests hoy en dia con ia" is detected as ``skills`` and its answer lives
-        on an ``opinion`` page; "cuentame lo de la huelga de camiones en
-        mercadona" is detected as ``experience`` and its answer lives on a
-        ``story`` page. Those 8 questions have their gold page removed from the
-        candidate set outright, which is why the MRR *rises* with the filter
-        (0.9405 vs 0.9167): when the guess is right the gold is rank 1, and when
-        it is wrong the gold is gone, not merely demoted.
-
-        A pre-filter that can delete the answer from the candidate set is a
-        correctness hazard, not a precision knob: the caller cannot tell an
+        What replaced the argument is a property rather than a number, and it
+        holds whatever the recall figures happen to be: for every labelled
+        question, the production path must be able to return the gold page. A
+        pre-filter that can delete the answer from the candidate set is a
+        correctness hazard, not a precision knob -- the caller cannot tell an
         unfiltered miss from a filtered-out hit, and at interview time the two
-        look identical — the model just answers from whatever is left. The
-        filter is kept as a *boost-free* capability for callers that KNOW their
-        document type; what is removed is the guess.
-
-        The surviving test is a property, not a number: for every labelled
-        question, the production path must be able to return the gold page.
-        See ``tests/test_rag.py::TestDocTypePreFilterCannotHideTheAnswer``.
+        look identical, because the model simply answers from whatever is left.
+        See ``tests/test_rag.py::TestRetrievalRegressionGuard`` and the floors
+        in ``tests/real_wiki.py``.
         """
         return self.retrieve(query, top_k=top_k)
 
@@ -1382,7 +1218,7 @@ class RAGPipeline:
         question was embedded twice per turn, identically, for the same answer.
 
         This is the deduplication, not a cache. ``retrieve()`` is a pure
-        function of ``(query, top_k, doc_type)``: it reads ``self.chunks`` and
+        function of ``(query, top_k)``: it reads ``self.chunks`` and
         ``self._embedder``, calls ``expand_query``, and sorts on score with a
         stable sort -- it mutates nothing. One call therefore yields exactly
         what two calls yielded, and both formatters are pure functions of the

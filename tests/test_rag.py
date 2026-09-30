@@ -8,12 +8,8 @@ import pytest
 from pathlib import Path
 
 from backend.services.rag import (
-    DOC_TYPE_ALIASES,
-    QUERY_TYPE_KEYWORDS,
     Chunk,
     RAGPipeline,
-    canonical_doc_type,
-    detect_doc_type,
     embedding_text,
     expand_query,
     is_bare_heading,
@@ -410,412 +406,6 @@ class TestQueryEnrichment:
         """Keyword matching is case-insensitive."""
         expanded = expand_query("Mis TESTS con FastAPI")
         assert "pytest" in expanded
-
-
-class TestDocTypeFiltering:
-    """Tests for optional filtering by document type."""
-
-    def test_detect_type_tests_maps_to_skills(self):
-        """Queries about 'tests' clearly map to the skills type."""
-        assert detect_doc_type("¿Cómo haces los tests?") == "skills"
-
-    def test_detect_type_experiencia_maps_to_experience(self):
-        """Queries about 'experiencia' clearly map to the experience type."""
-        assert detect_doc_type("¿Qué experiencia tienes en retail?") == "experience"
-
-    def test_detect_type_ambiguous_returns_none(self):
-        """Queries matching multiple types are treated as ambiguous."""
-        # "experiencia" -> experience, "proyecto" -> projects: no single type
-        assert detect_doc_type("¿Qué experiencia tienes con el proyecto InterviewTTS?") is None
-
-    def test_detect_type_no_match_returns_none(self):
-        """Queries without type signals return None (cosine fallback)."""
-        assert detect_doc_type("Cuéntame algo interesante") is None
-
-    def test_retrieve_filters_by_doc_type(self):
-        """retrieve() with doc_type only returns chunks of that type."""
-        rag = RAGPipeline(chunk_size=1000)
-        docs = {
-            "skills/testing.md": """---
-type: skills
-tags: [testing]
-summary_1line: Testing
----
-
-# Testing
-
-Hago tests con pytest.""",
-            "experience/mercadona.md": """---
-type: experience
-tags: [retail]
-summary_1line: Retail
----
-
-# Experience
-
-Gerente en Mercadona.""",
-        }
-        rag.ingest_documents(docs)
-        results = rag.retrieve("tests pytest", top_k=3, doc_type="skills")
-        assert len(results) > 0
-        for chunk, _ in results:
-            assert chunk.type == "skills"
-
-    def test_retrieve_without_doc_type_keeps_all(self):
-        """retrieve() without doc_type does not filter by type (backward compat)."""
-        rag = RAGPipeline(chunk_size=1000)
-        docs = {
-            "skills/testing.md": """---
-type: skills
-tags: [testing]
-summary_1line: Testing
----
-
-# Testing
-
-Hago tests con pytest.""",
-            "experience/mercadona.md": """---
-type: experience
-tags: [retail]
-summary_1line: Retail
----
-
-# Experience
-
-Gerente en Mercadona.""",
-        }
-        rag.ingest_documents(docs)
-        results = rag.retrieve("gerente mercadona", top_k=3)
-        assert len(results) > 0
-        assert any(chunk.type == "experience" for chunk, _ in results)
-
-    def test_context_string_does_not_guess_a_type(self):
-        """The production path does not narrow the pool on a keyword guess.
-
-        It used to: ``get_context_string`` passed ``doc_type=detect_doc_type(q)``
-        and this test pinned the narrowing. Measured over the 49 real-corpus
-        labelled questions the guess deletes the gold page from the candidate
-        set for 8 of them and costs four questions their top-3 slot
-        (recall@3 0.5714 with it, 0.6531 without). A filter that can remove the
-        answer is a correctness hazard, not a precision knob -- see
-        ``_retrieve_for_context`` in ``backend/services/rag.py`` and
-        ``TestDocTypePreFilterCannotHideTheAnswer`` below.
-
-        So the guarantee is now two-sided: the answer must be there, and the
-        question must still be able to see a document of another type when that
-        is the better answer. The second half is what makes the first half
-        honest -- an unconstrained pool that always returned everything would
-        pass the first test too.
-        """
-        rag = RAGPipeline(chunk_size=1000, threshold=0.0)
-        docs = {
-            "skills/testing.md": """---
-type: skills
-tags: [testing]
-summary_1line: Testing autodidacta
----
-
-# Testing
-
-Hago tests con pytest después de cada cambio.""",
-            "experience/retail.md": """---
-type: experience
-tags: [retail]
-summary_1line: Retail
----
-
-# Experience
-
-Gestioné equipos en Mercadona.""",
-        }
-        rag.ingest_documents(docs)
-        assert detect_doc_type("¿Cómo haces los tests?") == "skills", (
-            "the probe no longer detects a type, so this test has stopped "
-            "covering the guess it is about. Re-measure before trusting it."
-        )
-        context = rag.get_context_string("¿Cómo haces los tests?")
-        assert "Hago tests" in context
-        assert "Gestioné equipos" in context, (
-            "the production path filtered the candidate pool by a guessed "
-            "type. That guess is a substring match over a keyword table with "
-            "no relationship to the page taxonomy, and on the real corpus it "
-            "removes the labelled answer for 8 of 49 questions."
-        )
-
-    def test_a_caller_that_knows_its_type_still_gets_exactly_that_type(self):
-        """Removing the guess must not remove the capability.
-
-        ``retrieve(doc_type=...)`` is a hard filter and stays one: a caller that
-        knows the page it wants should get exactly that type. What is gone is
-        the production path *guessing* which type to ask for.
-        """
-        rag = RAGPipeline(chunk_size=1000, threshold=0.0)
-        rag.ingest_documents({
-            "skills/testing.md": """---
-type: skills
-summary_1line: Testing
----
-
-# Testing
-
-Hago tests con pytest.""",
-            "experience/retail.md": """---
-type: experience
-summary_1line: Retail
----
-
-# Experience
-
-Gestioné equipos en Mercadona.""",
-        })
-        results = rag.retrieve("gestione equipos", top_k=3, doc_type="experience")
-        assert results, "an explicit type must still match"
-        assert all(c.type == "experience" for c, _ in results)
-
-
-class TestTypeNormalization:
-    """Tests for project/projects type alias normalization (Bug 2 fix)."""
-
-    def test_detect_project_singular(self):
-        """detect_doc_type returns 'project' for singular form."""
-        assert detect_doc_type("Cuéntame sobre tu proyecto") == "project"
-
-    def test_detect_project_plural(self):
-        """detect_doc_type returns 'project' for plural form (normalized)."""
-        assert detect_doc_type("Cuéntame sobre tus proyectos") == "project"
-
-    def test_retrieve_finds_chunks_with_singular_type(self):
-        """Chunks with type='project' are found when filtering by 'project'."""
-        rag = RAGPipeline(chunk_size=1000)
-        docs = {
-            "wiki/interviewtts.md": """---
-type: project
-tags: [interviewtts]
-summary_1line: InterviewTTS portfolio project
----
-
-# InterviewTTS
-
-Portfolio project with voice AI.""",
-        }
-        rag.ingest_documents(docs)
-        results = rag.retrieve("interviewtts project", top_k=3, doc_type="project")
-        assert len(results) > 0
-        assert results[0][0].type == "project"
-
-    def test_retrieve_finds_chunks_with_plural_type_via_normalization(self):
-        """Chunks with type='projects' are found when filtering by 'project'."""
-        rag = RAGPipeline(chunk_size=1000, threshold=0.0)
-        docs = {
-            "wiki/projects.md": """---
-type: projects
-tags: [portfolio]
-summary_1line: Portfolio projects
----
-
-# Projects
-
-Built several apps.""",
-        }
-        rag.ingest_documents(docs)
-        # Query detects "project" (singular), but chunk has "projects" (plural)
-        results = rag.retrieve("mis proyectos", top_k=3, doc_type="project")
-        assert len(results) > 0
-        assert results[0][0].type == "projects"
-
-    def test_get_context_string_with_project_type(self):
-        """get_context_string auto-detects project type and retrieves matching chunks."""
-        rag = RAGPipeline(chunk_size=1000)
-        docs = {
-            "wiki/interviewtts.md": """---
-type: project
-tags: [interviewtts]
-summary_1line: InterviewTTS
----
-
-# InterviewTTS
-
-App de entrevistas por voz.""",
-        }
-        rag.ingest_documents(docs)
-        context = rag.get_context_string("¿Qué es InterviewTTS?")
-        assert "entrevistas por voz" in context
-
-
-# ── Item B: every real wiki `type:` must be reachable through a filter ──────
-#
-# Regression net.  QUERY_TYPE_KEYWORDS used plural keys ("stories", "opinions",
-# "decisions") while the wiki frontmatter uses singular `type:` values
-# ("story", "opinion", "decision").  retrieve() normalised only project↔projects,
-# so a recruiter question about a decision, an opinion or a story produced a
-# filter that matched nothing and returned [] *silently* — the LLM then answered
-# with zero grounding from the candidate's own profile.
-
-# The canonical types actually present in wiki/, each with a probe query built
-# from a token that maps to exactly that type (so detect_doc_type is unambiguous).
-_TYPE_PROBES = {
-    "profile": "preséntate",
-    "project": "portfolio",
-    "experience": "retail",
-    "skills": "frameworks",
-    "story": "anécdota",
-    "opinion": "crees",
-    "decision": "decisión",
-    "faq": "fortalezas",
-}
-
-
-def _doc_for_type(doc_type: str) -> str:
-    """A minimal single-section document carrying the given frontmatter type."""
-    return (
-        f"---\n"
-        f"type: {doc_type}\n"
-        f"tags: [{doc_type}]\n"
-        f"summary_1line: Contenido de tipo {doc_type}\n"
-        f"---\n\n"
-        f"# {doc_type}\n\n"
-        f"Contenido único y relevante del tipo {doc_type} para la entrevista.\n"
-    )
-
-
-class TestDocTypeFilterCoverage:
-    """Every real wiki type must produce a non-empty filtered candidate set."""
-
-    def test_wiki_types_are_all_covered_by_the_type_mapping(self, real_wiki_documents):
-        """Read the real corpus's frontmatter: no `type:` may be unreachable.
-
-        This is the data-driven net. Adding a new `type:` to the corpus without
-        extending the mapping must fail here, loudly, instead of silently
-        producing ungrounded answers at interview time.
-
-        CORPUS: the real ``wiki/``, which is tracked (46 files) and therefore
-        present on a clean clone and in CI. The check is no longer conditional
-        on a machine that happens to own the pages.
-        """
-        real_types = set()
-        for name, content in real_wiki_documents.items():
-            meta, _ = parse_frontmatter(content)
-            raw = str(meta.get("type", "") or "").strip()
-            if raw and "|" not in raw:  # CONVENCIONES.md lists all types
-                real_types.add(raw)
-
-        assert real_types, f"no documents with a type: found under {WIKI_ROOT}"
-        assert real_types == set(_TYPE_PROBES), (
-            f"the real corpus must exercise every type the mapping claims "
-            f"to cover, and it is missing {sorted(set(_TYPE_PROBES) - real_types)}"
-        )
-        unreached = {
-            t for t in real_types if canonical_doc_type(t) != t or t not in _TYPE_PROBES
-        }
-        assert not unreached, (
-            f"corpus types not covered by the doc_type mapping: {sorted(unreached)}. "
-            f"Add them to DOC_TYPE_ALIASES and to _TYPE_PROBES so recruiter "
-            f"questions about them stay grounded."
-        )
-
-    def test_each_real_type_yields_non_empty_candidates(self, caplog):
-        """For each real type, a keywordised query must reach that type's chunks.
-
-        Asserts the FILTER matched, not merely that results came back: the
-        documented unfiltered fallback would otherwise satisfy a loose
-        "non-empty" assertion and hide this very bug forever. Proof that the
-        filter itself worked: every returned chunk is of the requested type, and
-        no unmatched-filter warning was logged.
-        """
-        rag = RAGPipeline(chunk_size=1000, threshold=0.0)
-        rag.ingest_documents(
-            {f"{t}.md": _doc_for_type(t) for t in _TYPE_PROBES}
-        )
-
-        for doc_type, probe in _TYPE_PROBES.items():
-            detected = detect_doc_type(probe)
-            assert detected == doc_type, (
-                f"probe {probe!r} should detect {doc_type!r}, got {detected!r}"
-            )
-            with caplog.at_level(logging.WARNING, logger="backend.services.rag"):
-                caplog.clear()
-                results = rag.retrieve(probe, top_k=5, doc_type=detected)
-
-            assert results, (
-                f"type {doc_type!r} produced ZERO candidates for probe {probe!r} "
-                f"— the filter cannot match, so the answer loses its grounding"
-            )
-            assert all(c.type == doc_type for c, _ in results), (
-                f"type {doc_type!r} filter returned chunks of other types: "
-                f"{[c.type for c, _ in results]}"
-            )
-            assert not [
-                r for r in caplog.records if "matched no chunks" in r.getMessage()
-            ], (
-                f"type {doc_type!r} only reached results via the unfiltered "
-                f"fallback — the filter itself still cannot match"
-            )
-
-    def test_plural_and_singular_spellings_both_reach_the_same_chunks(self):
-        """Frontmatter may be singular or plural; both must reach the same type."""
-        rag = RAGPipeline(chunk_size=1000, threshold=0.0)
-        rag.ingest_documents({
-            "story-a.md": _doc_for_type("story"),
-            "opinion-a.md": _doc_for_type("opinion"),
-            "decision-a.md": _doc_for_type("decision"),
-        })
-
-        for plural, probe in [
-            ("stories", "anécdota"),
-            ("opinions", "crees"),
-            ("decisions", "decisión"),
-        ]:
-            canonical = canonical_doc_type(plural)
-            results = rag.retrieve(probe, top_k=5, doc_type=canonical)
-            assert results, f"plural spelling {plural!r} must reach canonical {canonical!r}"
-            assert all(canonical_doc_type(c.type) == canonical for c, _ in results)
-
-    def test_no_query_type_key_is_absent_from_the_wiki(self):
-        """QUERY_TYPE_KEYWORDS keys must be real, resolvable document types."""
-        for key in QUERY_TYPE_KEYWORDS:
-            assert key in DOC_TYPE_ALIASES, (
-                f"QUERY_TYPE_KEYWORDS key {key!r} is not a canonical document "
-                f"type — detect_doc_type would emit a filter that matches nothing"
-            )
-
-
-class TestUnmatchedDocTypeIsLoud:
-    """A filter that matches nothing must warn and fall back, not vanish."""
-
-    def test_unmatched_filter_logs_warning_naming_types_and_falls_back(
-        self, caplog
-    ):
-        rag = RAGPipeline(chunk_size=1000, threshold=0.0)
-        rag.ingest_documents({
-            "skills/testing.md": _doc_for_type("skills"),
-            "faq/area.md": _doc_for_type("faq"),
-        })
-
-        with caplog.at_level(logging.WARNING, logger="backend.services.rag"):
-            results = rag.retrieve("algo sin filtro valido", top_k=5,
-                                   doc_type="decision")
-
-        warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
-        assert warnings, "an unmatched doc_type filter must be logged, not silent"
-        message = warnings[0].getMessage()
-        assert "decision" in message, "the warning must name the requested type"
-        assert "skills" in message and "faq" in message, (
-            "the warning must name the available types so the owner can fix the "
-            "mapping: %r" % message
-        )
-        # Documented fallback: unfiltered retrieval, so the answer stays grounded
-        assert results, "unmatched filter must fall back to unfiltered retrieval"
-        assert {canonical_doc_type(c.type) for c, _ in results} == {"skills", "faq"}
-
-    def test_matched_filter_does_not_warn(self, caplog):
-        """A filter that matches must stay quiet — no warning spam per request."""
-        rag = RAGPipeline(chunk_size=1000, threshold=0.0)
-        rag.ingest_documents({"story-a.md": _doc_for_type("story")})
-
-        with caplog.at_level(logging.WARNING, logger="backend.services.rag"):
-            assert rag.retrieve("anécdota", top_k=3, doc_type="story")
-
-        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
 
 class TestPlaceholderStripping:
@@ -2361,179 +1951,6 @@ class TestTheRetrievalGuardActuallyRan:
                 f"corpus changed in a way the floors were not derived from."
             )
 
-
-class TestDocTypePreFilterCannotHideTheAnswer:
-    """A pre-filter that can delete the answer is a correctness hazard.
-
-    ``_retrieve_for_context`` used to pass ``doc_type=detect_doc_type(query)``.
-    That guess is gone, and this class is the test that keeps it gone. The
-    defect it guards is invisible in every other figure in this file: the
-    questions it broke still RETURNED results, just from the wrong document, so
-    nothing about the response looked broken to a reader -- the model simply
-    answered from a page that was never asked about.
-
-    MEASURED, on the real corpus with these 49 questions, strict recall@3 at
-    top_k=3, production path:
-
-        guessed filter ON    0.5714      lenient 0.5918
-        guessed filter OFF   0.6531      lenient 0.6531
-        recall@1             0.5510 either way
-
-    Per question the guess fixes 2 and breaks 6. It fires on 14 of 49, and on
-    8 of those 14 it names a type the gold page does not carry, which removes
-    the gold page from the candidate set outright -- "para que sirven los tests
-    hoy en dia con ia" is read as ``skills`` and answered by an ``opinion``
-    page; "cuentame lo de la huelga de camiones en mercadona" is read as
-    ``experience`` and answered by a ``story`` page.
-
-    Note the MRR moves the WRONG way with the filter on (0.9405 vs 0.9167).
-    That is the shape of the hazard: when the guess is right the gold is rank
-    1, and when it is wrong the gold is not merely demoted but gone, so the
-    average rank of the survivors improves while four answers are lost.
-    """
-
-    def _gold_page_type(self, pipeline, case):
-        return {
-            canonical_doc_type(c.type)
-            for c in pipeline.chunks
-            if _norm_source(c.source) == case.primary
-        }
-
-    def test_the_production_path_never_narrows_by_a_guessed_type(
-        self, real_wiki_pipeline, real_wiki_documents
-    ):
-        """THE GUARD. The production path must not constrain the candidate pool.
-
-        Stated as equality with the unfiltered ``retrieve`` rather than as a
-        recall figure, so it fails for exactly one reason: something started
-        narrowing the pool again. A recall assertion would pass for a filter
-        that happened to cost nothing on this run, which is the failure mode
-        this whole file was rewritten to eliminate.
-        """
-        narrowed = []
-        for case in resolved_cases(real_wiki_documents):
-            via_production = real_wiki_pipeline._retrieve_for_context(
-                case.question, 3
-            )
-            unfiltered = real_wiki_pipeline.retrieve(case.question, top_k=3)
-            if [
-                (c.source, round(s, 6)) for c, s in via_production
-            ] != [(c.source, round(s, 6)) for c, s in unfiltered]:
-                narrowed.append(
-                    (case.question, detect_doc_type(case.question),
-                     [c.source for c, _ in via_production])
-                )
-
-        assert not narrowed, (
-            f"the production retrieval path narrowed the candidate pool for "
-            f"{len(narrowed)} of {len(LABELLED_CASES)} questions. It used to pass "
-            f"doc_type=detect_doc_type(query), which is what deleted the gold page "
-            f"for 8 of these and cost 4 of them their top-3 slot (0.5714 vs "
-            f"0.6531). A caller that KNOWS its type should use "
-            f"retrieve(doc_type=...); a caller that is guessing must not.\n"
-            + "\n".join(f"  {q!r} detect={d!r} -> {s}" for q, d, s in narrowed)
-        )
-
-    def test_the_guess_is_unreliable_for_eight_of_the_labelled_questions(
-        self, real_wiki_pipeline, real_wiki_documents
-    ):
-        """Why the guess is not allowed to gate anything: the measurement.
-
-        A CHARACTERISATION, and it fails in the direction of "reconsider",
-        not "the code got worse". For 8 of the 49 labelled questions the type
-        ``detect_doc_type`` guesses is not a type the gold page carries, so a
-        filter built on it removes the answer from the candidate set outright.
-        The count is pinned because it is the number that justifies the
-        decision above; if it ever reaches 0 the guess has become trustworthy
-        and putting it back on the retrieval path becomes a real option again
-        -- at which point re-measure, do not just delete the pin.
-        """
-        excluded = []
-        for case in resolved_cases(real_wiki_documents):
-            guessed = detect_doc_type(case.question)
-            if not guessed:
-                continue
-            page_types = self._gold_page_type(real_wiki_pipeline, case)
-            if canonical_doc_type(guessed) not in page_types:
-                excluded.append((case.question, guessed, sorted(page_types)))
-
-        assert len(excluded) == 8, (
-            f"detect_doc_type() excludes the gold page for {len(excluded)} of "
-            f"{len(resolved_cases(real_wiki_documents))} scored questions, not "
-            f"the 8 measured. The count is the same in both calibrated "
-            f"populations: all 8 gold pages are tracked, so neither the full "
-            f"checkout nor a clean clone drops any of them. Fewer is GOOD news -- "
-            f"the guess got more accurate, and "
-            f"test_the_production_path_never_narrows_by_a_guessed_type is still "
-            f"the guard. More is a regression in QUERY_TYPE_KEYWORDS worth "
-            f"fixing.\n"
-            + "\n".join(
-                f"  {q!r}\n      detect={g!r} but the gold page carries {t}"
-                for q, g, t in excluded
-            )
-        )
-
-    def test_the_production_path_can_reach_every_page_the_guess_used_to_hide(
-        self, real_wiki_pipeline, real_wiki_documents
-    ):
-        """End to end, on exactly the population the defect affected.
-
-        ``get_chunks_with_scores`` is what the context panel renders and is the
-        call an interview turn makes. The question here is not "does the
-        retriever find every gold page" -- it does not, for 13 of the 49 at any
-        depth, and that is a ranking fact the pre-filter was never about. The
-        question is narrower and it is the one the defect was: for the pages the
-        guess would have DELETED from the candidate set, the production path must
-        now be able to return them.
-
-        Scoped to that population on purpose. An earlier version of this
-        assertion asked for all 49 and failed on 13, which said nothing about
-        the fix and would have been fixed by widening ``top_k`` until it passed
-        -- the same move that turns a guard into a comment.
-        """
-        excluded = [
-            case for case in resolved_cases(real_wiki_documents)
-            if (guessed := detect_doc_type(case.question))
-            and canonical_doc_type(guessed)
-            not in self._gold_page_type(real_wiki_pipeline, case)
-        ]
-        assert excluded, (
-            "the guess now excludes nothing, so this test has no population. "
-            "If detect_doc_type has genuinely become reliable, that is a "
-            "finding worth measuring -- and the reconsider case is now open."
-        )
-
-        still_hidden = []
-        for case in excluded:
-            sources = {
-                _norm_source(chunk["source"])
-                for chunk in real_wiki_pipeline.get_chunks_with_scores(
-                    case.question, top_k=10
-                )
-            }
-            if case.primary not in sources:
-                still_hidden.append((case.question, case.primary))
-
-        assert not still_hidden, (
-            f"{len(still_hidden)} of the {len(excluded)} pages the guess used to "
-            f"exclude are STILL unreachable through the production context path: "
-            f"{still_hidden}. Whatever narrowed the candidate pool is back; it "
-            f"belongs in retrieve(doc_type=...) for a caller that KNOWS its type, "
-            f"not in a guess on this path."
-        )
-
-    def test_detect_doc_type_still_exists_and_is_still_a_classifier(self):
-        """Removing it from the retrieval path must not delete the capability.
-
-        It is still the thing that maps a question to a type for a caller that
-        wants to filter by one, and it is still covered by
-        ``TestDocTypeFilterCoverage``. What is gone is the guess on the
-        production path, and this is the line between those two facts.
-        """
-        assert detect_doc_type("¿Cómo haces los tests?") == "skills"
-        assert detect_doc_type("Cuéntame algo interesante") is None
-
-
 class TestChunkFilterVersionGuardsTheStaleCache:
     """A cache written before this change must not be served after it.
 
@@ -2895,17 +2312,33 @@ class TestRetrievalThresholdIsHonest:
             "different defect from the one this test was written for."
         )
 
-    def test_retrieve_takes_no_per_call_threshold(self):
-        """The per-call override is dead surface and must not come back.
+    def test_retrieve_takes_no_per_call_threshold_and_no_doc_type(self):
+        """The two removed parameters are dead surface and must not come back.
 
-        No production caller passes it: ``main.py`` constructs ``RAGPipeline``
-        with the instance default, and both production entry points call
-        ``retrieve(query, top_k=..., doc_type=...)``. A second, per-call
-        threshold is one more way for a reader to believe the filter is doing
-        something configurable when only one value has ever been measured.
+        Neither is a preference. Both were ways for a reader to believe
+        something configurable that no production caller has ever configured, and
+        one of them was actively harmful.
+
+        ``threshold``: no production caller passes it -- ``main.py`` constructs
+        ``RAGPipeline`` with the instance default and every call site passes at
+        most ``top_k``. A second way to set it is a second unmeasured value,
+        which is how a filter this narrow came to be read as inert.
+
+        ``doc_type``: the only caller that ever passed it was GUESSING.
+        ``detect_doc_type`` matched the question against a keyword table and fed
+        the guess into a hard filter over the candidate set. On the 49
+        real-corpus labelled questions the guess fired 14 times and named a type
+        the gold page does not carry in 8 of them, deleting the answer from the
+        candidate set outright -- strict recall@3 0.5714 with the guess applied
+        against 0.6531 without; two questions fixed, six broken. The keyword
+        table is gone with it. See ``RAGPipeline.retrieve``'s docstring, which
+        keeps the numbers.
+
+        Read as a signature, this says: what retrieval does is decided in two
+        places, the constructor and ``top_k``. Both are measured.
 
         This is the assertion that failed before the change; it is here so the
-        removal is a contract rather than an edit someone can revert.
+        removals are a contract rather than an edit someone can revert.
         """
         import inspect
 
@@ -2914,44 +2347,15 @@ class TestRetrievalThresholdIsHonest:
             for name in inspect.signature(RAGPipeline.retrieve).parameters
             if name != "self"
         ]
-        assert params == ["query", "top_k", "doc_type"], (
-            f"retrieve() takes {params}; the per-call `threshold` override is "
-            f"back. No production caller passes it, only one value has ever "
-            f"been measured, and it is the surface that made this filter look "
-            f"configurable when it is not."
+        assert params == ["query", "top_k"], (
+            f"retrieve() takes {params}. Either the per-call `threshold` override "
+            f"is back -- no production caller passes it, only one value has ever "
+            f"been measured -- or `doc_type` is, which is the filter that "
+            f"deleted the labelled answer for 8 of the 49 real-corpus questions. "
+            f"Neither is a per-call decision; both belong in the constructor, "
+            f"where the measurements are."
         )
 
-
-class TestEmbedderProperty:
-    """Read-only embedder exposure, and the TF-IDF-fallback guard behind it.
-
-    Kept, not deleted with the semantic answer cache that first needed it: the
-    property still has three other readers, which use it as a readiness check
-    ("is there a real sentence embedder, or did this run fall back to TF-IDF?").
-    Only the rationale in its docstring was stale.
-    """
-
-
-    def test_embedder_none_before_initialization(self):
-        """Property returns None while the pipeline has never been initialized."""
-        rag = RAGPipeline()
-        assert rag.embedder is None
-
-    def test_embedder_none_in_tfidf_fallback_mode(self):
-        """TF-IDF fallback vectors are unstable — must never be exposed."""
-        rag = RAGPipeline()
-        rag._initialized = True
-        rag._use_tfidf = True
-        rag._embedder = object()  # sentinel: even a live object must be hidden
-        assert rag.embedder is None
-
-    def test_embedder_exposed_when_active(self):
-        """An initialized sentence-transformer pipeline exposes its embedder."""
-        rag = RAGPipeline()
-        rag._initialized = True
-        sentinel = object()
-        rag._embedder = sentinel
-        assert rag.embedder is sentinel
 
 class TestSemanticAnswerCacheWasNotViable:
     """Why there is no semantic answer cache, measured rather than asserted.
@@ -3029,7 +2433,7 @@ class TestSemanticAnswerCacheWasNotViable:
         rag = build_pipeline()
         if rag._use_tfidf:
             pytest.skip("TF-IDF fallback active: the measurement needs a real embedder")
-        model = rag.embedder
+        model = rag._embedder
 
         base = [g[0] for g in cls.GROUPS]
         paras = [p for g in cls.GROUPS for p in g[1:]]

@@ -144,7 +144,7 @@ class TestAFallbackRunCannotPoisonTheCache:
         real = RAGPipeline(chunk_size=400, chunk_overlap=50, cache_dir=cache_dir)
         real.ingest_documents(documents)
 
-        assert real.embedder is not None, "the real run did not load an embedder"
+        assert real._embedder is not None, "the real run did not load an embedder"
         assert not real._use_tfidf
         for chunk in real.chunks:
             assert chunk.embedding.shape == (DIMENSIONS,), (
@@ -156,7 +156,7 @@ class TestAFallbackRunCannotPoisonTheCache:
             # the cached vector is the one THIS embedder produced. Asking it
             # about the body alone would make it fail for a correct cache and
             # pass for a wrong one.
-            expected = real.embedder.encode([embedding_text(chunk)])[0]
+            expected = real._embedder.encode([embedding_text(chunk)])[0]
             assert np.allclose(chunk.embedding, expected), (
                 f"{chunk.id} does not carry this embedder's vector: the cache "
                 "served numbers from a different embedder"
@@ -436,4 +436,4 @@ class TestTheModelNameIsASingleSourceOfTruth:
 
         meta = _read_metadata(cache_dir)
         assert meta["model"] == "paraphrase-multilingual-MiniLM-L12-v2"
-        assert rag.embedder is not None and rag.embedder.name == meta["model"]
+        assert rag._embedder is not None and rag._embedder.name == meta["model"]

@@ -467,7 +467,7 @@ class TestNoDeclaredDependencyIsOrphaned:
         assert pipeline._use_tfidf is True
         # TF-IDF vectors are unstable across restarts, so the answer cache
         # must never store them (design D8).
-        assert pipeline.embedder is None
+        assert pipeline._embedder is None
 
         matrix = pipeline._tfidf_vectorizer.fit_transform(
             ["hola mundo", "adios mundo"]

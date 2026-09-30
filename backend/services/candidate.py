@@ -17,8 +17,8 @@ _SKIP_DIRS = {"templates", "__pycache__", ".git"}
 # reads as keyword-dense across skills, tests, Mercadona, DAM, backend,
 # frontend, data, DevOps, Python, Java, SQL, AI and RAG while containing no
 # answer at all — it contributed 10 chunks to the default retrieval pool, and
-# its chunks have no frontmatter, so ``type`` is empty and no doc_type filter
-# can ever exclude them. The wiki tooling already agrees:
+# its chunks carry no frontmatter, so ``type`` is empty and the context header
+# cannot name a type for them. The wiki tooling already agrees:
 # ``scripts/wiki/_common.py`` skips exactly this set.
 _SKIP_FILES = {"README.md", "CONVENCIONES.md", "index.md"}
 
