@@ -86,6 +86,19 @@ node_modules/
 # Wiki audit reports (local working docs, not project content)
 AUDITORIA-*.md
 
+# Local audit working set. The bare `AUDITORIA-*.md` line above matches none of
+# these: the directory is named after its role and its files are the audit's own
+# vocabulary (HALLAZGOS, VEREDITO, BACKLOG), not a repeated prefix. It was
+# tracked anyway, on the strength of a rule that never applied to it.
+/auditoria/
+
+# A static documentation site built from Stitch. Sixteen files, and not project
+# content: nothing in this repository references it, nginx serves
+# /opt/interviewtts/frontend and nothing else, deploy.sh rsyncs candidate/ and
+# frontend/ and nothing else, and it appears in no project structure. It is a
+# deliverable of the documentation work, not an input to the application.
+/interviewtts-docs/
+
 # Conversation-database backups. The live database is covered by *.db above, but a
 # timestamped backup ends in .bak-<stamp> and matches nothing, so a plain `git add -A`
 # staged 1.68 MB of transcribed interview history. These are the most sensitive thing
