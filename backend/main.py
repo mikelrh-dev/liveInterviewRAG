@@ -79,6 +79,11 @@ stt_service = STTService(
     model_name=config.WHISPER_MODEL,
     device=config.WHISPER_DEVICE,
     compute_type=config.WHISPER_COMPUTE_TYPE,
+    # Without this the service took faster-whisper's default of ONE inference
+    # worker, which serialises the concurrent transcriptions a multi-tab
+    # interview produces. The reasoning behind the value is in config.py, next
+    # to the number; it is passed here because services do not read config.
+    num_workers=config.WHISPER_NUM_WORKERS,
     # The only component that can measure a recording's duration, handed the
     # only number that defines one. Without this the limit is a setting the
     # deployment reads and nothing compares anything against.

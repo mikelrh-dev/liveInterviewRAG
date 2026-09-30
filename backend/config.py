@@ -60,6 +60,27 @@ class Config:
         self.WHISPER_MODEL: str = os.getenv("WHISPER_MODEL", "small")
         self.WHISPER_DEVICE: str = os.getenv("WHISPER_DEVICE", "cpu")
         self.WHISPER_COMPUTE_TYPE: str = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
+        # CTranslate2 inference threads. It was never set, so faster-whisper's
+        # default of 1 applied: ONE inference worker, which is what its own
+        # docstring says serialises concurrent transcriptions. Turns overlap in
+        # this application whenever a second tab is open, or a retry the rate
+        # limiter delayed past the first turn's decode is in flight, and the
+        # measured cost was 28.5 s for two concurrent turns against 21.5 s for
+        # the same two run in series (1.32x) -- 1.60x with four workers.
+        #
+        # Four is the core count of the deployed box (ARM64, 4 cores,
+        # deployment/interviewtts.service) and the service is single-process, so
+        # this is "every core, no more": CTranslate2 spawns THREADS inside the
+        # one process, and a count above the core count buys oversubscription
+        # rather than throughput. The rule an operator applies to a different
+        # box is min(cores, this default). A development machine with more cores
+        # does not need them -- transcription there is one developer's own turn.
+        #
+        # The floor is 1, checked in STTService rather than here: a value this
+        # low is a service that loads a model which cannot transcribe, and
+        # refusing it at the service means every construction path is covered by
+        # one check.
+        self.WHISPER_NUM_WORKERS: int = _env_int("WHISPER_NUM_WORKERS", "4")
 
         # TTS settings
         self.TTS_VOICE: str = os.getenv("TTS_VOICE", "es-ES-AlvaroNeural")

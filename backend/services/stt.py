@@ -37,10 +37,33 @@ class STTService:
         device: str = "cpu",
         compute_type: str = "int8",
         max_duration_seconds: float | None = None,
+        num_workers: int = 1,
     ):
         self.model_name = model_name
         self.device = device
         self.compute_type = compute_type
+        #: CTranslate2 inference threads, and the parallelism between
+        #: concurrent transcriptions. ``faster_whisper`` defaults this to 1,
+        #: which is faster_whisper's own docstring describing a single inference
+        #: worker: several workers each get their own copy of the model, so two
+        #: overlapping transcriptions really do run at once.
+        #:
+        #: The default here is 1 -- faster-whisper's -- and the deployed value
+        #: comes from ``config.WHISPER_NUM_WORKERS``, because a service does not
+        #: read configuration. What the number buys in THIS project, measured on
+        #: two concurrent turns against the same two run in series: 28.5 s -> 21.5
+        #: s (1.32x) at the shipped default, and 1.60x with four workers. Turns
+        #: overlap whenever a second tab, or a retry the rate limiter delayed
+        #: past the first turn's decode, is in flight.
+        if num_workers < 1:
+            # Not a "let the library decide" value: CTranslate2 either rejects
+            # zero or accepts it as "no inference worker at all", and either way
+            # the model cannot transcribe. A configuration typo must not be able
+            # to produce a service that loads successfully and answers nothing.
+            raise ValueError(
+                f"num_workers must be at least 1, got {num_workers!r}"
+            )
+        self.num_workers = num_workers
         #: The recording limit this deployment advertises, in seconds, or None
         #: to not check. Injected rather than read from ``backend.config``
         #: because the services do not import configuration: the composition
@@ -62,14 +85,20 @@ class STTService:
         try:
             from faster_whisper import WhisperModel
 
-            logger.info("Loading Whisper model: %s (device=%s, compute=%s)",
-                        self.model_name, self.device, self.compute_type)
+            logger.info(
+                "Loading Whisper model: %s (device=%s, compute=%s, num_workers=%d)",
+                self.model_name, self.device, self.compute_type, self.num_workers,
+            )
             self._model = WhisperModel(
                 self.model_name,
                 device=self.device,
                 compute_type=self.compute_type,
+                num_workers=self.num_workers,
             )
-            logger.info("Whisper model loaded successfully")
+            logger.info(
+                "Whisper model loaded successfully (%d inference worker(s))",
+                self.num_workers,
+            )
         except ImportError:
             logger.error("faster-whisper not installed. Run: pip install faster-whisper")
             raise

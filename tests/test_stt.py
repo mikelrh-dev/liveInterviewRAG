@@ -25,8 +25,11 @@ class TestSTTService:
         svc = STTService(model_name="tiny")
         svc.load_model()
 
+        # num_workers is the class default here, faster-whisper's own. The value
+        # this deployment ships is passed by the composition root, not by the
+        # service, and is covered in tests/test_stt_workers.py.
         mock_whisper_cls.assert_called_once_with(
-            "tiny", device="cpu", compute_type="int8"
+            "tiny", device="cpu", compute_type="int8", num_workers=1
         )
         assert svc.is_loaded
 
