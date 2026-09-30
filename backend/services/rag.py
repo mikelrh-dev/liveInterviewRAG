@@ -574,7 +574,7 @@ class RAGPipeline:
         # Minimum cosine a chunk needs to be returned at all.
         #
         # MEASURED on the corpus this repository's tests actually load --
-        # the real ``wiki/`` (125 chunks at 400/50), the 49 labelled questions
+        # the real ``wiki/`` (124 chunks at 400/50), the 49 labelled questions
         # in ``tests/real_wiki.py``, real ``expand_query``. The guard that
         # holds this number is
         # ``tests/test_rag.py::TestRetrievalThresholdIsHonest``; read it before
@@ -582,8 +582,8 @@ class RAGPipeline:
         # them. A floor that keeps its value while its corpus changes is not a
         # floor.
         #
-        # It is not inert. Over the 49 x 125 (question, chunk) matrix this
-        # default discards a sixth of the candidate pool, and because the filter
+        # It is not inert. Over the 49 x 124 (question, chunk) matrix this
+        # default discards most of the candidate pool, and because the filter
         # runs BEFORE the ``top_k`` slice it changes what a caller receives
         # whenever fewer than ``top_k`` chunks clear it. The earlier claim that
         # "the lowest top-1 cosine is 0.414, so the filter never removes
@@ -609,8 +609,23 @@ class RAGPipeline:
         # to either of them. 0.25 is chosen over the highest passing value
         # (0.28) because 0.28 clears the thinnest question by 0.006 while 0.25
         # clears it by 0.036, and a default one question's noise away from
-        # starvation is not a default, it is a coincidence. The filter is still
-        # substantially live at 0.25: 956 of 6125 pairs, 15.6%.
+        # starvation is not a default, it is a coincidence.
+        #
+        # WHAT THE FILTER COSTS, in one unit. At ``top_k`` = twice the chunk
+        # count the 49 labelled questions return 1813 results with the filter
+        # and 854 without, so at 0.25 the filter discards 959 of the 1813
+        # results -- 52.9% -- and at the shipped top_k=3 it costs the caller
+        # nothing at all, which is the fact the two numbers together say: a wide
+        # filter that is invisible until a question runs thin.
+        #
+        # Both counts are counts of RESULTS, which is the only space
+        # ``retrieve()`` can be asked about, and they are bounded by the page
+        # count (37) rather than the chunk count. This sentence used to read
+        # "956 of 6125 pairs, 15.6%": 956 was deduplicated results and 6125 was
+        # raw cosine cells, so the ratio was a percentage of nothing, and both
+        # numbers described a 125-chunk corpus this repository stopped shipping.
+        # ``tests/test_recall_claims.py`` now checks the two counts, their share
+        # and the chunk count against a live measurement.
         self.threshold = threshold
         self.chunks: List[Chunk] = []
         self._embedder = None

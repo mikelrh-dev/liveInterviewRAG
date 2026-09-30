@@ -94,12 +94,34 @@ class Config:
         #
         # The default embedder is MULTILINGUAL because the corpus and the
         # questions are: `wiki/` is Spanish and the question reaches the RAG
-        # verbatim from Whisper, in Spanish, unpunctuated. The previous
-        # default, all-MiniLM-L6-v2, is an ENGLISH model, so every Spanish
-        # paraphrase paid for the language gap. Measured on the 49 labelled
-        # questions in `tests/real_wiki.py` (strict, top_k=3, real corpus):
-        # recall@1 0.5510 -> 0.6122, recall@3 0.6531 -> 0.7959, MRR@5 0.6109
-        # -> 0.7088. Ten questions fixed, three broken, no other lever touched.
+        # verbatim from Whisper, in Spanish, unpunctuated. The default it
+        # replaced, all-MiniLM-L6-v2, is an ENGLISH model, so every Spanish
+        # paraphrase paid for the language gap.
+        #
+        # CURRENT — measured 2026-09-29 and re-verified 2026-09-30, on the 49
+        # labelled questions in `tests/real_wiki.py` through the production
+        # path (real loader, real 400/50 chunker, real `expand_query`, strict
+        # primary-gold-page match at top_k=3, one chunk per page):
+        #     recall@1 0.7347 · recall@3 0.8163 · MRR@5 0.7803
+        # 40 of 49 gold pages served, 2 of 49 absent from the ranking entirely.
+        # Four things differ from the 2026-08-28 English baseline and none of
+        # them is the embedder alone: this model, the page-identity prefix on
+        # the embedded text, the one-chunk-per-page cut, and the bodyless-
+        # heading filter. `tests/real_wiki.py::MEASURED_FULL` owns the recall@3
+        # and is what enforces it; this comment is checked against it and
+        # against a fresh measurement by
+        # `tests/test_recall_claims.py::TestTheRAGCommentsQuoteTheCurrentMeasurement`.
+        #
+        # HISTORY — 2026-09-29, the embedder swap (4de600d) with the model as the
+        # ONLY lever touched, before the prefix, the per-page cut and the
+        # bodyless-heading filter existed:
+        #     recall@1 0.5510 -> 0.6122 · recall@3 0.6531 -> 0.7959
+        #     MRR@5 0.6109 -> 0.7088
+        # Ten questions fixed, three broken. That pair is kept because it is the
+        # record of ONE decision, and it is not a before/after against the
+        # figures above: 0.7959 and 0.8163 are different measurements of
+        # different configurations, and reading the second as the embedder's
+        # share of the movement overstates what this model did.
         self.EMBEDDING_MODEL: str = os.getenv(
             "EMBEDDING_MODEL", "paraphrase-multilingual-MiniLM-L12-v2"
         )
