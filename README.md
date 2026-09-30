@@ -333,7 +333,13 @@ Notes:
 
 #### Backing up `wiki/` (manual, private repo)
 
-`wiki/` contains personal data and is git-ignored in this repo. After editing, push it manually to a PRIVATE GitHub repository:
+`wiki/` holds personal data, and it is **tracked**: 46 files are committed under `wiki/` in
+this repository and are present in `origin/main`. The `/wiki/` entry in `.gitignore`
+protects none of them — gitignore only applies to files that are not already tracked, and a
+tracked file stays in the history. `actions/checkout` brings them to every CI run too.
+
+The nested repository at `wiki/.git` has its own remote, `interviewtts-wiki`, and that one
+**is** private, so the backup below does land somewhere private:
 
 ```bash
 cd wiki/
@@ -341,6 +347,9 @@ git add -A && git commit -m "docs: update wiki content" && git push
 ```
 
 This backup is a documented manual workflow only — no automation hook is wired up.
+
+Whether those same 46 files should also remain in this repository's public history is a
+separate decision, and it is not made here.
 
 ---
 

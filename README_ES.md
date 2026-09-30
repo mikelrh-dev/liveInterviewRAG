@@ -342,8 +342,14 @@ Notas:
 
 #### Hacer backup de `wiki/` (manual, repositorio privado)
 
-`wiki/` contiene datos personales y está en el `.gitignore` de este repositorio. Tras
-editarlo, súbelo a mano a un repositorio PRIVADO de GitHub:
+`wiki/` contiene datos personales y está **rastreado**: 46 ficheros están commiteados bajo
+`wiki/` en este repositorio y presentes en `origin/main`. La entrada `/wiki/` del
+`.gitignore` no protege ninguno — el gitignore solo aplica a ficheros que no estén ya
+rastreados, y un fichero rastreado se queda en el historial. `actions/checkout` además los
+trae a cada ejecución de CI.
+
+El repositorio anidado en `wiki/.git` tiene su propio remoto, `interviewtts-wiki`, y ese sí
+es privado, así que el backup de abajo sí aterriza en un sitio privado:
 
 ```bash
 cd wiki/
@@ -352,6 +358,9 @@ git add -A && git commit -m "docs: update wiki content" && git push
 
 Este backup es un flujo manual documentado — no hay ningún hook de automatización
 conectado.
+
+Si esos mismos 46 ficheros deben además seguir en el historial público de este repositorio
+es otra decisión, y aquí no se toma.
 
 ---
 
