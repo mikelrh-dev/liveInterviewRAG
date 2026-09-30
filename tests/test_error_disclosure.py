@@ -263,9 +263,21 @@ class TestStreamingErrorDisclosure:
         _assert_not_disclosed(json.dumps(events, ensure_ascii=False), "per-sentence TTS")
         # The spec's contract for a recoverable error: a detail and the id of the
         # sentence that failed, so the frontend can skip that audio chunk.
-        for event in events:
-            if event["event"] == "error":
-                assert "id" in event["data"], event
+        #
+        # EVERY sentence fails here, so this stream also ends on the fatal
+        # TTS_FAILED -- which carries no id on purpose, because an id is the
+        # "keep going" signal and there is no more audio coming. Asserting an id
+        # on that one is what the previous version of this test did, and it is
+        # why the silent turn used to be filed and counted.
+        errors = [e for e in events if e["event"] == "error"]
+        assert errors, "the turn failed and reported nothing"
+        assert all("id" in e["data"] for e in errors[:-1]), (
+            f"a per-chunk error lost its id: {errors}"
+        )
+        assert "id" not in errors[-1]["data"], (
+            f"the turn ended on a recoverable skip, so the page kept waiting "
+            f"for audio that never came: {errors[-1]}"
+        )
 
 
 # ─── Blocking endpoint: the HTTP `detail` body ──────────────────────────────

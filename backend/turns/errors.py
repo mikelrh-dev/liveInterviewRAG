@@ -43,9 +43,18 @@ TTS_FAILED = (
     "Repite la pregunta para intentarlo de nuevo."
 )
 
-#: One sentence could not be spoken; the rest of the answer still plays. No
-#: retry advice here -- asking again would discard a turn that is about to
-#: complete on its own.
+#: One sentence could not be spoken. RECOVERABLE: it is emitted with a chunk
+#: ``id``, which is the frontend's "skip this one and keep going" signal, and it
+#: is only honest while more audio is still coming. No retry advice here --
+#: asking again would discard a turn that is about to complete on its own.
+#:
+#: The other half of the same provider failure is NOT this message. When TTS
+#: delivers nothing at all -- every sentence failed, so the answer was written
+#: and never spoken -- the turn is dead: the per-chunk errors above are already
+#: on the wire, the stream then emits fatal ``TTS_FAILED`` with no ``id``, and
+#: nothing is stored. ``TTS_CHUNK_FAILED`` is the "there is a gap in this
+#: answer" message; ``TTS_FAILED`` is the "you heard none of it" one, and the
+#: difference is the whole of what the page can honestly show.
 TTS_CHUNK_FAILED = "No se pudo generar el audio de una parte de la respuesta."
 
 #: The sign-off could not be spoken. The interview still ends: the farewell text

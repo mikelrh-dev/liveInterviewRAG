@@ -35,9 +35,15 @@ A provider that dies mid-generation is neither of those. The candidate heard
 the sentences that were synthesised and read the tokens that were streamed, so
 the exchange is kept — and ``done`` carries ``incomplete`` so every reader of
 it downstream, the transcript, the report and the page itself, can say that the
-answer stops half way through instead of presenting a fragment as a reply. The
-one case that stores nothing is a provider that died before emitting a single
-token: there is no answer in that turn to keep.
+answer stops half way through instead of presenting a fragment as a reply.
+
+Two cases store nothing, and both are about audio rather than text. A provider
+that died before emitting a single token has no answer to keep. And a turn
+whose TTS delivered nothing at all — synthesis was called for and every
+sentence failed — is a dead turn: the tokens are on screen but nothing was
+spoken, and filing it would hand the recruiter a transcript and a report
+claiming an answer that has no voice. It ends on fatal ``TTS_FAILED`` with an
+empty ``done``, exactly as the blocking route's 503 stores nothing.
 
 Each terminal event names the turn it terminates on, which is why the farewell
 is written *before* ``interview_end`` rather than after it. The number the DB
@@ -630,6 +636,33 @@ def build_stream(
                 _t_llm - _t_rag,
                 sentence_id,
             )
+
+            # A turn whose TTS produced NOTHING is a failed turn, not an answer.
+            #
+            # Every sentence failing used to fall through to the store: the
+            # `error` events above carry a chunk id, which the frontend reads as
+            # a recoverable skip, so the page skipped three chunks, said a
+            # fragment was omitted, and then received `done{n: 0,
+            # has_context: true}` -- a complete answer on screen, total silence,
+            # and a green counter. The blocked route never had this shape: it
+            # answers 503 and keeps nothing.
+            #
+            # The condition is "asked and delivered nothing", not "no audio":
+            # `dispatched_sentences` counts what synthesis was actually called
+            # for. An answer with nothing speakable in it dispatches nothing, so
+            # there is no provider failure to report and the text is a real
+            # exchange worth filing.
+            if dispatched_sentences and not announced_audio:
+                logger.error(
+                    "TTS produced no audio for %s: all %d sentence(s) failed, "
+                    "so the turn is not stored",
+                    conversation_id,
+                    len(dispatched_sentences),
+                )
+                terminal_emitted = True
+                yield sse_format("error", {"detail": TTS_FAILED})
+                yield sse_format("done", {})
+                return
 
             # Store full message and turn with chunks_used. A streamed answer
             # is many per-sentence files, so the message names the directory
