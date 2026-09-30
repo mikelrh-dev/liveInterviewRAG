@@ -44,26 +44,43 @@ The two kinds of pattern are declared, not inferred:
 """
 
 import re
+import unicodedata
 
-#: Patterns that only count when nothing substantive follows them.
+
+def _fold(text: str) -> str:
+    """Drop the diacritics, so a sign-off is recognised however it was spelled.
+
+    The transcript is Whisper's output on this exact corpus, and its accents
+    are not reliable -- ``tests/real_wiki.py`` says exactly that about these
+    questions. Folding both sides of the comparison makes that a non-issue:
+    "adiós" and "adios" are the same sign-off to this detector, and neither
+    spelling can be the one that silently fails to end a live interview.
+    """
+    decomposed = unicodedata.normalize("NFD", text)
+    return "".join(ch for ch in decomposed if unicodedata.category(ch) != "Mn")
+
+
+#: Patterns that only count when nothing substantive follows them. Spelled
+#: folded on purpose: see ``_fold`` and the guard in
+#: ``tests/test_farewell.py::TestFarewellDetectionIgnoresDiacritics``.
 _DOMINANT_PATTERNS = [
-    r"\b(eso es todo|nada más|no tengo más preguntas)\b",
-    r"\bno (tengo|hay) (más |ninguna )?(preguntas|dudas|cosas)\b",
-    r"\bya (está|terminé|acabé|estamos)\b",
-    r"\b(terminamos|finalizamos|cerramos) (la entrevista|por hoy|aquí|acá)\b",
+    r"\b(eso es todo|nada mas|no tengo mas preguntas)\b",
+    r"\bno (tengo|hay) (mas |ninguna )?(preguntas|dudas|cosas)\b",
+    r"\bya (esta|termine|acabe|estamos)\b",
+    r"\b(terminamos|finalizamos|cerramos) (la entrevista|por hoy|aqui|aca)\b",
     r"\bfue un placer\b",
-    r"\b(adiós|chao|nos vemos|hasta luego)\b",
+    r"\b(adios|chao|nos vemos|hasta luego)\b",
 ]
 
 #: Patterns whose tail is part of the farewell itself, so only (1) applies.
 _SPANNING_PATTERNS = [
-    r"\bgracias\b.*\b(eso es todo|terminamos|finalizamos|nos vemos|adiós|chao)\b",
+    r"\bgracias\b.*\b(eso es todo|terminamos|finalizamos|nos vemos|adios|chao)\b",
     r"\b(gracias|muchas gracias).*(por tu tiempo|por la entrevista|ha sido un placer)\b",
 ]
 
 _FAREWELL_PATTERNS = [
-    *[(pattern, True) for pattern in _DOMINANT_PATTERNS],
-    *[(pattern, False) for pattern in _SPANNING_PATTERNS],
+    *[(re.compile(_fold(pattern)), True) for pattern in _DOMINANT_PATTERNS],
+    *[(re.compile(_fold(pattern)), False) for pattern in _SPANNING_PATTERNS],
 ]
 
 #: A connector right after the phrase means the sentence turned around. Leading
@@ -128,9 +145,9 @@ def detect_farewell(text: str) -> bool:
     Every occurrence is tried, so a phrase that appears once mid-answer and
     again at the end still ends the interview.
     """
-    lower = text.lower().strip()
+    lower = _fold(text.lower().strip())
     for pattern, must_dominate in _FAREWELL_PATTERNS:
-        for match in re.finditer(pattern, lower):
+        for match in pattern.finditer(lower):
             remainder = lower[match.end() :]
 
             # Checked first, because "nos vemos y ya" is a farewell and "y" is

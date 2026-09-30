@@ -775,3 +775,80 @@ class TestFarewellTtsFailure:
         messages = conversations[conversation_id]["messages"]
         assert messages, "the farewell exchange was not persisted at all"
         assert messages[-1]["audio_url"] == ""
+
+
+class TestFarewellDetectionIgnoresDiacritics:
+    """The sign-off must be recognised however Whisper spelled it.
+
+    The pattern table carries accented literals -- "m\u00e1s", "est\u00e1", "adi\u00f3s" -- and
+    ``detect_farewell`` used to lowercase the transcript without folding the
+    diacritics off. So "no tengo m\u00e1s preguntas" ended the interview and "no tengo mas
+    preguntas" did not, on the same input with a different spelling of the same
+    word.
+
+    That is the wrong way round for this product: the transcript is the output
+    of an acoustic model whose accents are explicitly unreliable
+    (``tests/real_wiki.py`` says so about exactly this corpus), so the
+    detector that decides whether a live interview ends was gated on a
+    character the transcription cannot be relied on to emit. Half the real
+    sign-offs silently did nothing.
+    """
+
+    #: Canonical sign-offs, in both spellings. Each must end the interview.
+    SIGNOFFS = [
+        ("cuando quieras, nos vemos", "cuando quieras, nos vemos"),
+        ("eso es todo, muchas gracias", "eso es todo, muchas gracias"),
+        ("no tengo m\u00e1s preguntas", "no tengo mas preguntas"),
+        ("no tengo m\u00e1s dudas", "no tengo mas dudas"),
+        ("perfecto, ha sido todo, adi\u00f3s", "perfecto, ha sido todo, adios"),
+        ("nos vemos", "nos vemos"),
+        ("adi\u00f3s", "adios"),
+    ]
+
+    #: The sentences that used to end a live interview mid-answer. The
+    #: dominance fix is what protects them; this pins that it still does.
+    MID_ANSWER = [
+        "en cuanto a base de datos no tengo dudas uso postgres",
+        "no tengo preguntas pero s\u00ed te quiero preguntar por el Reto de DAM",
+        "vale ya est\u00e1 perfecto nos vemos en la siguiente ronda",
+        "el equipo ya estamos bien organic\u00e9 yo las reuniones",
+        "no tengo m\u00e1s dudas sobre el proyecto de fraude pero tengo otra pregunta",
+        "sobre el despliegue ya est\u00e1 todo claro",
+        "cuando quieras nos vemos, pero antes tengo una duda t\u00e9cnica",
+    ]
+
+    @pytest.mark.parametrize("accented,unaccented", SIGNOFFS)
+    def test_both_spellings_end_the_interview(self, accented, unaccented):
+        from backend.farewell import detect_farewell
+
+        assert detect_farewell(accented), f"did not detect: {accented}"
+        assert detect_farewell(unaccented), (
+            f"did not detect the unaccented spelling of a sign-off: {unaccented}"
+        )
+
+    @pytest.mark.parametrize("sentence", MID_ANSWER)
+    def test_a_mention_is_still_not_a_goodbye(self, sentence):
+        from backend.farewell import detect_farewell
+
+        assert not detect_farewell(sentence), (
+            f"a mention inside a longer answer ended the interview: {sentence}"
+        )
+
+    def test_the_patterns_carry_no_accented_literal(self):
+        """So the folding on the input is not quietly undone by the patterns.
+
+        A guard on the source rather than on behaviour: the diacritic folding
+        in ``detect_farewell`` only helps while the patterns it is compared
+        against are spelled the folded way. Re-adding an accented literal to
+        ``_DOMINANT_PATTERNS`` would restore the bug with every test above
+        still green, because each of them passes an unaccented OR accented
+        variant rather than requiring both to match one source.
+        """
+        from backend.farewell import _DOMINANT_PATTERNS, _SPANNING_PATTERNS
+
+        for pattern in [*_DOMINANT_PATTERNS, *_SPANNING_PATTERNS]:
+            assert not any(ch in pattern for ch in "\u00e1\u00e9\u00ed\u00f3\u00fa\u00fc\u00f1\u00e0\u00e7"), (
+                f"an accented literal is back in the pattern table: {pattern!r}. "
+                "Either fold the input or keep the pattern folded -- not both "
+                "and not neither."
+            )
