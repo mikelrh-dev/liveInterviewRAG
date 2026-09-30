@@ -187,6 +187,30 @@ const avatarTalkingVideo = document.getElementById("avatar-talking-video");
 // Current candidate message
 let currentCandidateDiv = null;
 
+/**
+ * What the chips in the Context panel actually are.
+ *
+ * `grounded` is the normal case: the RAG retrieved those passages and the model
+ * wrote the answer from them. `related` is the FAQ cache hit, where the answer
+ * is a fixed string from `response_cache.py` and the retrieval existed only to
+ * give the panel something to draw. Both spellings are produced by
+ * `backend/conversation.py` (`GROUNDED` / `RELATED`).
+ *
+ * `createTurnState` and `renderContext` compare against the bare strings rather
+ * than reading this object, and that is not an oversight: tests/frontend lifts a
+ * function out of this file by name and evaluates it in isolation, so a lifted
+ * function cannot see a module-level binding. The drift that duplication could
+ * cause is pinned by
+ * tests/frontend/cache_hit_grounding.test.mjs, which compares these two strings
+ * against the ones the server actually puts on the wire.
+ *
+ * See tests/frontend/cache_hit_grounding.test.mjs.
+ */
+const GROUNDING = {
+    GROUNDED: "grounded",
+    RELATED: "related",
+};
+
 // Audio queue
 let audioQueue = [];
 let nextChunkId = 0;
@@ -2206,23 +2230,26 @@ function createTurnNarrator(hooks) {
  *
  * @returns {{
  *   reset: () => void,
- *   commit: (data?: {n?: number, has_context?: boolean}) => number|null,
+ *   commit: (data?: {n?: number, has_context?: boolean, context_grounding?: string}) => number|null,
  *   last: () => number|null,
  *   contextTurn: () => number|null,
+ *   contextGrounding: () => "grounded"|"related"|null,
  * }}
- */
-function createTurnState() {
+ */function createTurnState() {
     let lastTurnNumber = null;
     let contextTurnNumber = null;
+    let contextProvenance = null;
     return {
         reset() {
             lastTurnNumber = null;
             contextTurnNumber = null;
+            contextProvenance = null;
         },
         /**
          * Record the turn the server reported as committed.
          *
-         * @param {{n?: number, has_context?: boolean}} [data] `done` payload.
+         * @param {{n?: number, has_context?: boolean, context_grounding?: string}} [data]
+         *   `done` payload.
          * @returns {number|null} the committed turn, or null if it named none.
          */
         commit(data) {
@@ -2232,6 +2259,18 @@ function createTurnState() {
             // Replacing rather than keeping the previous value stops a stale
             // turn from being requested after a context-free one.
             contextTurnNumber = data.has_context ? data.n : null;
+            // The provenance of those passages, held beside the turn they belong
+            // to and replaced with it. A panel drawing turn N's chips under
+            // turn N-1's provenance is a claim about a different answer than the
+            // one on screen.
+            //
+            // An absent field reads as "grounded", and that is the correct
+            // default rather than a lenient one: /api/health-grade honesty cuts
+            // both ways, and every answer an older server sends with chunks on it
+            // is one the RAG actually wrote.
+            contextProvenance = data.has_context
+                ? data.context_grounding || "grounded"
+                : null;
             return data.n;
         },
         /** @returns {number|null} the last committed turn, or null. */
@@ -2246,6 +2285,15 @@ function createTurnState() {
          */
         contextTurn() {
             return contextTurnNumber;
+        },
+        /**
+         * What the passages for `contextTurn()` actually are: the answer the RAG
+         * wrote them from, or passages that merely resemble the question.
+         *
+         * @returns {"grounded"|"related"|null}
+         */
+        contextGrounding() {
+            return contextProvenance;
         },
     };
 }
@@ -2343,7 +2391,11 @@ async function processRecordingStream() {
                 publishedTurnNumber = settledTurn;
                 updateTurnCount(settledTurn + 1);
                 const contextTurn = turnState.contextTurn();
-                if (contextTurn !== null) fetchContext(contextTurn);
+                // The provenance rides along with the turn, so the panel draws
+                // this turn's chips under this turn's claim.
+                if (contextTurn !== null) {
+                    fetchContext(contextTurn, turnState.contextGrounding());
+                }
             };
             turn.publishTurn();
         },
@@ -2769,7 +2821,7 @@ function closeContextPanel() {
     contextPanelState.close();
 }
 
-async function fetchContext(turnNumber) {
+async function fetchContext(turnNumber, grounding) {
     if (!conversationId || turnNumber < 0) return;
     // Not for a turn the user ended. Fetching would be a request the candidate
     // did not ask for, into a rail they just dismissed, to fill a panel they no
@@ -2808,7 +2860,7 @@ async function fetchContext(turnNumber) {
         return;
     }
 
-    renderContext(chunks);
+    renderContext(chunks, grounding);
 
     // Deliberately no timer here.
     //
@@ -2840,32 +2892,72 @@ function renderContextUnavailable() {
         '<p class="context-empty context-unavailable">No se pudo recuperar el contexto de esta respuesta</p>';
 }
 
-function renderContext(chunks) {
+/**
+ * Draw the evidence for a turn, saying which of the two things it is.
+ *
+ * `grounding` comes from the `done` payload and is the difference between
+ * "the model wrote the answer from these" and "these resemble the question".
+ * A FAQ cache hit is the second: the answer is a fixed string from
+ * `response_cache.py` and the retrieval existed only to fill this panel. The
+ * two used to be presented identically, and the surrounding comment claimed
+ * they were always the first, which for roughly 18 of the most common
+ * interview questions was a false provenance claim in the direction a
+ * recruiter acts on.
+ *
+ * The passages are shown either way. Hiding them on a cache hit was the other
+ * option and it is worse: `has_context` drives whether the panel REFRESHES, so
+ * a cache hit that suppressed the request would leave the previous turn's
+ * passages standing inside a panel that now belongs to this one.
+ *
+ * An unrecognised `grounding` value is treated as NOT grounded. This function
+ * decides what the page says, and a value it cannot read must not become the
+ * stronger claim.
+ */
+function renderContext(chunks, grounding) {
     if (!chunks || chunks.length === 0) {
         contextContent.innerHTML =
             '<p class="context-empty">No se recuperó contexto para esta respuesta</p>';
         return;
     }
 
+    // The one line that makes the panel honest, and the reason the word
+    // "source" is not enough on its own elsewhere in this file: a chip labelled
+    // "Fuente:" is a claim of provenance, which is exactly what is missing here.
+    //
+    // Compared against the bare string, not GROUNDING.GROUNDED: see the note on
+    // that constant. The ABSENT case is grounded and only the absent case is:
+    // /api/health-grade honesty cuts both ways, and an older server sends no
+    // field on turns the RAG really did write. A value that IS present and is
+    // not the one this build knows falls on the honest side, because this
+    // function decides what the page says.
+    const related = grounding !== undefined && grounding !== "grounded";
+    const note = related
+        ? '<p class="context-empty context-related">Estas passagens se ' +
+          "relacionan con tu pregunta, pero esta respuesta viene de la " +
+          "caché de preguntas frecuentes: no se construyó a partir de " +
+          "ellas.</p>"
+        : "";
+
     // A native <button>, not a div with role="button".
     //
     // The chip used to be `<div onclick="toggleChunk(this)">`, which gives a
     // mouse user a target and everyone else nothing: a div is not focusable,
     // cannot be reached with Tab, cannot be activated with Enter or Space, and
-    // draws no focus ring. These chips are the credibility argument of the
-    // whole panel -- the passages the answer was actually built from -- so
-    // re-declaring `role="button"` would be the fix that looks right and is
-    // not: it changes what is announced and leaves the focusability, the key
-    // handling and the ring still missing. The platform provides all of it for
-    // free, so the platform provides all of it.
+    // draws no focus ring. These chips are the evidence the whole panel exists
+    // to show, so re-declaring `role="button"` would be the fix that looks
+    // right and is not: it changes what is announced and leaves the
+    // focusability, the key handling and the ring still missing. The platform
+    // provides all of it for free, so the platform provides all of it.
     //
     // Every descendant is a <span> because a <button> may contain only
     // phrasing content, and the revealed passage this used to wrap in a
     // <div><p> is flow content. `display: block` in the stylesheet puts it back
     // on its own row.
-    contextContent.innerHTML = chunks
-        .map(
-            (chunk, i) => `
+    contextContent.innerHTML =
+        note +
+        chunks
+            .map(
+                (chunk, i) => `
         <button type="button" class="chunk-pill" data-index="${i}"
                 aria-expanded="false" aria-controls="chunk-detail-${i}">
             <span class="chunk-score">${chunk.score.toFixed(2)}</span>
@@ -2876,8 +2968,8 @@ function renderContext(chunks) {
             </span>
         </button>
     `,
-        )
-        .join("");
+            )
+            .join("");
 }
 
 /**

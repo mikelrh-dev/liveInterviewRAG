@@ -17,6 +17,7 @@ Two halves of one contract:
 """
 
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -786,9 +787,33 @@ class TestServerAuthoritativeTurnNumber:
         assert "turnState.contextTurn()" in hook, (
             "the context request must be gated on the server-reported turn"
         )
-        assert "if (contextTurn !== null) fetchContext(contextTurn)" in hook, (
-            "fetchContext must be guarded: an unknown turn is a 404"
+        # The guard, not the exact spelling of the call. This was a
+        # single-line assertion on `if (contextTurn !== null) fetchContext(
+        # contextTurn)`, which the provenance argument added to the call broke
+        # while leaving the guard exactly as protective -- so the test was
+        # asserting formatting and reporting it as a lost guard.
+        assert re.search(
+            r"if\s*\(\s*contextTurn\s*!==\s*null\s*\)\s*\{[^}]*fetchContext\(",
+            hook,
+        ), f"fetchContext must be guarded: an unknown turn is a 404\n{hook}"
+
+    def test_the_provenance_rides_along_with_the_turn(self):
+        """The panel must not draw this turn's chips under the last turn's claim.
+
+        A cache hit's passages are related to the question, not the source of
+        the answer, and the panel says so. That claim lives in the `done`
+        payload, and it only reaches the renderer if it is passed here -- so a
+        fetch that drops it renders turn N's passages as turn N's provenance.
+        """
+        hook = self._settler_hook()
+        assert "turnState.contextGrounding()" in hook, (
+            "fetchContext is called without the turn's grounding, so the panel "
+            "cannot tell a grounded answer from a FAQ cache hit"
         )
+        assert re.search(
+            r"fetchContext\(\s*contextTurn\s*,\s*turnState\.contextGrounding\(\)\s*\)",
+            hook,
+        ), f"the provenance is computed but not passed to the panel\n{hook}"
 
     def test_new_interview_clears_the_transcript_and_the_counter(self):
         """The second interview must not start on top of the first one's DOM."""

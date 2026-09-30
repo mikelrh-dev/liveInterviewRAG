@@ -30,6 +30,12 @@ _rate_limit_store: dict[str, list] = {}
 MAX_SUMMARY_CHARS = 1500  # ~300 tokens for the rolling summary
 MAX_TURN_TEXT_CHARS = 200  # Truncate each turn's text in the prompt
 
+#: The two answers to "what are these passages, to the answer that is on
+#: screen?". Exported because the page has to draw the same distinction and
+#: a third spelling on either side would silently become "assume grounded".
+GROUNDED = "grounded"
+RELATED = "related"
+
 
 async def get_conversation_or_hydrate(conversation_id: str) -> dict:
     """Return the conversation from memory, hydrating it from the DB on miss.
@@ -203,7 +209,7 @@ def store_is_configured() -> bool:
 
 
 def turn_done_payload(
-    committed_turn: dict | None, *, incomplete: bool = False
+    committed_turn: dict | None, *, incomplete: bool = False, grounded: bool = True
 ) -> dict:
     """``done`` payload for a turn that reached disk.
 
@@ -212,8 +218,8 @@ def turn_done_payload(
     whatever was committed, not whatever was requested — reporting the
     provisional one would put the original bug on the wire.
 
-    ``has_context`` exists so the client can tell "this turn has no context"
-    from "I do not know yet": the first means show nothing, the second would
+    ``has_context`` exists so the client can tell "this turn has context"
+    from "I do not know yet": the first means show something, the second would
     mean firing a request that 404s.
 
     An empty payload means no turn was stored, so the client must not ask
@@ -225,13 +231,38 @@ def turn_done_payload(
     finished turn rather than sent as ``false``, so a client can tell "this
     answer was cut short" from "this build says nothing about it" instead of
     reading an explicit false as a report that the answer is whole.
+
+    ``grounded`` is the provenance of the chunks, and it is the field that used
+    to be missing. ``has_context`` answers "are there passages"; it never
+    answered "did the RAG write this answer", so a cache hit -- which retrieves
+    passages purely to draw the panel and answers from a fixed string in
+    ``response_cache.py``, with no LLM and no context string anywhere near it --
+    reported ``has_context: true`` and the page called those passages "the
+    passages the answer was actually built from". For roughly 18 of the most
+    common interview questions that was false, and false in the direction a
+    recruiter acts on.
+
+    Setting ``has_context`` to false instead was considered and rejected: the
+    page uses it to decide whether to REFRESH the panel, so a false there makes
+    no request and leaves the previous turn's passages standing inside a panel
+    that now belongs to this one -- which the frontend already documents as the
+    worst failure it is capable of. The passages really are related to the
+    question, and they are worth showing; what is false is the word "source".
+
+    The field is ABSENT, not ``grounded``, on a turn with no chunks and on an
+    empty payload. It is a claim about passages, so with no passages there is
+    nothing to claim; and an absent field on an older server reads as grounded
+    by the page, which is correct for every RAG-written answer it ever sent.
     """
     if committed_turn is None:
         return {}
+    has_context = bool(committed_turn.get("chunks_used") or [])
     payload = {
         "n": int(committed_turn["n"]),
-        "has_context": bool(committed_turn.get("chunks_used") or []),
+        "has_context": has_context,
     }
+    if has_context:
+        payload["context_grounding"] = GROUNDED if grounded else RELATED
     if incomplete:
         payload["incomplete"] = True
     return payload

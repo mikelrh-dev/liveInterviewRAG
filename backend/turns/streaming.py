@@ -295,6 +295,13 @@ def build_stream(
                 TTS, chunks tracked for the panel, memory + DB write-through,
                 audio_url + done). On TTS failure it reports the error, stores
                 nothing, and still terminates the stream with `done`.
+
+                The chunks it tracks are for the PANEL, and the `done` payload
+                says so: `grounded=False`, because the answer was a fixed string
+                from the cache and the RAG never saw it. A recruiter reading
+                "the passages the answer was built from" under a canned reply
+                would be reading a provenance claim about a pipeline that did
+                not run.
                 """
                 nonlocal terminal_emitted
                 yield sse_format("token", {"text": response_text})
@@ -338,7 +345,15 @@ def build_stream(
 
                 yield sse_format("audio_url", {"url": audio_url})
                 terminal_emitted = True
-                yield sse_format("done", turn_done_payload(committed))
+                # grounded=False, and this is the whole point of the flag: the
+                # chunks above were retrieved for the PANEL. The answer is a
+                # fixed string from response_cache.py, chosen by a match on the
+                # question. No LLM ran and no context string was ever built, so
+                # calling these passages the answer's source would be a claim
+                # about a pipeline that did not execute.
+                yield sse_format(
+                    "done", turn_done_payload(committed, grounded=False)
+                )
 
             # ── Farewell check ──────────────────────────────────
             if detect_farewell(user_text):
