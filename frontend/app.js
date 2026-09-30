@@ -2079,6 +2079,11 @@ function createTurnState() {
 
 const turnState = createTurnState();
 
+// The turn number the sidebar is already showing for this interview, or null.
+// Cleared per turn next to `turnState.reset()`, and it is what makes the
+// bookkeeping in the settle hook idempotent -- see the comment there.
+let publishedTurnNumber = null;
+
 async function processRecordingStream() {
     if (audioChunks.length === 0) {
         // Nothing captured (e.g. instant stop): release the processing
@@ -2108,6 +2113,7 @@ async function processRecordingStream() {
     setState("processing");
     resetAudioQueue();
     turnState.reset();
+    publishedTurnNumber = null;
     currentCandidateDiv = null;
     // Arm the stopwatch before the request leaves, and clear any previous
     // turn's figure: the pill must never show turn N-1's latency as if it
@@ -2141,17 +2147,32 @@ async function processRecordingStream() {
             // finish the answer -- a terminal path that settles in silence
             // leaves a blind user waiting on a reply that already arrived.
             finalizeAnswer(currentCandidateDiv);
-            const settledTurn = turnState.last();
-            if (settledTurn !== null) {
-                updateTurnCount(settledTurn + 1);
-                const contextTurn = turnState.contextTurn();
-                if (contextTurn !== null) fetchContext(contextTurn);
-            }
             // The status line is NOT written here. `done` says generation
             // finished, which is not the same as the answer having been
             // heard; announcing the mic from this hook is what made the page
             // claim the candidate could talk while it was still speaking.
             // checkAllDone() announces it, from the queue and the player.
+            //
+            // The turn-number bookkeeping, in one place and guarded so it moves
+            // the counter exactly once. It lives on the settler -- as a property
+            // rather than as work this hook performs -- because a fatal `error`
+            // settles the turn BEFORE its `done` is read. The server emits the
+            // two back to back with no await between them, so one network read
+            // usually carries both, and settling on the error runs this with no
+            // turn to report; the number arrives one line later. Publishing from
+            // here alone is what made the counter skip a turn the candidate had
+            // just heard, because the write it wanted to count did happen.
+            turn.publishTurn = () => {
+                const settledTurn = turnState.last();
+                if (settledTurn === null || settledTurn === publishedTurnNumber) {
+                    return;
+                }
+                publishedTurnNumber = settledTurn;
+                updateTurnCount(settledTurn + 1);
+                const contextTurn = turnState.contextTurn();
+                if (contextTurn !== null) fetchContext(contextTurn);
+            };
+            turn.publishTurn();
         },
     });
 
@@ -2230,6 +2251,25 @@ async function processRecordingStream() {
                     // Before settling: `done` is the only event that names the
                     // committed turn, and the settler reads it on the way out.
                     turnState.commit(event.data);
+                    // `incomplete` means the model stopped generating and the
+                    // server kept what had already been said. The answer is on
+                    // screen and the candidate heard it, so nothing is being
+                    // retracted -- but without a mark on the transcript the
+                    // half-answer reads as the whole one. Marked here rather
+                    // than in the `error` branch because the error bubble
+                    // describes the failure while this one labels the answer
+                    // beside it, and because `done` is the event that says
+                    // which turn is being closed.
+                    if (event.data && event.data.incomplete) {
+                        markAnswerIncomplete(currentCandidateDiv);
+                    }
+                    // The `error` that preceded this frame -- and it usually
+                    // does, in the same network read -- already settled the turn,
+                    // so the settle hook ran with no turn to report. The number
+                    // this commit just recorded is the one the counter was
+                    // waiting for; publishing it here is what keeps a turn the
+                    // candidate heard from being left out of the count.
+                    if (turn.publishTurn) turn.publishTurn();
                     // Generation is complete. If audio is still outstanding
                     // this keeps the line on "speaking"; if there was nothing
                     // to play, the turn is genuinely over.
@@ -2357,6 +2397,37 @@ async function processRecordingStream() {
 }
 
 // ─── Typing animation ──────────────────────────────────
+
+/**
+ * Say, on the answer itself, that the model stopped generating.
+ *
+ * The error bubble already reports that the response could not be generated,
+ * but it describes the failure rather than the answer next to it -- and the
+ * answer next to it is what a recruiter reads. A truncated reply presented as
+ * a finished one is the dishonesty this page is built to avoid, so the mark
+ * lives inside the answer bubble.
+ *
+ * Inside the bubble rather than after it: `#conversation` is a polite live
+ * region, so a note appended here is announced once the bubble is unmuted by
+ * finalizeAnswer(). A separate message beside it would also land in the
+ * transcript as though it were something the recruiter said.
+ *
+ * Idempotent. `done` is the only caller and fires once per turn, but a label
+ * that could appear twice would read as a rendering fault, and the guard costs
+ * one querySelector.
+ */
+function markAnswerIncomplete(messageDiv) {
+    if (!messageDiv) return;
+
+    const bubble = messageDiv.querySelector(".bubble");
+    if (!bubble || bubble.querySelector(".answer-incomplete")) return;
+
+    const note = document.createElement("p");
+    note.className = "answer-incomplete";
+    note.textContent =
+        "Respuesta incompleta: el modelo dejó de generar a mitad del turno.";
+    bubble.appendChild(note);
+}
 
 /**
  * Say a finished answer, exactly once.

@@ -78,7 +78,7 @@ XFAILED = 0
 #: because measuring it means running a Node subprocess from the Python suite
 #: for a count the Node side already prints on its own CI run. Regenerate with
 #:   node --test "tests/frontend/*.test.mjs"
-NODE_TESTS = 277
+NODE_TESTS = 283
 
 #: The oldest Node whose ``node --test`` expands a glob in its positional
 #: arguments. Glob support landed in v21 and was explicitly NOT backported to

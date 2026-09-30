@@ -23,7 +23,10 @@ logger = logging.getLogger(__name__)
 #: Recorded in ``PRAGMA user_version`` so a migration can tell whether it has
 #: already run. It was 0 everywhere and nothing read it, which left every future
 #: migration with no way to know the state of a deployed file.
-SCHEMA_VERSION = 1
+#:
+#: 2 -- ``messages.incomplete``, the mark on an answer whose generation was cut
+#: short. See ``_add_incomplete_column``.
+SCHEMA_VERSION = 2
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS conversations (
@@ -46,7 +49,8 @@ CREATE TABLE IF NOT EXISTS messages (
     conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
     user_text TEXT NOT NULL DEFAULT '',
     response_text TEXT NOT NULL DEFAULT '',
-    audio_url TEXT NOT NULL DEFAULT ''
+    audio_url TEXT NOT NULL DEFAULT '',
+    incomplete INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS reports (
     conversation_id TEXT PRIMARY KEY,
@@ -91,6 +95,40 @@ def _drop_legacy_semantic_cache(con: sqlite3.Connection) -> None:
     )
 
 
+def _add_incomplete_column(con: sqlite3.Connection) -> None:
+    """v2 -- mark transcript entries whose answer was cut short.
+
+    A provider that dies mid-answer used to cost the candidate the whole
+    exchange: nothing was stored, so the recruiter's report neither had the
+    answer nor any sign that one had been started. The answer now survives, and
+    this column is what says it is a fragment -- the difference between a
+    transcript that is honest and one that launders a truncated reply as a
+    finished one.
+
+    It lives on ``messages`` and nowhere else. ``messages`` is the transcript
+    row, it is what ``report.py`` renders, and it is what ``load_conversation``
+    hands back -- so the mark arrives where every reader of it actually looks,
+    and comes back after a restart from the same row it went into. Putting it
+    on ``turns`` instead would have meant stitching it back onto the message
+    list across two independently ordered queries (``ORDER BY n`` for turns,
+    ``ORDER BY id`` for messages), and those orders genuinely differ once
+    ``record_turn`` resolves an ``n`` collision by committing at the next free
+    number.
+
+    ``ADD COLUMN`` cannot be conditional, and it fails when the column is
+    already there -- so the presence check is the step. ``NOT NULL DEFAULT 0``
+    is what makes that safe: rows written by the deployed version are read as
+    complete, which is what they are, rather than the migration having to
+    backfill them.
+    """
+    columns = {row[1] for row in con.execute("PRAGMA table_info(messages)")}
+    if "incomplete" in columns:
+        return
+    con.execute(
+        "ALTER TABLE messages ADD COLUMN incomplete INTEGER NOT NULL DEFAULT 0"
+    )
+
+
 def _migrate(con: sqlite3.Connection) -> None:
     """Bring an existing database file up to :data:`SCHEMA_VERSION`.
 
@@ -101,6 +139,7 @@ def _migrate(con: sqlite3.Connection) -> None:
     brought to the right state.
     """
     _drop_legacy_semantic_cache(con)
+    _add_incomplete_column(con)
 
     current = con.execute("PRAGMA user_version").fetchone()[0]
     if current != SCHEMA_VERSION:
@@ -407,14 +446,16 @@ class PersistenceService:
                     con.execute(
                         """
                         INSERT INTO messages
-                            (conversation_id, user_text, response_text, audio_url)
-                        VALUES (?, ?, ?, ?)
+                            (conversation_id, user_text, response_text, audio_url,
+                             incomplete)
+                        VALUES (?, ?, ?, ?, ?)
                         """,
                         (
                             cid,
                             message.get("user_text", ""),
                             message.get("response_text", ""),
                             message.get("audio_url", ""),
+                            1 if message.get("incomplete") else 0,
                         ),
                     )
                     con.execute("COMMIT")
@@ -480,7 +521,7 @@ class PersistenceService:
                 ).fetchall()
                 msg_rows = con.execute(
                     """
-                    SELECT user_text, response_text, audio_url
+                    SELECT user_text, response_text, audio_url, incomplete
                     FROM messages WHERE conversation_id = ? ORDER BY id
                     """,
                     (cid,),

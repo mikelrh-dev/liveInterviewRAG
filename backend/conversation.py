@@ -128,6 +128,8 @@ def build_turn(
     response_text: str,
     chunks_used: list,
     audio_url: str,
+    *,
+    incomplete: bool = False,
 ) -> tuple[dict, dict]:
     """Build the ``(turn, message)`` pair a completed exchange is stored as.
 
@@ -139,6 +141,13 @@ def build_turn(
     single synthesised file names itself, a streamed answer points at the
     conversation's directory of per-sentence chunks, and a farewell whose
     synthesis failed points nowhere at all.
+
+    ``incomplete`` is the mark on an answer the model never finished. It goes on
+    the MESSAGE and not on the turn, because the transcript entry is what the
+    report renders and what comes back from the store: a flag on the turn would
+    have to be stitched back onto the message list to reach either reader. The
+    turn is the exchange; the message is the answer, and it is the answer that
+    was cut short.
     """
     turn_number = len(conversations[conversation_id].get("turns", []))
     turn = {
@@ -151,6 +160,7 @@ def build_turn(
         "user_text": user_text,
         "response_text": response_text,
         "audio_url": audio_url,
+        "incomplete": bool(incomplete),
     }
     return turn, message
 
@@ -192,7 +202,9 @@ def store_is_configured() -> bool:
     return bool(is_enabled())
 
 
-def turn_done_payload(committed_turn: dict | None) -> dict:
+def turn_done_payload(
+    committed_turn: dict | None, *, incomplete: bool = False
+) -> dict:
     """``done`` payload for a turn that reached disk.
 
     The turn number is the server's to report. The pipeline derives ``n`` from
@@ -206,13 +218,23 @@ def turn_done_payload(committed_turn: dict | None) -> dict:
 
     An empty payload means no turn was stored, so the client must not ask
     about one.
+
+    ``incomplete`` is passed in rather than read off the committed turn,
+    because it is a property of the ANSWER and not of the exchange: the caller
+    is the only one that knows the model stopped generating. It is absent on a
+    finished turn rather than sent as ``false``, so a client can tell "this
+    answer was cut short" from "this build says nothing about it" instead of
+    reading an explicit false as a report that the answer is whole.
     """
     if committed_turn is None:
         return {}
-    return {
+    payload = {
         "n": int(committed_turn["n"]),
         "has_context": bool(committed_turn.get("chunks_used") or []),
     }
+    if incomplete:
+        payload["incomplete"] = True
+    return payload
 
 
 async def persist_turn(

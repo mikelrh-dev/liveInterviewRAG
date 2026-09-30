@@ -13,6 +13,17 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+#: Appended under an answer whose generation was cut short. The report is the
+#: artefact a recruiter reads, so this is where the honesty has to land: an
+#: answer that stops half way through is real content, and presenting it as a
+#: finished reply is the one defect a transcript cannot carry. It says what
+#: happened AND that the text above it is preserved as received, because a
+#: reader who assumes the text was tidied up will not know it is verbatim.
+INCOMPLETE_ANSWER_NOTE = (
+    "> **Respuesta incompleta.** El modelo dejó de generar a mitad del turno. "
+    "Lo que aparece arriba es exactamente lo que se emitió antes del fallo."
+)
+
 
 class ReportService:
     """Persists finished conversations as Markdown transcripts under REPORTS_DIR."""
@@ -100,7 +111,8 @@ class ReportService:
                 f"**Reclutador:** {msg.get('user_text', '')}",
                 "",
                 f"**Gemelo:** {msg.get('response_text', '')}",
-                "",
-                "---",
             ]
+            if msg.get("incomplete"):
+                lines += ["", INCOMPLETE_ANSWER_NOTE]
+            lines += ["", "---"]
         return "\n".join(lines) + "\n"

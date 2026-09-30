@@ -158,6 +158,12 @@ export function baseState(overrides = {}) {
         currentAudio: null,
         turnAbortController: null,
         turnAborted: false,
+        // app.js's own initialiser: no turn has been published to the sidebar
+        // yet. It is what makes the terminal bookkeeping idempotent, so a lifted
+        // `processRecordingStream` that resolves it to `undefined` would compare
+        // `settledTurn === undefined` and publish on every settle instead of
+        // once.
+        publishedTurnNumber: null,
         sessionStartTime: null,
         sessionTimerId: null,
         vuBarsCache: null,

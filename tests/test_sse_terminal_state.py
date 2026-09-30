@@ -358,11 +358,18 @@ class TestTerminalEventGuarantee:
         # The fallback stream was never even opened.
         openrouter_iter_lines.assert_not_called()
 
-    def test_llm_mid_stream_failure_stores_nothing(self, client, mock_services):
-        """A lost answer must not be persisted as if it had succeeded.
+    def test_llm_mid_stream_failure_stores_a_marked_truncated_turn(
+        self, client, mock_services
+    ):
+        """A lost answer is kept, and is never kept as if it had succeeded.
 
-        This is the payoff of aborting instead of retrying: the partial text
-        never reaches the database, so hydration cannot replay garbage.
+        This used to assert the opposite -- that nothing reached the database at
+        all -- which meant the candidate heard half an answer, read it on
+        screen, and the recruiter's report had neither the text nor any sign
+        that one had been started. The mark is what makes storing it safe: the
+        transcript entry and the rendered report both say the answer stops half
+        way through, so hydration replays a fragment *labelled as* a fragment
+        rather than garbage posing as an answer.
         """
         from backend.main import conversations
 
@@ -380,7 +387,12 @@ class TestTerminalEventGuarantee:
 
         turns = conversations[conversation_id]["turns"]
         messages = conversations[conversation_id]["messages"]
-        assert turns == [], "a lost answer must not become a stored turn"
+        assert len(turns) == 1, f"the answer the candidate heard was dropped: {turns}"
+        assert turns[0]["assistant_text"] == "Partial answer."
+        assert messages[0]["incomplete"] is True, (
+            "the truncated answer reached the transcript with nothing saying it "
+            f"was cut short, so it reads as a finished reply: {messages[0]}"
+        )
         # The transcript and the turn numbering must agree with each other.
         assert len(turns) == len(messages), (
             f"{len(turns)} turns but {len(messages)} messages -- the transcript "

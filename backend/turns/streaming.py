@@ -13,6 +13,8 @@ reported.
     - error:          {"detail": "..."}               fatal, non-recoverable
                       {"detail": "...", "id": int}    recoverable, per-chunk
     - done:           {"n": int, "has_context": bool} terminal (normal turn)
+                      {"n": int, "has_context": bool,  terminal (truncated
+                       "incomplete": true}              answer, still stored)
                       {}                              terminal (nothing stored)
     - interview_end:  {"message": "...",              terminal (farewell)
                       "n": int, "has_context": bool}
@@ -27,8 +29,15 @@ identical turn-number payload, built by the same function from the turn the DB
 actually committed. The frontend must not count transcript elements to find a
 turn number, and must not read one event differently from the other. Absent
 turn-number fields mean no turn was stored (a failed write, an empty
-transcription, an LLM that died mid-stream), so the client asks the Context
-panel about nothing.
+transcription), so the client asks the Context panel about nothing.
+
+A provider that dies mid-generation is neither of those. The candidate heard
+the sentences that were synthesised and read the tokens that were streamed, so
+the exchange is kept — and ``done`` carries ``incomplete`` so every reader of
+it downstream, the transcript, the report and the page itself, can say that the
+answer stops half way through instead of presenting a fragment as a reply. The
+one case that stores nothing is a provider that died before emitting a single
+token: there is no answer in that turn to keep.
 
 Each terminal event names the turn it terminates on, which is why the farewell
 is written *before* ``interview_end`` rather than after it. The number the DB
@@ -82,6 +91,124 @@ from backend.turns.errors import (
 logger = logging.getLogger(__name__)
 
 
+def _sentence_files(directory: Path, sentence_id: int) -> set[str]:
+    """Names of the audio files synthesis wrote for one sentence id.
+
+    Scoped by the id prefix rather than by "everything in the directory",
+    because a conversation's directory accumulates one file per sentence for the
+    whole interview and every turn before this one is still referenced by its
+    own transcript. Each synthesis names its own file
+    (``sentence_{id}_{uuid}.mp3``), so the id prefix is the finest honest
+    partition available without reaching into the TTS service.
+    """
+    try:
+        return {
+            entry.name
+            for entry in directory.glob(f"sentence_{sentence_id}_*.mp3")
+            if entry.is_file()
+        }
+    except OSError:
+        return set()
+
+
+def _sentence_files_any(directory: Path) -> set[str]:
+    """Every per-sentence file in the directory, whatever its id.
+
+    The turn-start snapshot. It is read once and then only subtracted, so the
+    sweep cannot delete a file that was here before this turn began speaking.
+    """
+    try:
+        return {
+            entry.name
+            for entry in directory.glob("sentence_*_*.mp3")
+            if entry.is_file()
+        }
+    except OSError:
+        return set()
+
+
+async def _store_truncated_turn(
+    conversation_id: str,
+    user_text: str,
+    partial_response: str,
+    context_chunks: list,
+) -> dict | None:
+    """Keep the answer the candidate heard when the model stops mid-sentence.
+
+    Returns the committed turn, or ``None`` when nothing reached disk. A write
+    that raises is reported and swallowed exactly as the farewell's is: letting
+    it reach the outer handler would replace the provider's own error with a
+    generic one and lose the message that explains the turn.
+    """
+    try:
+        new_turn, new_message = build_turn(
+            conversation_id,
+            user_text,
+            partial_response,
+            context_chunks,
+            # The directory, not one file: a streamed answer is many
+            # per-sentence chunks and this one is a prefix of them.
+            f"/audio/{conversation_id}/",
+            incomplete=True,
+        )
+        touch_activity(conversation_id)
+        return await persist_turn(conversation_id, new_turn, new_message)
+    except Exception as e:
+        logger.error(
+            "Truncated turn write failed for %s: %s", conversation_id, e, exc_info=True
+        )
+        return None
+
+
+def _sweep_orphan_audio(
+    directory: Path,
+    dispatched: set[int],
+    announced: set[str],
+    pre_existing: set[str],
+) -> int:
+    """Delete audio this turn synthesised and never announced. Returns the count.
+
+    The TTS writes a file and THEN streams; cancelling the task aborts it at an
+    await, which cannot take the file back. So a turn that ends early — a
+    provider that died, a client that left — leaves behind whatever the
+    cancelled syntheses had already written, and nothing ever points at those
+    files. They sat in ``audio/`` until the hourly sweep noticed them.
+
+    Only this turn's unannounced output is eligible, and a file is removed only
+    when all three hold:
+
+    * it carries the id of a sentence THIS turn asked for,
+    * it was not already on disk when the turn started speaking, and
+    * no ``audio_url`` was emitted for it.
+
+    The middle clause is what protects a concurrent turn: two streaming turns on
+    one conversation pick the same sentence ids, and without it the loser would
+    delete audio the winner is still playing. It assumes turns on a conversation
+    do not overlap their speech, which the page guarantees by holding the mic
+    for the length of a turn; the prefix and the announced set cover the window
+    even if that ever changes.
+
+    Never raises. This runs in the generator's ``finally``, where an exception
+    would replace whatever the turn was actually ending with.
+    """
+    orphans = 0
+    for sentence_id in sorted(dispatched):
+        for name in _sentence_files(directory, sentence_id) - announced - pre_existing:
+            try:
+                (directory / name).unlink(missing_ok=True)
+            except OSError as e:
+                logger.warning("Could not delete orphaned audio %s: %s", name, e)
+                continue
+            orphans += 1
+    if orphans:
+        logger.info(
+            "Deleted %d synthesised-but-never-announced audio file(s) from %s",
+            orphans,
+            directory,
+        )
+    return orphans
+
+
 def build_stream(
     conversation_id: str, temp_audio: Path
 ) -> AsyncIterator[str]:
@@ -119,6 +246,24 @@ def build_stream(
         # cannot be cancelled or joined from the event loop, so the only honest
         # handle is a flag the thread itself checks between tokens.
         llm_stop = threading.Event()
+        # ── Audio bookkeeping for the orphan sweep ──
+        # Three sets, and each one is load-bearing:
+        #
+        # ``dispatched_sentences``
+        #     every sentence id this turn asked the TTS for. A synthesis that
+        #     was cancelled AFTER the provider wrote its file leaves a file
+        #     that no event will ever name -- that is the orphan.
+        # ``announced_audio``
+        #     the files whose ``audio_url`` actually went out. These are the
+        #     ones the candidate may still be listening to, so the sweep must
+        #     never touch them.
+        # ``pre_existing_audio``
+        #     what was already in the conversation's directory when the turn
+        #     started speaking. Files from an earlier turn in the same interview
+        #     are still referenced by that turn's transcript.
+        dispatched_sentences: set[int] = set()
+        announced_audio: set[str] = set()
+        pre_existing_audio: set[str] = set()
 
         try:
             # ── Step 1: STT ──────────────────────────────────────
@@ -359,6 +504,11 @@ def build_stream(
             llm_future = loop.run_in_executor(None, run_llm_stream)
 
             # ── Step 5: Event loop — LLM tokens + TTS completions ──
+            # Snapshot before the first synthesis, so the sweep in the finally
+            # can tell this turn's files from the interview's earlier ones.
+            audio_dir = config.AUDIO_DIR / conversation_id
+            pre_existing_audio = _sentence_files_any(audio_dir)
+
             queue_task = None
             while listening_to_llm or tts_futures:
                 pending = list(tts_futures.keys())
@@ -389,15 +539,32 @@ def build_stream(
                             # (logged in full at the raise site) and never in
                             # the payload.
                             logger.error("LLM streaming error: %s", data)
-                            # Terminate: a provider that dies mid-generation
-                            # leaves nothing to stream, and the frontend needs
-                            # a terminal event to hand the mic back. Any
-                            # synthesis still in flight is settled by the
-                            # finally, which is the only place all three exits
-                            # converge.
+                            # The candidate heard whatever was synthesised and
+                            # read every token that was streamed, so the
+                            # exchange is real and it is kept — marked, because
+                            # a half-answer presented as a whole one is the one
+                            # thing this product must not do. A provider that
+                            # died before emitting a single token has no answer
+                            # to keep, and stores nothing.
+                            committed = None
+                            if full_response.strip():
+                                committed = await _store_truncated_turn(
+                                    conversation_id,
+                                    user_text,
+                                    full_response,
+                                    context_chunks,
+                                )
+                            # Terminate: the frontend needs a terminal event to
+                            # hand the mic back, and it needs this one to name
+                            # the turn so the counter advances. Any synthesis
+                            # still in flight is settled by the finally, which is
+                            # the only place all three exits converge.
                             terminal_emitted = True
                             yield sse_format("error", {"detail": LLM_FAILED})
-                            yield sse_format("done", {})
+                            yield sse_format(
+                                "done",
+                                turn_done_payload(committed, incomplete=True),
+                            )
                             return
 
                         elif kind == "token":
@@ -415,10 +582,11 @@ def build_stream(
                                     container.tts_service().synthesize_sentence(
                                         clean_sentence,
                                         sentence_id,
-                                        output_dir=config.AUDIO_DIR / conversation_id,
+                                        output_dir=audio_dir,
                                     )
                                 )
                                 tts_futures[task] = sentence_id
+                                dispatched_sentences.add(sentence_id)
                                 sentence_id += 1
                             except Exception as e:
                                 logger.error(
@@ -439,6 +607,7 @@ def build_stream(
                         # A TTS task completed — yield the audio chunk immediately
                         try:
                             sid, audio_path = done.result()
+                            announced_audio.add(audio_path.name)
                             yield sse_format(
                                 "audio_url",
                                 {
@@ -558,6 +727,16 @@ def build_stream(
                         conversation_id,
                         exc_info=True,
                     )
+            # After the cancels above, so it sweeps what they actually wrote.
+            # A synthesis cancelled at its await has already written its file
+            # and cannot be un-written; this is the only place every exit
+            # converges, so it is the only place that can notice.
+            _sweep_orphan_audio(
+                config.AUDIO_DIR / conversation_id,
+                dispatched_sentences,
+                announced_audio,
+                pre_existing_audio,
+            )
             if temp_audio.exists():
                 temp_audio.unlink(missing_ok=True)
 
