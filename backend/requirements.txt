@@ -20,7 +20,7 @@ python-dotenv>=1.0.0
 # proposed in design.md item 6.2.
 pyyaml>=6.0
 
-# backend/services/rag.py:677, the TF-IDF fallback in RAGPipeline.initialize().
+# backend/services/rag.py:572, the TF-IDF fallback in RAGPipeline.initialize().
 # sentence-transformers requires scikit-learn>=1.1.0 unconditionally, so the
 # package is installed on every machine that can run the primary path. The
 # fallback itself is live, not dead weight -- see the tests in

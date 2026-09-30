@@ -71,7 +71,7 @@ ProtectHome=true
 #       Required, and the whole reason this line is worth reading. RAGPipeline
 #       persists its embeddings here and re-embeds the corpus whenever the cache
 #       cannot be written -- it catches the exception and logs a warning
-#       (backend/services/rag.py:816-817), so the symptom is a warning nobody reads
+#       (backend/services/rag.py:696-697), so the symptom is a warning nobody reads
 #       and a full re-embed at every boot. That directory is gitignored, so a
 #       clone never creates it; README step 3 and deploy.sh do. It is a real
 #       directory with a real owner, so its absence is a provisioning mistake

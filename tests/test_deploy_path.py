@@ -489,7 +489,7 @@ class TestTheUnitStatesWhereItsCachesLive:
     service cannot write is not a cache. Both of these fail silently:
 
     * ``backend/.rag_cache`` -- ``RAGPipeline._save_cache`` catches the OSError
-      and logs a warning (backend/services/rag.py:816-817), so the corpus is
+      and logs a warning (backend/services/rag.py:696-697), so the corpus is
       re-embedded at every boot and the only symptom is a log line.
     * the HuggingFace model cache -- ``paraphrase-multilingual-MiniLM-L12-v2`` is
       457 MB, so a non-persistent cache is 457 MB down on every restart.

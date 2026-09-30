@@ -228,7 +228,7 @@ jobs:
           # been fixed properly in the manifests:
           #
           #   pyyaml        backend/services/rag.py:14  (module level)
-          #   scikit-learn  backend/services/rag.py:677 (TF-IDF fallback)
+          #   scikit-learn  backend/services/rag.py:572 (TF-IDF fallback)
           #   starlette     backend/middleware.py:13    (module level)
           #
           # All three are now declared in backend/requirements.txt AND

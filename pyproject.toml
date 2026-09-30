@@ -46,7 +46,7 @@ dependencies = [
     # the exact floor an already-mandatory dependency imposes. See
     # backend/requirements.txt for the per-dependency reasoning.
     "pyyaml>=6.0",        # backend/services/rag.py:14
-    "scikit-learn>=1.1.0",  # backend/services/rag.py:677, TF-IDF fallback
+    "scikit-learn>=1.1.0",  # backend/services/rag.py:572, TF-IDF fallback
     "starlette>=0.46.0",  # backend/middleware.py:13
 ]
 
