@@ -113,6 +113,20 @@ export function baseState(overrides = {}) {
         MAX_RECORDING_MS: 60000,
         maxRecordingMs: 60000,
         RECORDING_TIMESLICE_MS: 1000,
+        // app.js's bounded read on the turn stream. Lifted code reads these as
+        // globals, and `processRecordingStream` is lifted by several suites, so
+        // a module-level `const` it mentions has to be declared here or the
+        // ReferenceError lands inside the turn's own catch -- where the app
+        // would report it as an SSE pipeline failure and the suite would read a
+        // microphone problem. Same treatment as MAX_RECORDING_MS above, and for
+        // the same reason: restating a number here is only safe while something
+        // asserts it still matches app.js, which
+        // tests/frontend/stream_read_timeout.test.mjs does for all three.
+        STREAM_READ_TIMEOUT_MS: 60000,
+        STREAM_READ_TIMEOUT_MESSAGE:
+            "El servidor dejó de enviar datos a mitad de la respuesta. " +
+            "La entrevista se ha cerrado; los turnos anteriores siguen guardados.",
+        STREAM_READ_TIMEOUT_CODE: "stream-read-timeout",
         conversationId: null,
         mediaRecorder: null,
         audioChunks: [],

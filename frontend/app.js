@@ -1976,6 +1976,109 @@ function createRetryPolicy(config) {
 const writeOncePolicy = createRetryPolicy({ replayable: false });
 
 /**
+ * How long a single read on the turn stream may return nothing before the turn
+ * is declared dead. In milliseconds.
+ *
+ * A LIVE server emits an SSE comment frame every
+ * `SSE_KEEPALIVE_INTERVAL_SECONDS` (15 s, backend/sse.py), so a healthy
+ * connection produces bytes at least that often no matter how long STT or TTS
+ * is taking. Four keepalives is a wide margin over that and still short enough
+ * that a candidate is not left looking at a disabled microphone for minutes.
+ *
+ * It is a PER-READ deadline, not a budget for the turn: a streamed answer is
+ * upload + Whisper + RAG + LLM + TTS, which legitimately runs for minutes, and
+ * a total budget would kill a slow but healthy turn partway through.
+ *
+ * Cross-checked against the server's own constant by
+ * tests/frontend/stream_read_timeout.test.mjs, which reads it out of
+ * backend/sse.py rather than restating it: a restated pair could agree with
+ * itself while the server moved.
+ */
+const STREAM_READ_TIMEOUT_MS = 60000;
+
+/**
+ * What the candidate is told when the stream goes quiet. Candidate-facing, and
+ * the reason it does not mention a timeout: a number and a word are a report
+ * about the transport, and this page reports what did not happen. The technical
+ * detail goes to the console, which is where the rest of this module puts it.
+ */
+const STREAM_READ_TIMEOUT_MESSAGE =
+    "El servidor dejó de enviar datos a mitad de la respuesta. " +
+    "La entrevista se ha cerrado; los turnos anteriores siguen guardados.";
+
+/**
+ * The error code a stalled read raises, so the catch can tell it from a
+ * deliberate END. `turnAborted` means the user finished the interview, and
+ * reporting a server failure into a session they were told was over is its own
+ * kind of lie -- so the two must be distinguishable, not merely different.
+ */
+const STREAM_READ_TIMEOUT_CODE = "stream-read-timeout";
+
+/**
+ * A per-read deadline over an SSE response body.
+ *
+ * WHAT IT IS FOR
+ * --------------
+ * The read loop was `await reader.read()` with no deadline. The server's
+ * keepalive is a SERVER timer: it proves the server's event loop is turning,
+ * and it proves nothing when what is stuck IS the server. On the documented
+ * development path (config.py points at RUNBOOK.md:18, bare uvicorn with no
+ * proxy) a wedged server hangs the client forever -- `isProcessing` true, the
+ * mic disabled, no message, and only END or a reload recovers. Behind nginx,
+ * `proxy_read_timeout` closes the socket at 300 s, so the same hang is merely
+ * slower.
+ *
+ * WHY IT IS NOT THE RETRY POLICY
+ * ------------------------------
+ * `fetchWithBackoff` classifies by HTTP status and its whole design is
+ * "re-issue the request". A stalled read is the case that policy refuses to
+ * replay: the request was delivered, the pipeline probably ran, and a turn may
+ * already be committed -- which is precisely the ambiguity `writeOncePolicy`
+ * exists to refuse. So the policy is not extended. The timeout ENDS the turn;
+ * it does not retry it.
+ *
+ * WHY A FACTORY AND NOT A HELPER
+ * ------------------------------
+ * Every value it needs is injected, so the unit is testable without a network,
+ * a real timer, or a module binding -- and tests/frontend can lift it out of
+ * this file by name, which a bare top-level helper reading these constants
+ * could not be. The cost is that the caller spells out the three settings,
+ * which is also where a reader learns they exist.
+ */
+function createStreamDeadline(config) {
+    const cfg = config || {};
+    const schedule =
+        cfg.setTimer || ((fn, ms) => setTimeout(fn, ms));
+    const unschedule = cfg.clearTimer || ((id) => clearTimeout(id));
+
+    return {
+        /**
+         * One read, bounded. Resolves with the reader's `{done, value}`, or
+         * rejects with an error carrying `code: "stream-read-timeout"`.
+         *
+         * The timer is armed per call and disarmed in the `finally`, so a
+         * reader that answers leaves nothing behind to fire into the next
+         * turn.
+         */
+        async read(reader) {
+            let handle = null;
+            const expiry = new Promise((_resolve, reject) => {
+                handle = schedule(() => {
+                    const error = new Error(cfg.message);
+                    error.code = cfg.code;
+                    reject(error);
+                }, cfg.timeoutMs);
+            });
+            try {
+                return await Promise.race([reader.read(), expiry]);
+            } finally {
+                if (handle !== null) unschedule(handle);
+            }
+        },
+    };
+}
+
+/**
  * Fetch with bounded, classified backoff.
  *
  * The retry decision is split by *how the failure is known*, not by how it
@@ -2415,9 +2518,17 @@ async function processRecordingStream() {
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
+        // Bounded, per read. The server keepalive is a server timer: it cannot
+        // tell a working server from a wedged one, which is the only case this
+        // guards. See createStreamDeadline.
+        const streamDeadline = createStreamDeadline({
+            timeoutMs: STREAM_READ_TIMEOUT_MS,
+            message: STREAM_READ_TIMEOUT_MESSAGE,
+            code: STREAM_READ_TIMEOUT_CODE,
+        });
 
         while (true) {
-            const { done, value } = await reader.read();
+            const { done, value } = await streamDeadline.read(reader);
             if (done) break;
             latencyReadout.firstByte();
 
@@ -2571,6 +2682,22 @@ async function processRecordingStream() {
             return;
         }
         console.error("SSE pipeline error:", e);
+        if (e && e.code === STREAM_READ_TIMEOUT_CODE) {
+            // The server stopped answering. Promise.race abandoned the read
+            // that was in flight, and that read is still holding the response
+            // body -- so the turn's controller is cancelled here, which is what
+            // actually releases the socket. Without this the page would report a
+            // dead turn over a connection it is still keeping open.
+            //
+            // `turnAborted` is deliberately NOT set. That flag means the user
+            // ended the interview, and a server that stopped answering did not
+            // end anything; setting it would swallow this failure into the
+            // "cancelled, nothing to report" path two lines up.
+            console.error(
+                "SSE stream stalled: no bytes for " + STREAM_READ_TIMEOUT_MS + "ms",
+            );
+            if (turnAbortController) turnAbortController.abort();
+        }
         addMessage("error", e.message || "Algo salió mal.");
         // Routed through the narrator for the same reason as the SSE error
         // branch: one owner of the line, and a real class name. (It passed
