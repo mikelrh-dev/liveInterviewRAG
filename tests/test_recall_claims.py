@@ -396,6 +396,28 @@ class TestTheRAGCommentsQuoteTheCurrentMeasurement:
             "space than the numerator is how a percentage stops meaning anything."
         )
 
+        # The prose must ALSO say which of the two counts is which. The sentence
+        # once read "1813 results with the filter and 854 without" while its own
+        # arithmetic, and both asserts above, treat 1813 as the UNFILTERED total.
+        # An inverted sentence passes every other check here, because none of them
+        # reads it -- the ratio is right and the two clauses around it are swapped.
+        narration = re.search(
+            r"(\d+)\s+results with the filter\s+and\s+(\d+)\s+without", threshold_prose
+        )
+        assert narration is not None, (
+            "the comment must narrate both runs as 'N results with the filter and "
+            f"M without'. Comment was:\n{threshold_prose}"
+        )
+        assert int(narration.group(1)) == measured["filtered"], (
+            f"the comment says {narration.group(1)} results WITH the filter; the "
+            f"filtered run returns {measured['filtered']}. If the two clauses are "
+            "swapped the arithmetic still holds and the sentence is still a lie."
+        )
+        assert int(narration.group(2)) == measured["unfiltered"], (
+            f"the comment says {narration.group(2)} WITHOUT the filter; the "
+            f"unfiltered run returns {measured['unfiltered']}."
+        )
+
     def test_the_stated_share_follows_from_the_stated_counts(
         self, measured, threshold_prose
     ):

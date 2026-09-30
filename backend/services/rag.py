@@ -507,18 +507,22 @@ class RAGPipeline:
         # starvation is not a default, it is a coincidence.
         #
         # WHAT THE FILTER COSTS, in one unit. At ``top_k`` = twice the chunk
-        # count the 49 labelled questions return 1813 results with the filter
-        # and 854 without, so at 0.25 the filter discards 959 of the 1813
+        # count the 49 labelled questions return 854 results with the filter
+        # and 1813 without, so at 0.25 the filter discards 959 of the 1813
         # results -- 52.9% -- and at the shipped top_k=3 it costs the caller
         # nothing at all, which is the fact the two numbers together say: a wide
         # filter that is invisible until a question runs thin.
         #
         # Both counts are counts of RESULTS, which is the only space
         # ``retrieve()`` can be asked about, and they are bounded by the page
-        # count (37) rather than the chunk count. This sentence used to read
-        # "956 of 6125 pairs, 15.6%": 956 was deduplicated results and 6125 was
-        # raw cosine cells, so the ratio was a percentage of nothing, and both
-        # numbers described a 125-chunk corpus this repository stopped shipping.
+        # count (37) rather than the chunk count. Over the raw cosine cells the
+        # filter drops before deduplication the same threshold discards 4100 of
+        # 6076 (question, chunk) pairs, 67.5% -- that is how many candidates it
+        # ever sees, and it is a different question from how much the caller
+        # loses. This sentence used to read "956 of 6125 pairs, 15.6%": 956 was
+        # deduplicated results and 6125 was raw cosine cells, so the ratio was a
+        # percentage of nothing, and both numbers described a 125-chunk corpus
+        # this repository stopped shipping.
         # ``tests/test_recall_claims.py`` now checks the two counts, their share
         # and the chunk count against a live measurement.
         self.threshold = threshold
