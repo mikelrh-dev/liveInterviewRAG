@@ -890,10 +890,42 @@ function init() {
 }
 
 /**
+ * Build the mic analyser if it is missing. Returns whether one now exists.
+ *
+ * READINESS, NOT EXISTENCE. `initAudio` used to guard on `audioContext`, which
+ * is assigned BEFORE the "suspended" check that can throw. One blocked
+ * construction therefore left the guard permanently satisfied and `analyserNode`
+ * permanently null, and no later call could reach the `createAnalyser()` line.
+ *
+ * The cost was the VAD. `startVad()` opens with `if (!analyserNode) return;`, so
+ * it never started, and with it gone nothing decided that the candidate had
+ * stopped speaking -- the recording cap became the only end-of-turn bound, which
+ * answers the wrong question at the wrong moment. Every other consumer already
+ * treated the analyser as the thing being asked for: `startRecording` checks
+ * `audioContext && analyserNode`, `startVad` checks `analyserNode`, and the
+ * visualisation loop checks `analyserNode`. The guard was the only place that
+ * substituted its input for its output.
+ */
+function ensureAnalyser() {
+    if (analyserNode) return true;
+    if (!audioContext || audioContext.state === "closed") return false;
+
+    analyserNode = audioContext.createAnalyser();
+    analyserNode.fftSize = 64; // 32 frequency bins
+    waveformBars = new Uint8Array(analyserNode.frequencyBinCount);
+    // Allocated here, once, where the analyser's fftSize is known. The
+    // animation loop reused it instead of building a new one every frame.
+    micTimeBuffer = new Uint8Array(analyserNode.fftSize);
+    return true;
+}
+
+/**
  * Initialize AudioContext and AnalyserNode. Handles autoplay blocking.
  */
 async function initAudio() {
-    if (audioContext) return;
+    // Readiness, not existence: a blocked first attempt leaves a context behind
+    // with no analyser, and this guard used to read that context as success.
+    if (analyserNode) return;
 
     try {
         audioContext = new (window.AudioContext || window.webkitAudioContext)();
@@ -901,12 +933,7 @@ async function initAudio() {
             throw new Error("AudioContext blocked");
         }
 
-        analyserNode = audioContext.createAnalyser();
-        analyserNode.fftSize = 64; // 32 frequency bins
-        waveformBars = new Uint8Array(analyserNode.frequencyBinCount);
-        // Allocated here, once, where the analyser's fftSize is known. The
-        // animation loop reused it instead of building a new one every frame.
-        micTimeBuffer = new Uint8Array(analyserNode.fftSize);
+        ensureAnalyser();
 
         // Initialize TTS analyser for fake-sync
         if (!ttsAnalyser) {
@@ -926,10 +953,21 @@ async function initAudio() {
  * Resume AudioContext on user interaction.
  */
 async function resumeAudioContext() {
-    if (audioContext && audioContext.state === "suspended") {
+    if (!audioContext || audioContext.state === "closed") {
+        // A closed context cannot be resumed, so the old "suspended" branch left
+        // this case with nothing at all. This handler runs on a click, so the
+        // replacement is built under exactly the gesture whose absence blocked
+        // the original.
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    } else if (audioContext.state === "suspended") {
         await audioContext.resume();
     }
     if (audioContext && audioContext.state === "running") {
+        // Resuming the CONTEXT is only half of what a turn needs. This repaired
+        // that half and left the other one broken: with no analyser the VAD
+        // cannot run, so the overlay could be dismissed over a stack that still
+        // could not end a turn by itself.
+        ensureAnalyser();
         audioOverlay.classList.add("hidden");
     }
 }

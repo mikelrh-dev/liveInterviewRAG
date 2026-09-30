@@ -247,7 +247,12 @@ function isNode(value) {
 function installAudioFakes(window, recorder) {
     class FakeAudioContext {
         constructor() {
-            this.state = "running";
+            const queue = recorder.statesOnConstruct;
+            const built = recorder.contextsCreated;
+            recorder.contextsCreated = built + 1;
+            this.state = queue && queue.length
+                ? queue[Math.min(built, queue.length - 1)]
+                : "running";
             this.destination = { kind: "destination" };
             this.fftSize = 2048;
         }
@@ -508,6 +513,16 @@ export function createDom(options = {}) {
         getUserMediaCalls: 0,
         getUserMediaRejected: null,
         recorders: 0,
+        contextsCreated: 0,
+        // The state a freshly constructed AudioContext reports, as a queue. A
+        // context built without a live user gesture really does come back
+        // "suspended", which is the condition `initAudio` treats as a failure
+        // worth retrying, and there was otherwise no way to reach that branch:
+        // every context here was born running. The LAST entry repeats, so
+        // `["suspended"]` blocks every context forever (a browser that never
+        // grants the gesture) and `["suspended", "running"]` lets the retry
+        // through, which is what a real click produces.
+        statesOnConstruct: null,
     };
 
     // ── APIs jsdom does not implement ──────────────────────────────────────
