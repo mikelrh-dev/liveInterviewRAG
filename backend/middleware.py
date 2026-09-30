@@ -6,6 +6,7 @@ handler parses anything, or it is too late.
 """
 
 import logging
+import math
 import time
 
 from fastapi import Request
@@ -17,6 +18,49 @@ from backend.conversation import _rate_limit_store
 from backend.uploads import MAX_AUDIO_SIZE
 
 logger = logging.getLogger(__name__)
+
+
+# ─── What the rate limit is for ───────────────────────────────────────────────
+#
+# The budget exists to bound the work a candidate's *questions* can cause, so it
+# is spent on questions and on nothing else. Two reads do not qualify:
+#
+#   GET /api/health                             a status dot, polled every 60 s
+#   GET /api/conversation/{id}/context          the evidence panel for a turn
+#   GET /api/config                             the sidebar's model list
+#
+# The turn is two requests wide, not one: ``frontend/app.js`` POSTs the turn and
+# then calls ``fetchContext`` for the same turn. Charging both meant a turn cost
+# two units, so at ``RATE_LIMIT_PER_MINUTE=10`` the sustainable rate was 5 turns
+# per 60 s -- one turn every 12 s -- and a candidate who answers in 8 s started
+# collecting 429s in the middle of a real interview.
+#
+# THE EXEMPTION IS A NAMED CONSTANT, NOT AN `if` IN THE HANDLER
+# ----------------------------------------------------------
+# It is written out here rather than inline so that putting a route back under
+# the limiter is a deliberate edit to a list someone will read, instead of a
+# condition discovered in a dispatch method. The prefix and suffix forms are
+# separate on purpose: ``/api/conversation/`` is a PREFIX of the turn endpoints
+# as well, so exempting that prefix would have freed the two most expensive
+# routes in the application and left the limiter guarding only health checks.
+RATE_LIMIT_EXEMPT_PREFIXES: tuple[str, ...] = (
+    "/api/health",
+    "/api/config",
+)
+
+RATE_LIMIT_EXEMPT_SUFFIXES: tuple[str, ...] = (
+    # /api/conversation/{id}/context -- matched on the tail, so the sibling
+    # routes that share the prefix (POST .../message, .../message/stream) and
+    # the conversation-creation POST stay charged.
+    "/context",
+)
+
+
+def is_rate_limit_exempt(path: str) -> bool:
+    """Whether this path is a read the interview's budget should not pay for."""
+    return path.startswith(RATE_LIMIT_EXEMPT_PREFIXES) or path.endswith(
+        RATE_LIMIT_EXEMPT_SUFFIXES
+    )
 
 
 class MaxBodySizeMiddleware(BaseHTTPMiddleware):
@@ -78,7 +122,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         # Only rate-limit API endpoints
-        if request.url.path.startswith("/api/"):
+        if request.url.path.startswith("/api/") and not is_rate_limit_exempt(
+            request.url.path
+        ):
             client_ip = resolve_client_ip(request)
             now = time.time()
             timestamps = _rate_limit_store.get(client_ip, [])
@@ -87,12 +133,27 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             timestamps = [t for t in timestamps if now - t < self.window]
 
             if len(timestamps) >= self.max_requests:
-                logger.warning("Rate limit hit for IP: %s", client_ip)
+                # Seconds until the OLDEST surviving entry leaves the window.
+                # That is when a slot actually frees: the list is ordered oldest
+                # first, so this is the soonest moment the next request can be
+                # served, and it is the one fact the client cannot compute for
+                # itself. Rounded up, because truncating 0.4 s to 0 invites a
+                # retry that is guaranteed to be rejected again.
+                retry_after = max(
+                    1, math.ceil(timestamps[0] + self.window - now)
+                )
+                logger.warning(
+                    "Rate limit hit for IP: %s (%d in window, retry in %ds)",
+                    client_ip,
+                    len(timestamps),
+                    retry_after,
+                )
                 return JSONResponse(
                     status_code=429,
                     content={
                         "detail": "Too many requests. Please wait before trying again."
                     },
+                    headers={"Retry-After": str(retry_after)},
                 )
 
             timestamps.append(now)

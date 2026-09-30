@@ -145,7 +145,16 @@ class TestRateLimiterIsolation:
 
     @staticmethod
     def _client_with_limiter(max_requests: int):
-        """A real app with the real middleware and a route the limiter protects."""
+        """A real app with the real middleware and a route the limiter protects.
+
+        The route is a TURN (``POST /api/conversation/{id}/message``), not
+        ``/api/health``. Health, the config read and the context panel are now
+        exempt from the limiter on purpose -- they are interface reads, not the
+        recruiter's questions -- so a health route here would no longer be
+        charged and the keying could not be observed at all. The paths and
+        verbs mirror ``backend/routers/``, because the exemption is decided from
+        the path and a friendly invented path would test nothing real.
+        """
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
 
@@ -154,9 +163,9 @@ class TestRateLimiterIsolation:
         app = FastAPI()
         app.add_middleware(RateLimitMiddleware, max_requests=max_requests)
 
-        @app.get("/api/health")
-        def health():
-            return {"ok": True}
+        @app.post("/api/conversation/{conversation_id}/message")
+        def message(conversation_id: str):
+            return {"answer": "ok"}
 
         return TestClient(app), resolve_client_ip(
             make_request(PRIVATE_CLIENT)
@@ -174,8 +183,8 @@ class TestRateLimiterIsolation:
         client, _ = self._client_with_limiter(max_requests=100)
 
         for value in ("9.9.9.1", "9.9.9.2", "9.9.9.3"):
-            response = client.get(
-                "/api/health",
+            response = client.post(
+                "/api/conversation/c1/message",
                 headers={"X-Forwarded-For": f"{value}, {PRIVATE_CLIENT}"},
             )
             assert response.status_code == 200, (
@@ -206,8 +215,8 @@ class TestRateLimiterIsolation:
         client, _ = self._client_with_limiter(max_requests=10)
 
         statuses = [
-            client.get(
-                "/api/health",
+            client.post(
+                "/api/conversation/c1/message",
                 headers={"X-Forwarded-For": f"9.9.9.{index}, {PRIVATE_CLIENT}"},
             ).status_code
             for index in range(12)
