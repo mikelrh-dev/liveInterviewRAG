@@ -75,6 +75,15 @@ never has to guess which vector space a number belongs to:
 Both populations were measured through the production path -- the real loader,
 the real 400/50 chunker, real embeddings, real ``expand_query``, strict
 primary-gold-page matching at ``top_k=3``.
+
+BECAUSE THE CORPUS HAS TWO STATES, THE COMMENTS DO TOO
+-----------------------------------------------------
+``Measurement`` covers the recall floor. The corpus-SHAPE figures the shipped
+comments publish -- chunk count, matrix shape, what the threshold filter costs
+a caller -- are recorded per population in ``CommentFigures`` below, because
+they differ between the two checkouts (124 chunks against 116). A comment
+naming only one of them describes a corpus the other checkout does not have,
+which is how ``tests/test_recall_claims.py`` came to fail on a clean clone.
 """
 
 from __future__ import annotations
@@ -388,6 +397,119 @@ MEASURED_REDUCED = Measurement(
 )
 
 MEASUREMENTS: Tuple[Measurement, ...] = (MEASURED_FULL, MEASURED_REDUCED)
+
+
+# ── The figures the two shipped comments publish, per population ────────────
+#
+# WHY THIS IS NOT ``Measurement`` DOING THE JOB
+# --------------------------------------------
+# A ``Measurement`` owns a recall figure and the floor derived from it. The
+# comments in ``backend/config.py`` and ``backend/services/rag.py`` publish more
+# than recall: a chunk count, a matrix shape, and the share the threshold filter
+# costs a caller. Those are corpus-SHAPE facts, so they differ between the two
+# populations exactly as recall does -- 124 chunks against 116, a 49 x 124
+# matrix against 41 x 116, 959 discarded results against 720.
+#
+# Before this existed, those comments named the full population's figures and
+# nothing else, while describing themselves as measured on "the corpus this
+# repository's tests actually load". On a clean clone that sentence is false:
+# the corpus loads 33 pages and 116 chunks. ``tests/test_recall_claims.py``
+# turned red against a simulated clone for exactly that reason -- five
+# assertions binding a comment's number to a live measurement of a population
+# the comment never claimed to describe.
+#
+# So the two populations are recorded here together with the recall
+# measurements they belong to, and both comments publish both. Nothing is
+# relaxed: the same live measurement is bound to the comment in either
+# population, against the figures for THAT population.
+#
+# MEASURED 2026-10-01, same production path as ``MEASURED_FULL``/``MEASURED_REDUCED``
+# (real loader, real 400/50 chunker, real ``expand_query``, strict
+# primary-gold-page matching, counted through ``retrieve()``). The question set
+# is ``resolved_cases`` and the divisor is that population's size, because the
+# eight questions whose gold page a clean clone lacks cannot be scored against a
+# corpus that does not contain it.
+
+
+@dataclass(frozen=True)
+class CommentFigures:
+    """One population's corpus-shape figures, as the shipped comments print them.
+
+    ``filtered``/``unfiltered`` are counts of RESULTS returned by ``retrieve()``
+    at ``top_k`` = twice the chunk count -- the only space the public path can be
+    asked about, and the unit the threshold comment had to be rewritten into.
+    """
+
+    population: str
+    pages: int
+    questions: int
+    recall1: float
+    recall3: float
+    mrr5: float
+    chunks: int
+    filtered: int
+    unfiltered: int
+
+    @property
+    def dropped(self) -> int:
+        return self.unfiltered - self.filtered
+
+    @property
+    def share(self) -> float:
+        """The filter's cost as a share of the unfiltered result count."""
+        return self.dropped / self.unfiltered
+
+    @property
+    def matrix(self) -> str:
+        return f"{self.questions} x {self.chunks}"
+
+
+COMMENT_FIGURES_FULL = CommentFigures(
+    population="full",
+    pages=37,
+    questions=49,
+    recall1=0.7347,
+    recall3=0.8163,
+    mrr5=0.7803,
+    chunks=124,
+    filtered=854,
+    unfiltered=1813,
+)
+
+COMMENT_FIGURES_REDUCED = CommentFigures(
+    population="reduced",
+    pages=33,
+    questions=41,
+    recall1=0.7317,
+    recall3=0.8293,
+    mrr5=0.7935,
+    chunks=116,
+    filtered=633,
+    unfiltered=1353,
+)
+
+COMMENT_FIGURES: Tuple[CommentFigures, ...] = (
+    COMMENT_FIGURES_FULL,
+    COMMENT_FIGURES_REDUCED,
+)
+
+
+def comment_figures_for(
+    documents: Dict[str, str] | None = None,
+) -> Optional[CommentFigures]:
+    """The comment figures calibrated for this exact population, or ``None``.
+
+    A third population is a refusal, for the same reason ``measurement_for`` is
+    one: a figure is a statement about a corpus, and scoring it against a
+    population it was not measured on is the mistake this module exists to stop.
+    """
+    if documents is None:
+        documents = load_documents()
+    n = len(resolved_cases(documents))
+    for figures in COMMENT_FIGURES:
+        if figures.questions == n:
+            return figures
+    return None
 
 #: Convenience aliases for the population most checkouts see. The guard resolves
 #: its measurement through ``measurement_for`` rather than through these, so a

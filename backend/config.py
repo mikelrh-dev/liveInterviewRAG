@@ -98,17 +98,26 @@ class Config:
         # replaced, all-MiniLM-L6-v2, is an ENGLISH model, so every Spanish
         # paraphrase paid for the language gap.
         #
-        # CURRENT — measured 2026-09-29 and re-verified 2026-09-30, on the 49
-        # labelled questions in `tests/real_wiki.py` through the production
-        # path (real loader, real 400/50 chunker, real `expand_query`, strict
-        # primary-gold-page match at top_k=3, one chunk per page):
-        #     recall@1 0.7347 · recall@3 0.8163 · MRR@5 0.7803
-        # 40 of 49 gold pages served, 2 of 49 absent from the ranking entirely.
+        # CURRENT — measured 2026-09-29 and re-verified 2026-09-30, through the
+        # production path (real loader, real 400/50 chunker, real
+        # `expand_query`, strict primary-gold-page match at top_k=3, one chunk
+        # per page), on the labelled questions in `tests/real_wiki.py`.
+        #
+        # TWO POPULATIONS, because `wiki/` has two states. Four FAQ pages
+        # (`nivel-ingles`, `disponibilidad`, `hobbies-intereses`,
+        # `por-que-contratarte`) exist on disk and are NOT in the index, so a
+        # clean clone scores 41 of the 49 labelled questions, not 49. Publishing
+        # only the 49-question figures made this comment describe a corpus a
+        # clone does not have:
+        #     full (37 pages, 49 questions) recall@1 0.7347 · recall@3 0.8163 · MRR@5 0.7803
+        #     reduced (33 pages, 41 questions) recall@1 0.7317 · recall@3 0.8293 · MRR@5 0.7935
+        # On the full population 40 of 49 gold pages are served, 2 of 49
+        # absent from the ranking entirely.
         # Four things differ from the 2026-08-28 English baseline and none of
         # them is the embedder alone: this model, the page-identity prefix on
         # the embedded text, the one-chunk-per-page cut, and the bodyless-
-        # heading filter. `tests/real_wiki.py::MEASURED_FULL` owns the recall@3
-        # and is what enforces it; this comment is checked against it and
+        # heading filter. `tests/real_wiki.py::CommentFigures` owns both rows
+        # and is what enforces them; this comment is checked against them and
         # against a fresh measurement by
         # `tests/test_recall_claims.py::TestTheRAGCommentsQuoteTheCurrentMeasurement`.
         #

@@ -1493,10 +1493,10 @@ class TestRetrievalRegressionGuard:
         Two populations, two floors, and the run says which one it used:
 
           * ``full``    49 questions -- the author's working tree, where four
-            FAQ pages exist on disk. Measured 32/49 = 0.6531, floor 0.6122.
+            FAQ pages exist on disk. Measured 40/49 = 0.8163, floor 0.7755.
           * ``reduced`` 41 questions -- what ``actions/checkout`` produces, since
-            those four pages are not in the index. Measured 27/41 = 0.6585,
-            floor 0.6098.
+            those four pages are not in the index. Measured 34/41 = 0.8293,
+            floor 0.7805.
 
         A third population is a refusal, not a fallback: see ``measurement_for``.
         The report below prints the corpus, the chunker, the embedder, the
@@ -1923,7 +1923,7 @@ class TestTheRetrievalGuardActuallyRan:
 
         A clean clone legitimately resolves 41 of the 49 labels: four FAQ pages
         are on disk and not in the index. That is a calibrated population with
-        its own measured floor (27/41), not a broken checkout. What must never
+        its own measured floor (34/41), not a broken checkout. What must never
         be allowed is a THIRD population -- 45, 43, anything -- scored against
         somebody else's floor.
         """

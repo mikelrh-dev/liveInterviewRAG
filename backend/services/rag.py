@@ -468,19 +468,26 @@ class RAGPipeline:
         self.chunk_overlap = chunk_overlap
         # Minimum cosine a chunk needs to be returned at all.
         #
-        # MEASURED on the corpus this repository's tests actually load --
-        # the real ``wiki/`` (124 chunks at 400/50), the 49 labelled questions
-        # in ``tests/real_wiki.py``, real ``expand_query``. The guard that
-        # holds this number is
+        # MEASURED on the real ``wiki/`` through the production path (real
+        # loader, real ``expand_query``), on the labelled questions in
+        # ``tests/real_wiki.py``. The guard that holds this number is
         # ``tests/test_rag.py::TestRetrievalThresholdIsHonest``; read it before
         # changing this value, and re-derive its floors rather than adjusting
         # them. A floor that keeps its value while its corpus changes is not a
         # floor.
         #
-        # It is not inert. Over the 49 x 124 (question, chunk) matrix this
-        # default discards most of the candidate pool, and because the filter
-        # runs BEFORE the ``top_k`` slice it changes what a caller receives
-        # whenever fewer than ``top_k`` chunks clear it. The earlier claim that
+        # `wiki/` has TWO states, so the corpus-shape figures below come in
+        # two. Four FAQ pages are on disk and not in the index, so a clean
+        # clone loads 33 pages and chunks to 116 at 400/50, not 37 and 124.
+        # Both are measured; `tests/real_wiki.py::CommentFigures` owns them and
+        # `tests/test_recall_claims.py` binds the row matching the checkout.
+        #     full (37 pages, 49 questions) 124 chunks, 49 x 124 (question, chunk)
+        #     reduced (33 pages, 41 questions) 116 chunks, 41 x 116 (question, chunk)
+        #
+        # It is not inert. Over that (question, chunk) matrix this default
+        # discards most of the candidate pool, and because the filter runs
+        # BEFORE the ``top_k`` slice it changes what a caller receives whenever
+        # fewer than ``top_k`` chunks clear it. The earlier claim that
         # "the lowest top-1 cosine is 0.414, so the filter never removes
         # anything" was an inference from the best chunk per question, not a
         # measurement of the filter: 0.414 is a top-1 statistic, and the minimum
@@ -507,24 +514,25 @@ class RAGPipeline:
         # starvation is not a default, it is a coincidence.
         #
         # WHAT THE FILTER COSTS, in one unit. At ``top_k`` = twice the chunk
-        # count the 49 labelled questions return 854 results with the filter
-        # and 1813 without, so at 0.25 the filter discards 959 of the 1813
-        # results -- 52.9% -- and at the shipped top_k=3 it costs the caller
-        # nothing at all, which is the fact the two numbers together say: a wide
-        # filter that is invisible until a question runs thin.
+        # count, the labelled questions return these counts of RESULTS:
+        #     full (37 pages, 49 questions) discards 959 of the 1813 results (52.9%) -- 854 results with the filter and 1813 without
+        #     reduced (33 pages, 41 questions) discards 720 of the 1353 results (53.2%) -- 633 results with the filter and 1353 without
+        # and at the shipped top_k=3 it costs the caller nothing at all, which
+        # is the fact the two numbers together say: a wide filter that is
+        # invisible until a question runs thin.
         #
         # Both counts are counts of RESULTS, which is the only space
         # ``retrieve()`` can be asked about, and they are bounded by the page
-        # count (37) rather than the chunk count. Over the raw cosine cells the
+        # count rather than the chunk count. Over the raw cosine cells the
         # filter drops before deduplication the same threshold discards 4100 of
-        # 6076 (question, chunk) pairs, 67.5% -- that is how many candidates it
-        # ever sees, and it is a different question from how much the caller
-        # loses. This sentence used to read "956 of 6125 pairs, 15.6%": 956 was
-        # deduplicated results and 6125 was raw cosine cells, so the ratio was a
-        # percentage of nothing, and both numbers described a 125-chunk corpus
-        # this repository stopped shipping.
-        # ``tests/test_recall_claims.py`` now checks the two counts, their share
-        # and the chunk count against a live measurement.
+        # 6076 (question, chunk) pairs, 67.5% on the full population -- that is
+        # how many candidates it ever sees, and it is a different question from
+        # how much the caller loses. This sentence used to read "956 of 6125
+        # pairs, 15.6%": 956 was deduplicated results and 6125 was raw cosine
+        # cells, so the ratio was a percentage of nothing, and both numbers
+        # described a 125-chunk corpus this repository stopped shipping.
+        # ``tests/test_recall_claims.py`` now checks each population's two
+        # counts, their share and its chunk count against a live measurement.
         self.threshold = threshold
         self.chunks: List[Chunk] = []
         self._embedder = None

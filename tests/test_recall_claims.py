@@ -16,6 +16,29 @@ description of the shipping one. The re-measured state, in
 ``tests/real_wiki.py::MEASURED_FULL`` and re-verified here, is recall@1 0.7347,
 recall@3 0.8163, MRR@5 0.7803.
 
+THE SECOND DEFECT: ONE POPULATION WAS PUBLISHED AS IF THERE WERE ONE
+------------------------------------------------------------------
+Those figures describe a checkout with 37 pages and 124 chunks. A clean clone
+has neither: four FAQ pages are on disk and not in the index, so it loads 33
+pages, chunks to 116, and resolves 41 of the 49 labelled questions. This file
+was population-blind -- it scored all 49 questions, divided by 49, and compared
+the result against comments that named the full population. Run against a
+simulated clone it produced five failures, every one of them this:
+
+    the comment describes a corpus of 124 chunks; _chunk_document at 400/50
+    produces 116 on this wiki/ today
+
+which is a true observation about a comment that is the thing at fault. The
+comments claimed to be measured on "the corpus this repository's tests actually
+load" while publishing one checkout's figures, so on any other checkout they
+described a corpus that is not there.
+
+So both comments now publish BOTH populations, and this guard resolves which
+population the checkout produced and binds that row against a live measurement.
+Nothing is skipped and nothing is relaxed: the same assertions run in either
+population, against the figures for that population, and
+``tests/real_wiki.py::CommentFigures`` is where the rows are recorded.
+
 The same failure, in the same comments, is a NUMBER WITH THE WRONG UNIT. The
 threshold block in ``RAGPipeline.__init__`` said the 0.25 filter "discards 956 of
 6125 pairs, 15.6%". 956 is a count of DEDUPLICATED results -- what
@@ -35,8 +58,9 @@ to the words around them) rather than by line number.
 
 WHAT IS AND IS NOT PINNED
 -------------------------
-Pinned: every figure the comments present as the CURRENT state, plus the
-structure that keeps the historical figures from being read as current.
+Pinned: every figure the comments present as the CURRENT state, for EVERY
+population the comments publish, plus the structure that keeps the historical
+figures from being read as current.
 
 Not pinned: the historical figures' VALUES. They are the record of a decision
 that is not being re-litigated, and the guard's job is to make sure they are
@@ -57,10 +81,14 @@ import pytest
 from tests.real_wiki import (
     CHUNK_OVERLAP,
     CHUNK_SIZE,
+    COMMENT_FIGURES,
     LABELLED_CASES,
-    MEASURED_FULL,
+    CommentFigures,
+    comment_figures_for,
     guard_blocker,
     load_documents,
+    measurement_for,
+    resolved_cases,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -140,8 +168,57 @@ def _figure(section: str, pattern: str) -> float:
     return float(match.group(1))
 
 
+def _population_row(block: str, figures: CommentFigures) -> str:
+    """The line a comment publishes ``figures``' population on.
+
+    Located by the population's own name rather than by position, because the
+    whole point of the fix is that the two rows are peers: picking the first
+    one that parses is the defect that let a single population speak for both.
+    """
+    rows = [
+        line
+        for line in (
+            re.sub(r"^[ \t]*#[ \t]?", "", raw).strip()
+            for raw in block.splitlines()
+        )
+        if line.startswith(f"{figures.population} (")
+    ]
+    assert rows, (
+        f"no line in this comment starts with {figures.population!r} + '(' -- "
+        f"so the {figures.questions}-question population's figures are not "
+        f"published at all, and a reader on that checkout has nothing to check "
+        f"against. Both populations must be printed:\n\n{block}"
+    )
+    return "\n".join(rows)
+
+
 @pytest.fixture(scope="module")
-def measured() -> dict:
+def figures() -> CommentFigures:
+    """The population THIS checkout produced, and the figures recorded for it."""
+    documents = load_documents()
+
+    blocker = guard_blocker(documents)
+    assert blocker is None, (
+        f"the real-corpus measurement cannot be made: {blocker} The figures "
+        "in the comments under test are therefore unverifiable here."
+    )
+
+    population = len(resolved_cases(documents))
+    recorded = comment_figures_for(documents)
+    assert recorded is not None, (
+        f"this checkout resolves {population} labelled questions, a population "
+        f"this guard has no recorded comment figures for. The comment rows live "
+        f"in tests/real_wiki.py::CommentFigures, which is calibrated for "
+        f"{[f.questions for f in COMMENT_FIGURES]}. Re-measure on the population "
+        f"that remains and add a CommentFigures for it -- do not point this "
+        f"checkout at another population's numbers, and do not delete the "
+        f"questions: they were written against the real pages."
+    )
+    return recorded
+
+
+@pytest.fixture(scope="module")
+def measured(figures: CommentFigures) -> dict:
     """Every figure the two comments publish, re-derived through production.
 
     Module-scoped because embedding the corpus costs ~100s, and read through
@@ -150,13 +227,16 @@ def measured() -> dict:
     through the public path is the raw cosine MATRIX, which is why the threshold
     comment's counts are required to be counts of results -- the space
     ``retrieve()`` can actually be asked about.
+
+    The question set is ``resolved_cases`` and the divisor is that population's
+    size. Scoring all 49 questions and dividing by 49 is what this fixture used
+    to do, and against a clean clone it silently turned 8 unanswerable
+    questions into 8 misses: it reported 0.6939 where the population's recall@3
+    is 0.8293, and then failed the very comments it was meant to defend.
     """
     documents = load_documents()
-    blocker = guard_blocker(documents)
-    assert blocker is None, (
-        f"the real-corpus measurement cannot be made: {blocker} The figures "
-        "in the comments under test are therefore unverifiable here."
-    )
+    cases = resolved_cases(documents)
+    questions = len(cases)
 
     from backend.services.rag import RAGPipeline
 
@@ -168,11 +248,8 @@ def measured() -> dict:
 
     recall1 = recall3 = 0
     reciprocal_rank = 0.0
-    for case in LABELLED_CASES:
-        sources = [
-            norm(c.source)
-            for c, _ in rag.retrieve(case.question, top_k=MEASURED_FULL.questions)
-        ]
+    for case in cases:
+        sources = [norm(c.source) for c, _ in rag.retrieve(case.question, top_k=questions)]
         rank = sources.index(case.primary) + 1 if case.primary in sources else None
         recall1 += rank == 1
         recall3 += rank is not None and rank <= 3
@@ -186,22 +263,19 @@ def measured() -> dict:
     shipped = rag.threshold
     try:
         rag.threshold = shipped
-        filtered = sum(
-            len(rag.retrieve(c.question, top_k=deeper)) for c in LABELLED_CASES
-        )
+        filtered = sum(len(rag.retrieve(c.question, top_k=deeper)) for c in cases)
         rag.threshold = -1.0
-        unfiltered = sum(
-            len(rag.retrieve(c.question, top_k=deeper)) for c in LABELLED_CASES
-        )
+        unfiltered = sum(len(rag.retrieve(c.question, top_k=deeper)) for c in cases)
     finally:
         rag.threshold = shipped
 
     return {
+        "population": figures.population,
         "chunks": len(rag.chunks),
-        "questions": len(LABELLED_CASES),
-        "recall1": recall1 / len(LABELLED_CASES),
-        "recall3": recall3 / len(LABELLED_CASES),
-        "mrr5": reciprocal_rank / len(LABELLED_CASES),
+        "questions": questions,
+        "recall1": recall1 / questions,
+        "recall3": recall3 / questions,
+        "mrr5": reciprocal_rank / questions,
         "filtered": filtered,
         "unfiltered": unfiltered,
         "dropped": unfiltered - filtered,
@@ -209,13 +283,23 @@ def measured() -> dict:
 
 
 @pytest.fixture(scope="module")
-def embedder_prose() -> str:
-    return _prose(_block(CONFIG_PY, EMBEDDER_ANCHOR))
+def embedder_block() -> str:
+    return _block(CONFIG_PY, EMBEDDER_ANCHOR)
 
 
 @pytest.fixture(scope="module")
-def threshold_prose() -> str:
-    return _prose(_block(RAG_PY, THRESHOLD_ANCHOR))
+def threshold_block() -> str:
+    return _block(RAG_PY, THRESHOLD_ANCHOR)
+
+
+@pytest.fixture(scope="module")
+def embedder_prose(embedder_block: str) -> str:
+    return _prose(embedder_block)
+
+
+@pytest.fixture(scope="module")
+def threshold_prose(threshold_block: str) -> str:
+    return _prose(threshold_block)
 
 
 @pytest.mark.skipif(
@@ -228,58 +312,92 @@ def threshold_prose() -> str:
     ),
 )
 class TestTheRAGCommentsQuoteTheCurrentMeasurement:
-    """The figures two comments publish, against the code that produces them."""
+    """The figures two comments publish, against the code that produces them.
 
-    def test_the_current_recall3_is_the_measured_one(self, measured, embedder_prose):
-        current = _section(embedder_prose, "CURRENT", "HISTORY")
-        stated = _figure(current, r"recall@3\s+([\d.]+)")
+    Every assertion below is population-scoped. It reads the row for the
+    population THIS checkout produced and binds it to a live measurement of
+    that same population, so the same strength of check applies in a 37-page
+    working tree and in a 33-page clean clone.
+    """
 
-        assert stated == pytest.approx(MEASURED_FULL.recall3, abs=0.0005), (
-            f"the comment's CURRENT recall@3 is {stated}, measured "
-            f"{MEASURED_FULL.recall3:.4f} ({MEASURED_FULL.hits}/"
-            f"{MEASURED_FULL.questions}). tests/real_wiki.py::MEASURED_FULL owns "
-            "that number; re-derive it there and re-measure, do not edit this "
-            "comment to match a figure nobody re-ran."
+    def test_the_recall_floor_record_and_the_comment_row_agree(self, figures):
+        """The two records in ``real_wiki.py`` must not drift apart.
+
+        ``Measurement`` owns the recall floor; ``CommentFigures`` owns the
+        figures the comments print. Nothing keeps them consistent but this, and
+        a reader who finds two different recall@3 values for the same
+        population has been handed a coin flip.
+        """
+        measurement = measurement_for(load_documents())
+        assert measurement is not None, (
+            "measurement_for refused this population, so there is no floor "
+            "record to compare the comment figures against."
+        )
+
+        assert measurement.questions == figures.questions
+        assert figures.recall3 == pytest.approx(measurement.recall3, abs=0.0005), (
+            f"CommentFigures({figures.population}).recall3 is "
+            f"{figures.recall3:.4f} while Measurement({measurement.name}) is "
+            f"{measurement.recall3:.4f} ({measurement.hits}/"
+            f"{measurement.questions}). One of them is stale."
+        )
+
+    def test_the_current_recall3_is_the_measured_one(
+        self, measured, figures, embedder_block
+    ):
+        row = _population_row(embedder_block, figures)
+        stated = _figure(row, r"recall@3\s+([\d.]+)")
+
+        assert stated == pytest.approx(measured["recall3"], abs=0.0005), (
+            f"the comment's {figures.population} recall@3 is {stated}, measured "
+            f"{measured['recall3']:.4f} on {measured['questions']} questions. "
+            "tests/real_wiki.py::CommentFigures owns that number; re-derive it "
+            "there and re-measure, do not edit this comment to match a figure "
+            "nobody re-ran."
+        )
+        assert stated == pytest.approx(figures.recall3, abs=0.0005), (
+            f"the comment states {stated} for the {figures.population} "
+            f"population; real_wiki.py records {figures.recall3:.4f}."
         )
 
     def test_the_current_recall1_and_mrr5_are_the_measured_ones(
-        self, measured, embedder_prose
+        self, measured, figures, embedder_block
     ):
-        current = _section(embedder_prose, "CURRENT", "HISTORY")
+        row = _population_row(embedder_block, figures)
 
-        assert _figure(current, r"recall@1\s+([\d.]+)") == pytest.approx(
+        assert _figure(row, r"recall@1\s+([\d.]+)") == pytest.approx(
             measured["recall1"], abs=0.0005
         ), (
-            f"the comment's CURRENT recall@1 disagrees with the measured "
-            f"{measured['recall1']:.4f}"
+            f"the comment's {figures.population} recall@1 disagrees with the "
+            f"measured {measured['recall1']:.4f}"
         )
-        assert _figure(current, r"MRR@5\s+([\d.]+)") == pytest.approx(
+        assert _figure(row, r"MRR@5\s+([\d.]+)") == pytest.approx(
             measured["mrr5"], abs=0.0005
         ), (
-            f"the comment's CURRENT MRR@5 disagrees with the measured "
-            f"{measured['mrr5']:.4f}"
+            f"the comment's {figures.population} MRR@5 disagrees with the "
+            f"measured {measured['mrr5']:.4f}"
         )
 
     def test_no_current_figure_contradicts_the_measurement(
-        self, measured, embedder_prose
+        self, measured, figures, embedder_block
     ):
-        """Every ``recall@k`` in the CURRENT section, whatever its k.
+        """Every ``recall@k`` on this population's row, whatever its k.
 
         Written as a scan rather than as three named assertions so a fourth
         metric quoted in this comment is checked the day it is added, instead of
         being the one nobody pinned.
         """
-        current = _section(embedder_prose, "CURRENT", "HISTORY")
+        row = _population_row(embedder_block, figures)
         known = {
             "1": measured["recall1"],
             "3": measured["recall3"],
         }
 
-        quoted = dict(re.findall(r"(recall@\d|MRR@\d)\s+([\d.]+)", current))
+        quoted = dict(re.findall(r"(recall@\d|MRR@\d)\s+([\d.]+)", row))
         assert quoted, (
-            "the CURRENT section quotes no measurement, so the signpost exists "
-            "but says nothing. Either state the current figures or drop the "
-            f"signpost. Section was:\n{current}"
+            "the CURRENT row quotes no measurement, so the population is named "
+            "but its figures are not published. Either state them or drop the "
+            f"row. Row was:\n{row}"
         )
         for metric, value in quoted.items():
             k = metric.split("@")[1]
@@ -293,10 +411,25 @@ class TestTheRAGCommentsQuoteTheCurrentMeasurement:
                 )
                 expected = known[k]
             assert float(value) == pytest.approx(expected, abs=0.0005), (
-                f"the comment states {metric} {value}; measured {expected:.4f}. "
-                "A figure that contradicts the measurement is the defect this "
-                "file exists to prevent."
+                f"the comment states {metric} {value} for the {figures.population} "
+                f"population; measured {expected:.4f}. A figure that contradicts "
+                "the measurement is the defect this file exists to prevent."
             )
+
+    def test_every_population_is_published_by_both_comments(
+        self, figures, embedder_block, threshold_block
+    ):
+        """Both comments must print BOTH populations, not just this checkout's.
+
+        The regression this pins is a comment that has drifted back to naming one
+        corpus. It passes everywhere it is being read -- the author's own
+        checkout, where that one corpus is the one on disk -- and fails only on
+        someone else's, which is exactly the population that has no way to check
+        the figure and no reason to know it is the wrong one.
+        """
+        for figures_set in COMMENT_FIGURES:
+            for block in (embedder_block, threshold_block):
+                _population_row(block, figures_set)
 
     def test_the_current_section_is_dated(self, embedder_prose):
         current = _section(embedder_prose, "CURRENT", "HISTORY")
@@ -344,30 +477,43 @@ class TestTheRAGCommentsQuoteTheCurrentMeasurement:
 
     # ── the threshold comment in backend/services/rag.py ─────────────────────
 
-    def test_the_chunk_count_is_this_corpus_chunk_count(self, measured, threshold_prose):
-        stated = _figure(threshold_prose, r"(\d+)\s+chunks")
+    def test_the_chunk_count_is_this_corpus_chunk_count(
+        self, measured, figures, threshold_block
+    ):
+        row = _population_row(threshold_block, figures)
+        stated = _figure(row, r"(\d+)\s+chunks")
 
         assert int(stated) == measured["chunks"], (
-            f"the comment describes a corpus of {int(stated)} chunks; "
-            f"_chunk_document at {CHUNK_SIZE}/{CHUNK_OVERLAP} produces "
-            f"{measured['chunks']} on this wiki/ today. A comment that names a "
-            "corpus the repository does not ship is worse than no comment, "
-            "because the next reader cannot tell it is stale."
+            f"the comment describes a {figures.population} corpus of "
+            f"{int(stated)} chunks; _chunk_document at {CHUNK_SIZE}/"
+            f"{CHUNK_OVERLAP} produces {measured['chunks']} on this wiki/ today. "
+            "A comment that names a corpus the checkout does not have is worse "
+            "than no comment, because the next reader cannot tell it is stale."
+        )
+        assert int(stated) == figures.chunks, (
+            f"the comment states {int(stated)} chunks for the {figures.population} "
+            f"population; real_wiki.py records {figures.chunks}."
         )
 
-    def test_the_matrix_is_questions_times_that_chunk_count(self, measured, threshold_prose):
-        match = re.search(r"(\d+)\s*x\s*(\d+)\s*\(question,\s*chunk\)", threshold_prose)
+    def test_the_matrix_is_questions_times_that_chunk_count(
+        self, measured, figures, threshold_block
+    ):
+        row = _population_row(threshold_block, figures)
+        match = re.search(r"(\d+)\s*x\s*(\d+)\s*\(question,\s*chunk\)", row)
         assert match is not None, (
             "the comment must name the shape of the matrix it measured over, as "
-            "'49 x 124 (question, chunk)', so the pool size is checkable. "
-            f"Comment was:\n{threshold_prose}"
+            f"'{figures.matrix} (question, chunk)', so the pool size is "
+            f"checkable. Row was:\n{row}"
         )
         questions, chunks = int(match.group(1)), int(match.group(2))
 
         assert questions == measured["questions"]
         assert chunks == measured["chunks"]
+        assert questions == figures.questions
 
-    def test_the_filtered_pair_counts_share_one_unit(self, measured, threshold_prose):
+    def test_the_filtered_pair_counts_share_one_unit(
+        self, measured, figures, threshold_block
+    ):
         """Numerator and denominator must be counts of the SAME thing.
 
         The defect this pins: "956 of 6125 pairs" put a count of deduplicated
@@ -375,18 +521,19 @@ class TestTheRAGCommentsQuoteTheCurrentMeasurement:
         statement about what the filter costs a caller; 15.6% of 6125 was not a
         statement about anything.
         """
+        row = _population_row(threshold_block, figures)
         quoted = re.search(
-            r"discards\s+(\d+)\s+of\s+(?:the\s+)?(\d+)\s+results", threshold_prose
+            r"discards\s+(\d+)\s+of\s+(?:the\s+)?(\d+)\s+results", row
         )
         assert quoted is not None, (
             "the comment must state the filter's cost as 'discards N of the M "
-            "results', both counted as results returned by retrieve(). Comment "
-            f"was:\n{threshold_prose}"
+            "results', both counted as results returned by retrieve(). Row "
+            f"was:\n{row}"
         )
 
         assert int(quoted.group(1)) == measured["dropped"], (
-            f"the comment says the filter discards {quoted.group(1)} results; "
-            f"measured {measured['dropped']} "
+            f"the comment says the {figures.population} filter discards "
+            f"{quoted.group(1)} results; measured {measured['dropped']} "
             f"({measured['unfiltered']} unfiltered - {measured['filtered']} "
             "filtered, at top_k=2x the chunk count)"
         )
@@ -402,11 +549,11 @@ class TestTheRAGCommentsQuoteTheCurrentMeasurement:
         # An inverted sentence passes every other check here, because none of them
         # reads it -- the ratio is right and the two clauses around it are swapped.
         narration = re.search(
-            r"(\d+)\s+results with the filter\s+and\s+(\d+)\s+without", threshold_prose
+            r"(\d+)\s+results with the filter\s+and\s+(\d+)\s+without", row
         )
         assert narration is not None, (
             "the comment must narrate both runs as 'N results with the filter and "
-            f"M without'. Comment was:\n{threshold_prose}"
+            f"M without'. Row was:\n{row}"
         )
         assert int(narration.group(1)) == measured["filtered"], (
             f"the comment says {narration.group(1)} results WITH the filter; the "
@@ -419,18 +566,23 @@ class TestTheRAGCommentsQuoteTheCurrentMeasurement:
         )
 
     def test_the_stated_share_follows_from_the_stated_counts(
-        self, measured, threshold_prose
+        self, measured, figures, threshold_block
     ):
+        row = _population_row(threshold_block, figures)
         quoted = re.search(
             r"discards\s+(\d+)\s+of\s+(?:the\s+)?(\d+)\s+results[^.]*?([\d.]+)\s*%",
-            threshold_prose,
+            row,
         )
         assert quoted is not None, (
             "the comment must state the share alongside the two counts, so the "
-            "arithmetic is checkable"
+            f"arithmetic is checkable. Row was:\n{row}"
         )
 
-        dropped, total, share = int(quoted.group(1)), int(quoted.group(2)), float(quoted.group(3))
+        dropped, total, share = (
+            int(quoted.group(1)),
+            int(quoted.group(2)),
+            float(quoted.group(3)),
+        )
         assert share == pytest.approx(100 * dropped / total, abs=0.05), (
             f"the comment states {dropped} of {total} results and then {share}%, "
             f"which is {100 * dropped / total:.2f}%. A percentage that does not "
