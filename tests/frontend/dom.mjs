@@ -166,6 +166,12 @@ export function baseState(overrides = {}) {
         skippedChunkIds: new Set(),
         isAudioPlaying: false,
         allChunksReceived: false,
+        // Whether the missing-LLM-key notice has already been written into the
+        // transcript. `warnIfNoLLMCredential` reads and writes it, and the
+        // notice is rendered permanently, so a lifted body without this
+        // binding would either throw or re-render the message on every config
+        // load. Declared here for the same reason as every other name above.
+        llmCredentialWarningShown: false,
         // The real default is `createTurnNarrator()` -- a narrator with no hooks,
         // which writes nothing. Reproduced as its shape rather than built by the
         // factory, because createTurnNarrator is only on the window when a test

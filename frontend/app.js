@@ -560,6 +560,7 @@ async function populateStaticSidebar() {
             setText("sidebar-llm", `LLM: ${cfg.llm_model.split("/").pop()}`);
         if (cfg.google_model)
             setText("sidebar-google", `Google: ${cfg.google_model}`);
+        warnIfNoLLMCredential(cfg);
     } catch (e) {
         console.warn("Could not load /api/config:", e);
         setText("sidebar-tts", "TTS: —");
@@ -567,6 +568,50 @@ async function populateStaticSidebar() {
         setText("sidebar-llm", "LLM: —");
         setText("sidebar-google", "Google: —");
     }
+}
+
+// Shown once per page load, and only when the server says no key is set.
+//
+// WHY THIS IS NOT A BOOT ERROR ON THE SERVER
+// ------------------------------------------
+// Neither provider key is validated at startup -- `backend/config.py:55-56`
+// both default to empty -- so a fresh clone with an unedited `.env` starts
+// perfectly and then fails its FIRST TURN with a provider error whose text
+// names a quota, a model or a 400, and never the one fact that would have
+// explained it. The reader is told to configure a key in the README, at line
+// 251, roughly 200 lines above the button they just pressed.
+//
+// So the page asks, on a request it was already making, and the server answers
+// with a BOOLEAN. `GET /api/config` never sees a key, echoes one, hashes one
+// or logs one: it reports whether at least one provider is configured, which is
+// the fact the UI needs and nothing more.
+//
+// WHY A CONVERSATION MESSAGE AND NOT A MODAL
+// -----------------------------------------
+// A modal would hide the interface, and the interface is not the thing that is
+// broken -- the missing credential is. It also cannot be dismissed into
+// correctness: the reader still has to go and set the variable. A message in
+// the transcript sits where the first turn's failure would have appeared, so
+// the cause is read next to the symptom it prevents, and it survives scrolling
+// instead of vanishing on click.
+//
+// Only `=== false` warns. An absent field means an older server, not a
+// missing key, and inventing a credential error out of a schema it does not
+// know would be the same defect as printing a latency nobody measured.
+let llmCredentialWarningShown = false;
+
+function warnIfNoLLMCredential(cfg) {
+    if (llmCredentialWarningShown) return;
+    if (cfg.llm_configured !== false) return;
+    llmCredentialWarningShown = true;
+
+    addMessage(
+        "error",
+        "No hay clave de LLM configurada: el asistente no podrá responder hasta " +
+            "que pongas GOOGLE_API_KEY o OPENROUTER_API_KEY en el fichero .env " +
+            "(cualquiera de las dos sirve; Google AI se intenta primero). " +
+            "Reinicia el backend después de editarla.",
+    );
 }
 
 /**

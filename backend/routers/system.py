@@ -114,6 +114,15 @@ async def get_config():
     the value costs one request that was being made anyway -- and a limit
     published in two places is a limit that will eventually disagree with
     itself.
+
+    ``llm_configured`` earns its place for the same reason. Neither LLM key is
+    validated at startup (``backend/config.py:55-56`` both default to empty), so
+    a clone with no key in ``.env`` boots cleanly and then fails its FIRST turn
+    with a provider error that says nothing about the actual cause. The page can
+    only tell the user before that turn if the server tells it, and it can only
+    be told the fact, never the credential: this is a boolean, and a boolean is
+    the whole of what crosses the wire. Nothing here reads, echoes, hashes or
+    logs a key.
     """
     return {
         "tts_voice": config.TTS_VOICE,
@@ -124,4 +133,9 @@ async def get_config():
         "rag_top_k": config.RAG_TOP_K,
         "max_tokens": config.LLM_MAX_TOKENS,
         "max_audio_duration": config.MAX_AUDIO_DURATION,
+        # True when at least one provider has a key. Google AI is tried first
+        # and OpenRouter is the fallback, so EITHER one is enough to answer --
+        # which is exactly what the sidebar has been implying by printing two
+        # model names.
+        "llm_configured": bool(config.GOOGLE_API_KEY or config.OPENROUTER_API_KEY),
     }

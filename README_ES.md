@@ -256,7 +256,13 @@ cp .env.example .env
 #                       no está o lanza
 # Ninguna se valida al arrancar (ambas por defecto vacías, backend/config.py:55-56),
 # así que una key que falte o sea incorrecta aparece como un turno fallido,
-# no como un error de arranque.
+# no como un error de arranque. Que falte no es silencioso, eso sí: GET /api/config
+# publica un booleano que dice si hay algún proveedor configurado, y la página lo
+# dice en la transcripción nada más cargar — antes del primer turno, nombrando las
+# dos variables y el fichero que hay que editar. El booleano es todo lo que cruza
+# el cable; no se lee, se hace eco ni se registra ninguna key para calcularlo. Una
+# key que esté puesta pero sea INCORRECTA sigue fallando su primer turno, porque
+# nada de aquí puede verificar una credencial sin gastar una petición en ello.
 #
 # TTS_VOICE selecciona la voz de Edge TTS; por defecto es-ES-AlvaroNeural.
 # Deliberadamente no hay clave HOST -- ver "Ejecutar" más abajo.

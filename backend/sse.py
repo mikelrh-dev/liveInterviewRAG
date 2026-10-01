@@ -54,7 +54,7 @@ def sse_keepalive() -> str:
     Per the SSE grammar a line beginning with ``:`` is a comment and is ignored
     by ``EventSource`` and by every hand-rolled reader -- including this
     repository's, which skips any line that does not start with ``data: ``
-    (``frontend/app.js:2579``). So the frame costs 13 bytes, keeps an idle
+    (``frontend/app.js:2624``). So the frame costs 13 bytes, keeps an idle
     connection warm, and requires no client to know it exists.
     """
     return ": keepalive\n\n"

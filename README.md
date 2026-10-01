@@ -253,7 +253,14 @@ cp .env.example .env
 #   OPENROUTER_API_KEY  the fallback provider, used when Google AI is
 #                       absent or raises
 # Neither is validated at startup (both default to empty, backend/config.py:55-56),
-# so a missing or wrong key surfaces as a failed turn, not a boot error.
+# so a missing or wrong key surfaces as a failed turn, not a boot error. A missing
+# key is not silent, though: GET /api/config publishes a boolean saying whether
+# any provider is configured, and the page says so in the transcript as soon as
+# it loads — before the first turn, naming both variables and the file to edit.
+# The boolean is the whole of what crosses the wire; no key is read, echoed or
+# logged to produce it. A key that is present but WRONG still fails its first
+# turn, because nothing here can verify a credential without spending a request
+# on it.
 #
 # TTS_VOICE selects the Edge TTS voice; it defaults to es-ES-AlvaroNeural.
 # There is deliberately no HOST key -- see "Running" below.
