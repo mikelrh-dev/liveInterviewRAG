@@ -13,8 +13,9 @@ reported.
     - error:          {"detail": "..."}               fatal, non-recoverable
                       {"detail": "...", "id": int}    recoverable, per-chunk
     - done:           {"n": int, "has_context": bool} terminal (normal turn)
-                      {"n": int, "has_context": bool,  terminal (truncated
-                       "incomplete": true}              answer, still stored)
+                      {"n": int, "has_context": bool,  terminal (answer the
+                       "incomplete": true}              candidate did not get
+                                                       whole, still stored)
                       {}                              terminal (nothing stored)
     - interview_end:  {"message": "...",              terminal (farewell)
                       "n": int, "has_context": bool}
@@ -37,13 +38,26 @@ the exchange is kept — and ``done`` carries ``incomplete`` so every reader of
 it downstream, the transcript, the report and the page itself, can say that the
 answer stops half way through instead of presenting a fragment as a reply.
 
+``incomplete`` means the answer the candidate heard is not the whole answer, and
+there are two ways that happens. The model stopped generating; or the model
+generated all of it and the synthesiser delivered only part. The second is not a
+rarer edge: ``TTS_CHUNK_FAILED`` is recoverable and the stream continues, so one
+dead sentence among five is an ordinary provider hiccup, and filing that turn
+unmarked is the same defect as a truncated one — a transcript and a report that
+cite every sentence for a candidate who heard a fraction of them. So the mark is
+set whenever synthesis was asked for more than it delivered AND something was
+heard; the two ways it can be true are named in ``errors.py``, next to the
+message the candidate reads when it happens.
+
 Two cases store nothing, and both are about audio rather than text. A provider
 that died before emitting a single token has no answer to keep. And a turn
 whose TTS delivered nothing at all — synthesis was called for and every
 sentence failed — is a dead turn: the tokens are on screen but nothing was
 spoken, and filing it would hand the recruiter a transcript and a report
 claiming an answer that has no voice. It ends on fatal ``TTS_FAILED`` with an
-empty ``done``, exactly as the blocking route's 503 stores nothing.
+empty ``done``, exactly as the blocking route's 503 stores nothing. That is the
+one case the partial rule above deliberately excludes: nothing heard is not a
+short answer, it is no answer, and marking it would spend the flag on a silence.
 
 Each terminal event names the turn it terminates on, which is why the farewell
 is written *before* ``interview_end`` rather than after it. The number the DB
@@ -253,7 +267,8 @@ def build_stream(
         # handle is a flag the thread itself checks between tokens.
         llm_stop = threading.Event()
         # ── Audio bookkeeping for the orphan sweep ──
-        # Three sets, and each one is load-bearing:
+        # Four sets. The first three feed the sweep; the fourth is what decides
+        # whether the turn is filed as whole.
         #
         # ``dispatched_sentences``
         #     every sentence id this turn asked the TTS for. A synthesis that
@@ -267,9 +282,17 @@ def build_stream(
         #     what was already in the conversation's directory when the turn
         #     started speaking. Files from an earlier turn in the same interview
         #     are still referenced by that turn's transcript.
+        # ``failed_sentences``
+        #     the ids synthesis was asked for and did not deliver. This is the
+        #     honesty mark's own bookkeeping and it is NOT the inverse of the
+        #     other two: the loop below only ends once every dispatched task has
+        #     settled, so at that point the ids are complete, but a turn that was
+        #     cancelled mid-flight leaves an orphan rather than a failure and is
+        #     not in here.
         dispatched_sentences: set[int] = set()
         announced_audio: set[str] = set()
         pre_existing_audio: set[str] = set()
+        failed_sentences: set[int] = set()
 
         try:
             # ── Step 1: STT ──────────────────────────────────────
@@ -630,6 +653,11 @@ def build_stream(
                                         "id": sentence_id,
                                     },
                                 )
+                                # The gap is in the answer the candidate will
+                                # hear, whether or not the provider was ever
+                                # reached: this id has no audio and will not get
+                                # any, so the turn is a partial one.
+                                failed_sentences.add(sentence_id)
                                 sentence_id += 1
                     else:
                         # A TTS task completed — yield the audio chunk immediately
@@ -646,6 +674,11 @@ def build_stream(
                         except Exception as e:
                             logger.error("TTS task %s failed: %s", done, e, exc_info=True)
                             sid = tts_futures.get(done, -1)
+                            # Recorded by id, not by comparing the two sets above:
+                            # the mark has to mean "this sentence was asked for
+                            # and never spoken", and a file-naming detail must
+                            # not be what makes that true or false.
+                            failed_sentences.add(sid)
                             yield sse_format(
                                 "error",
                                 {"detail": TTS_CHUNK_FAILED, "id": sid},
@@ -686,6 +719,29 @@ def build_stream(
                 yield sse_format("done", {})
                 return
 
+            # The other end of the same line: synthesis was asked for more than
+            # it delivered, and at least one sentence sounded, so the turn is
+            # filed -- marked, because the text on disk is every sentence the
+            # model produced while the candidate heard a fraction of them. Filed
+            # unmarked it was the same defect as the all-failed case above, one
+            # notch less loud: the transcript and the report would cite five
+            # sentences for an answer three of which were never spoken.
+            #
+            # `announced_audio` is what keeps the nothing-spoken case out, and it
+            # has already returned by the time this runs; the clause is still
+            # stated rather than relied upon, because the rule is read here and a
+            # rule that depends on the line above it having returned is a rule
+            # with a hole in it again.
+            partially_spoken = bool(announced_audio) and bool(failed_sentences)
+            if partially_spoken:
+                logger.warning(
+                    "TTS delivered only part of %s: %d of %d sentence(s) failed, "
+                    "so the turn is stored as incomplete",
+                    conversation_id,
+                    len(failed_sentences),
+                    len(dispatched_sentences),
+                )
+
             # Store full message and turn with chunks_used. A streamed answer
             # is many per-sentence files, so the message names the directory
             # rather than one file.
@@ -695,6 +751,7 @@ def build_stream(
                 full_response,
                 context_chunks,
                 f"/audio/{conversation_id}/",  # multiple chunks
+                incomplete=partially_spoken,
             )
             touch_activity(conversation_id)
 
@@ -703,7 +760,9 @@ def build_stream(
             committed = await persist_turn(conversation_id, new_turn, new_message)
 
             terminal_emitted = True
-            yield sse_format("done", turn_done_payload(committed))
+            yield sse_format(
+                "done", turn_done_payload(committed, incomplete=partially_spoken)
+            )
 
         except HTTPException:
             # Deliberate escape hatch: re-raise rather than report a

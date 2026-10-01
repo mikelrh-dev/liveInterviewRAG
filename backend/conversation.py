@@ -148,12 +148,15 @@ def build_turn(
     conversation's directory of per-sentence chunks, and a farewell whose
     synthesis failed points nowhere at all.
 
-    ``incomplete`` is the mark on an answer the model never finished. It goes on
-    the MESSAGE and not on the turn, because the transcript entry is what the
-    report renders and what comes back from the store: a flag on the turn would
-    have to be stitched back onto the message list to reach either reader. The
-    turn is the exchange; the message is the answer, and it is the answer that
-    was cut short.
+    ``incomplete`` is the mark on an answer the candidate did not get whole. It
+    goes on the MESSAGE and not on the turn, because the transcript entry is what
+    the report renders and what comes back from the store: a flag on the turn
+    would have to be stitched back onto the message list to reach either reader.
+    The turn is the exchange; the message is the answer, and it is the answer
+    that falls short. It has two causes -- the model stopped generating, or the
+    model generated all of it and only part of the audio was delivered -- so
+    every reader of the mark renders both, and neither one alone is true of both
+    turns.
     """
     turn_number = len(conversations[conversation_id].get("turns", []))
     turn = {
@@ -227,10 +230,11 @@ def turn_done_payload(
 
     ``incomplete`` is passed in rather than read off the committed turn,
     because it is a property of the ANSWER and not of the exchange: the caller
-    is the only one that knows the model stopped generating. It is absent on a
-    finished turn rather than sent as ``false``, so a client can tell "this
-    answer was cut short" from "this build says nothing about it" instead of
-    reading an explicit false as a report that the answer is whole.
+    is the only one that knows the model stopped generating, or that synthesis
+    dropped part of an answer it finished. It is absent on a finished turn rather
+    than sent as ``false``, so a client can tell "this answer was not delivered
+    whole" from "this build says nothing about it" instead of reading an explicit
+    false as a report that the answer is whole.
 
     ``grounded`` is the provenance of the chunks, and it is the field that used
     to be missing. ``has_context`` answers "are there passages"; it never

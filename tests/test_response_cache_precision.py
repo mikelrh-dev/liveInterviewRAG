@@ -36,7 +36,7 @@ unrelated questions returned a pre-generated answer:
 
 WHERE THE HITS LAND
 -------------------
-``backend/turns/streaming.py:458`` consults the cache at Step 2 and RETURNS
+``backend/turns/streaming.py:481`` consults the cache at Step 2 and RETURNS
 before Step 3, RAG. So these are not answers that merely look cached: the
 retrieval that would have grounded the reply in the candidate's own corpus
 never runs. The module's own header already says the policy that was broken:
@@ -107,7 +107,7 @@ class TestUnrelatedQuestionsReachTheRetriever:
         assert answer is None, (
             f"the literal cache answered a question it does not recognise: "
             f"{question!r}\n  -> {answer!r}\n"
-            "This short-circuits RAG (streaming.py:458), so the reply the "
+            "This short-circuits RAG (streaming.py:481), so the reply the "
             "recruiter hears is a pre-generated answer to a different question."
         )
 
@@ -227,7 +227,7 @@ class TestTheGenericVocabularyStaysGone:
 #     "cuanto costa alojar interviewtts en un vps"  -> the definition  WRONG
 #     "que pruebas tiene interviewtts"               -> the definition  WRONG
 #
-# A cache hit RETURNS before Step 3, RAG (``streaming.py:458`` vs ``:463``),
+# A cache hit RETURNS before Step 3, RAG (``streaming.py:481`` vs ``:486``),
 # so this is not a stale answer -- it is a suppressed correct one. The retriever
 # was measured to have the page for every one of them (``projects/interview-
 # tts.md`` in the top 3 for four, ``skills/testing.md`` second for the fifth),
@@ -294,7 +294,7 @@ class TestQuestionsAboutTheProjectThatAskSomethingElse:
             f"facets: {question!r}\n  -> {answer!r}\n"
             "The definition of the project is not an answer about its stack, "
             "its technologies, its hosting bill or its tests. The cache "
-            "returns before RAG (streaming.py:458), so the grounded answer "
+            "returns before RAG (streaming.py:481), so the grounded answer "
             "the corpus already holds never runs."
         )
 

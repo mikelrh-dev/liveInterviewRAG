@@ -72,7 +72,7 @@ _CACHED_QUESTIONS = [
         #   "el proyecto PRESENTA una arquitectura de tres capas"  -> the pitch
         #   "qué PRESENTACIÓN usaste para el pitch"                 -> the pitch
         # Both were answered with "Soy Mikel, desarrollador junior DAM..." by a
-        # literal cache that short-circuits RAG (streaming.py:458), so the
+        # literal cache that short-circuits RAG (streaming.py:481), so the
         # grounded answer never ran. "presentate" survives because it is a
         # whole word the candidate says about himself, and it is a phrase, so
         # it needs its neighbours to match.
@@ -106,7 +106,7 @@ _CACHED_QUESTIONS = [
         #   "que pruebas tiene interviewtts"                   -> the definition
         # None of those five is the definition of the project, and none is
         # answered by it. Because a hit RETURNS before Step 3, RAG
-        # (streaming.py:458, ahead of :463), this was not a stale answer but a
+        # (streaming.py:481, ahead of :486), this was not a stale answer but a
         # SUPPRESSED correct one: the retriever was measured to hold the page
         # for every one of them (projects/interview-tts.md in the top 3 for
         # four, skills/testing.md second for the fifth), and
@@ -161,7 +161,7 @@ _CACHED_QUESTIONS = [
         # self-assessment, so the question has to be about the candidate.
         # "el sistema tiene dos puntos debiles que describo abajo" asks about
         # the system, and it was answered with "Soy algo desordenado" by a
-        # literal cache that short-circuits RAG (streaming.py:458). The phrase
+        # literal cache that short-circuits RAG (streaming.py:481). The phrase
         # that remains names the referent explicitly.
         "keywords": [],
         # This answer was reported as a fabricated self-disclosed weakness. It

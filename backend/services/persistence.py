@@ -24,8 +24,9 @@ logger = logging.getLogger(__name__)
 #: already run. It was 0 everywhere and nothing read it, which left every future
 #: migration with no way to know the state of a deployed file.
 #:
-#: 2 -- ``messages.incomplete``, the mark on an answer whose generation was cut
-#: short. See ``_add_incomplete_column``.
+#: 2 -- ``messages.incomplete``, the mark on an answer the candidate did not get
+#: whole: either the generation was cut short, or the audio only partly made it.
+#: See ``_add_incomplete_column``.
 SCHEMA_VERSION = 2
 
 _SCHEMA = """

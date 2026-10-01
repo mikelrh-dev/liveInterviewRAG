@@ -125,7 +125,7 @@ async def with_keepalive(
         # in-flight TTS tasks and unlinks the staged upload. Without this call
         # every client that disconnects mid-turn leaks a file and a synthesis
         # task, which is the exact failure the inner module documents at
-        # streaming.py:722-789.
+        # streaming.py:788-855.
         aclose = getattr(iterator, "aclose", None)
         if aclose is not None:
             try:

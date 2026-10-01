@@ -2953,8 +2953,13 @@ function markAnswerIncomplete(messageDiv) {
 
     const note = document.createElement("p");
     note.className = "answer-incomplete";
+    // Both causes, not just the first. The server marks an answer that was
+    // generated in full and only partly spoken, and this label is the only thing
+    // on the candidate's screen that says what went wrong -- so naming the
+    // model's generation alone would be false on that turn.
     note.textContent =
-        "Respuesta incompleta: el modelo dejó de generar a mitad del turno.";
+        "Respuesta incompleta: el modelo dejó de generar o parte de la respuesta " +
+        "no se pudo escuchar.";
     bubble.appendChild(note);
 }
 

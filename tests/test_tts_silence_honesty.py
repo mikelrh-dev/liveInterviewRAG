@@ -23,7 +23,14 @@ WHAT IS ASSERTED HERE
 ---------------------
 * Every sentence failing is a failed TURN: nothing persisted, a fatal
   (non-recoverable) error, and a terminal event so the mic comes back.
-* Some sentences sounding is not: the turn is stored exactly as before.
+* Some sentences sounding is not a failed turn, but it is not a WHOLE one: the
+  turn is stored and marked ``incomplete``, on the message that reaches the store
+  and on the terminal event, because the text on disk is every sentence the model
+  produced and the candidate heard a fraction of them.
+* Every sentence sounding is a whole turn, marked nothing: a mark that lands on
+  finished answers stops meaning anything.
+* The note and the label that render the mark name both of its causes, since the
+  mark no longer means only "the model stopped generating".
 * The docstring on ``TTS_CHUNK_FAILED`` no longer states something false.
 
 The zero-dispatch case is deliberately NOT in the failure branch. If the model
@@ -44,6 +51,7 @@ import pytest
 from tests.conftest import stub_rag_context_shapes
 from backend import conversation
 from backend.conversation import conversations
+from backend.services.report import ReportService
 from backend.turns import streaming
 from backend.turns.errors import TTS_FAILED
 
@@ -127,10 +135,11 @@ class _Turn:
     immediately afterwards.
     """
 
-    def __init__(self, events, container, memory):
+    def __init__(self, events, container, memory, messages):
         self.events = events
         self.container = container
         self.memory = memory
+        self.messages = messages
 
     @property
     def store(self) -> MagicMock:
@@ -138,6 +147,29 @@ class _Turn:
 
     def of(self, name: str) -> list[str]:
         return [e for e in self.events if f'"event": "{name}"' in e]
+
+    @property
+    def done(self) -> dict:
+        """The payload of the single terminal event."""
+        frames = self.of("done")
+        assert len(frames) == 1, f"expected one terminal event, got {frames}"
+        return json.loads(frames[0].split("data: ", 1)[1].strip())["data"]
+
+    @property
+    def stored_message(self) -> dict:
+        """The ``messages`` row the pipeline handed to the store.
+
+        The store is a double here, so this is the boundary under test: what
+        ``record_turn`` received is exactly what persistence writes into the
+        ``messages`` table, which
+        ``tests/test_truncated_turn_honesty.py::TestTheTruncatedTurnIsKept``
+        then proves against a real SQLite file.
+        """
+        assert self.store.record_turn.called, (
+            f"precondition: a turn reached the store. calls: "
+            f"{self.store.record_turn.call_args_list}"
+        )
+        return self.store.record_turn.call_args[0][2]
 
     @property
     def errors(self) -> list[dict]:
@@ -170,8 +202,9 @@ def _run(question, tokens, tts, tmp_path, cid) -> _Turn:
 
     events = asyncio.run(go())
     memory = list(conversations[cid].get("turns", []))
+    messages = list(conversations[cid].get("messages", []))
     conversations.pop(cid, None)
-    return _Turn(events, container, memory)
+    return _Turn(events, container, memory, messages)
 
 
 # ─── Every sentence fails: the turn is a failure, not an answer ─────────────
@@ -280,7 +313,11 @@ class TestWhenNoSentenceCouldBeSpoken:
         assert turn.of("token"), "the streamed answer was taken back off the screen"
 
 
-# ─── Some sentences fail: unchanged, and deliberately so ────────────────────
+# ─── Some sentences fail: the turn survives, marked ──────────────────────────
+#
+# (The heading here used to read "unchanged, and deliberately so". It is not: the
+# STORAGE is unchanged and the honesty mark is not, and the rule those three
+# points now apply to is pinned together further down.)
 
 
 class TestWhenSomeSentenceSounded:
@@ -372,6 +409,184 @@ class TestNothingWasEverAskedToBeSpoken:
         )
         assert turn.store.record_turn.called, (
             "an answer with nothing speakable in it was dropped instead of filed"
+        )
+
+
+# ─── One rule, three points on the same line ─────────────────────────────────
+#
+# THE DEFECT
+# ----------
+# Two of the three answers this rule has to give were already right, and the
+# middle one was filed as though it did not need an answer at all. Driving the
+# real pipeline with synthesis failing on sentences 1 and 3 of 5 measured::
+#
+#     token x5   error{id:1}   audio_url x3   error{id:3}   done
+#     done : {'n': 0, 'has_context': False}
+#     turns persisted: 1   audio announced: 3   incomplete flag: absent
+#
+# So the transcript and the report cite all five sentences with nothing on them
+# saying three of them were ever spoken, and the recruiter reads the answer the
+# model produced rather than the 60 % the candidate actually heard. The page
+# knows better -- the per-chunk ``error`` it received is the "a fragment was
+# omitted" notice -- but that notice has never reached the disk.
+#
+# It is the same defect commit `1f4b0a2` was born to kill, one level up: the
+# extreme case (nothing audible) was made honest and the partial case was left
+# presenting half a turn as the whole one.
+#
+# WHY ALL THREE LIVE HERE TOGETHER
+# The condition is a single comparison, so it is one rule with three outcomes,
+# and each outcome is a value the same variable takes. Pinned apart, the middle
+# one can be "fixed" by a special case that quietly breaks an end of the line.
+
+
+#: Five speakable sentences, so the counts read as counts.
+FIVE_SENTENCES = ["Uno. ", "Dos. ", "Tres. ", "Cuatro. ", "Cinco. "]
+
+
+class TestHowMuchOfTheAnswerWasActuallySpoken:
+    """Asked, delivered, filed: the same rule at its three possible answers."""
+
+    @staticmethod
+    def _turn(failing: set[int], cid: str, tmp_path) -> _Turn:
+        return _run(
+            "hablame de algo raro",
+            list(FIVE_SENTENCES),
+            _TTS(failing=failing),
+            tmp_path,
+            _register(cid),
+        )
+
+    def test_none_of_it_spoken_is_not_filed(self, tmp_path):
+        """The end of the line the previous commit got right. Pinned so that
+        fixing the middle cannot reach it."""
+        turn = self._turn({0, 1, 2, 3, 4}, "spoken-none", tmp_path)
+
+        assert turn.of("audio_url") == [], (
+            f"precondition: nothing was announced, got {turn.of('audio_url')}"
+        )
+        assert not turn.store.record_turn.called, (
+            "an answer nobody heard a word of was filed: "
+            f"{turn.store.record_turn.call_args_list}"
+        )
+        assert turn.memory == [] and turn.messages == []
+        assert turn.done == {}, (
+            f"`done` named a turn that was never stored: {turn.done}"
+        )
+
+    def test_part_of_it_spoken_is_filed_and_marked(self, tmp_path):
+        """The hole: 3 of 5 audible, filed as a whole answer."""
+        turn = self._turn({1, 3}, "spoken-two-of-five", tmp_path)
+
+        assert len(turn.of("audio_url")) == 3, (
+            f"precondition: three sentences sounded, got "
+            f"{len(turn.of('audio_url'))}"
+        )
+        assert turn.store.record_turn.called, (
+            "an answer the candidate heard most of was thrown away: the mark is "
+            "not a licence to lose the turn"
+        )
+        assert turn.stored_message["incomplete"] is True, (
+            "the turn reached the store with no honesty mark, so the transcript "
+            "and the report cite five sentences for a candidate who heard three: "
+            f"{turn.stored_message}"
+        )
+        assert turn.messages[0]["incomplete"] is True, (
+            f"the mark did not survive into memory: {turn.messages}"
+        )
+        assert turn.done.get("incomplete") is True, (
+            "the terminal event does not carry the mark, so the page cannot label "
+            f"the answer beside it: {turn.done}"
+        )
+        assert turn.done.get("n") is not None, (
+            f"the turn was stored but the terminal event names none: {turn.done}"
+        )
+
+    def test_all_of_it_spoken_is_filed_whole(self, tmp_path):
+        """The other end. A mark that appears on a finished answer stops meaning
+        anything, which is worse than never having had one."""
+        turn = self._turn(set(), "spoken-all", tmp_path)
+
+        assert len(turn.of("audio_url")) == 5, (
+            f"precondition: every sentence sounded, got "
+            f"{len(turn.of('audio_url'))}"
+        )
+        assert turn.store.record_turn.called
+        assert not turn.stored_message["incomplete"], (
+            "an answer that was generated in full and spoken in full is filed as "
+            f"cut short: {turn.stored_message}"
+        )
+        assert not turn.messages[0]["incomplete"]
+        assert "incomplete" not in turn.done, (
+            f"`done` grew a spurious incompleteness flag: {turn.done}"
+        )
+
+    def test_the_gap_is_still_reported_to_the_candidate_as_it_happens(self, tmp_path):
+        """The mark lands on disk; the live notice is not replaced by it.
+
+        Both are true at once and neither says the other's half: the per-chunk
+        error is the only thing that can name WHICH sentence was lost, and it is
+        on the wire before the turn ends. Dropping it in favour of a flag at the
+        end would tell the candidate their answer was cut short without saying
+        where the hole was.
+        """
+        turn = self._turn({1, 3}, "spoken-two-of-five-notices", tmp_path)
+
+        assert [e.get("id") for e in turn.errors if "id" in e] == [1, 3], (
+            "the gaps are no longer named while they happen: "
+            f"{[e.get('id') for e in turn.errors]}"
+        )
+
+
+class TestTheIncompleteNoteNamesBothCauses:
+    """``incomplete`` stopped meaning "the model stopped generating".
+
+    The mark used to have exactly one cause, and both renderers spent that fact
+    in prose: the report note said the model stopped half way through, and the
+    transcript label said the same. An answer that was generated IN FULL and only
+    partly spoken now carries the mark too, so a note that names generation as
+    the cause is false on the exact turn the mark exists to describe -- and it is
+    false in the artefact a recruiter reads.
+    """
+
+    @staticmethod
+    def _note(tmp_path, incomplete: bool) -> str:
+        path = ReportService(tmp_path / "reports").generate(
+            "note-cid",
+            {
+                "created_at": "2026-10-01T10:00:00",
+                "last_activity_at": "2026-10-01T10:01:00",
+                "messages": [
+                    {
+                        "user_text": "q",
+                        "response_text": "Uno. Dos. Tres. Cuatro. Cinco.",
+                        "audio_url": "",
+                        "incomplete": incomplete,
+                    }
+                ],
+            },
+        )
+        return path.read_text(encoding="utf-8")
+
+    def test_the_report_note_names_the_audio_loss_too(self, tmp_path):
+        content = self._note(tmp_path, incomplete=True)
+
+        assert re.search(r"audio|escuch", content, re.I), (
+            "the report tells the recruiter the model stopped generating, on a "
+            "turn where it generated every sentence and only the AUDIO failed:\n"
+            + content
+        )
+        assert "dejó de generar" in content, (
+            "the note lost the cause it was written for, so a truncated "
+            f"generation is no longer explained:\n{content}"
+        )
+
+    def test_a_finished_answer_is_not_given_the_note(self, tmp_path):
+        """Otherwise the note is on every turn and says nothing."""
+        content = self._note(tmp_path, incomplete=False)
+
+        assert "incompleta" not in content.lower(), (
+            f"a whole answer was labelled incomplete in the report:\n{content}"
         )
 
 

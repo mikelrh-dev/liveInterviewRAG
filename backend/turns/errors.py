@@ -48,10 +48,18 @@ TTS_FAILED = (
 #: is only honest while more audio is still coming. No retry advice here --
 #: asking again would discard a turn that is about to complete on its own.
 #:
-#: The other half of the same provider failure is NOT this message. When TTS
-#: delivers nothing at all -- every sentence failed, so the answer was written
-#: and never spoken -- the turn is dead: the per-chunk errors above are already
-#: on the wire, the stream then emits fatal ``TTS_FAILED`` with no ``id``, and
+#: A provider failure has three outcomes, not two, and this message is the one
+#: the candidate reads for two of them.
+#:
+#: Some sentences spoken: the turn is stored, MARKED ``incomplete`` -- on the
+#: message, and on the terminal event -- because the text on disk is every
+#: sentence the model produced and the candidate heard a fraction of them. This
+#: notice is what the page has live, and it is the only thing that can name WHICH
+#: sentence was lost; the mark is what the recruiter gets later.
+#:
+#: Nothing at all spoken -- every sentence failed, so the answer was written and
+#: never heard -- the turn is dead: the per-chunk errors above are already on
+#: the wire, the stream then emits fatal ``TTS_FAILED`` with no ``id``, and
 #: nothing is stored. ``TTS_CHUNK_FAILED`` is the "there is a gap in this
 #: answer" message; ``TTS_FAILED`` is the "you heard none of it" one, and the
 #: difference is the whole of what the page can honestly show.

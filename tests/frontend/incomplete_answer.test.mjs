@@ -206,6 +206,26 @@ test("the answer text the candidate saw is still there", async (t) => {
 
 // ─── A complete turn is not labelled ───────────────────────────────────────
 
+test("the label does not blame the model's generation alone", async (t) => {
+    // The same mark is now also carried by an answer the model generated IN FULL
+    // and that only partly reached the speaker, so a label that names generation
+    // as the cause is false on the turn the mark exists to describe. The label
+    // is the one thing on the candidate's screen that says so.
+    const { env } = await runTurn(t, truncatedWire());
+
+    const mark = candidateBubble(env).querySelector(".answer-incomplete");
+    assert.ok(mark, "precondition: the answer carries the mark at all");
+
+    assert.match(
+        mark.textContent,
+        /audio|escuchar/i,
+        "the label tells the candidate the model stopped generating, which is not " +
+            "what happened when only part of the answer could be spoken: " +
+            mark.textContent,
+    );
+    env.close();
+});
+
 test("a finished answer is not marked incomplete", async (t) => {
     // The mirror image, and the one that matters if this ever regresses the
     // other way: a mark that appears on every turn stops meaning anything.

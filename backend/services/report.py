@@ -13,15 +13,30 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-#: Appended under an answer whose generation was cut short. The report is the
+#: Appended under an answer the candidate did not get whole. The report is the
 #: artefact a recruiter reads, so this is where the honesty has to land: an
 #: answer that stops half way through is real content, and presenting it as a
-#: finished reply is the one defect a transcript cannot carry. It says what
-#: happened AND that the text above it is preserved as received, because a
-#: reader who assumes the text was tidied up will not know it is verbatim.
+#: finished reply is the one defect a transcript cannot carry.
+#:
+#: It names BOTH causes, and the second one is why. The mark used to mean
+#: exactly one thing -- the model stopped generating -- and this note spent that
+#: certainty in prose. It no longer may: an answer generated in full whose audio
+#: only partly made it is marked too, because that is a turn the candidate heard
+#: a fraction of and a recruiter would otherwise read as complete. A note
+#: attributing that turn to a generation cut-off would be false on exactly the
+#: turn the mark exists to describe, in the artefact a recruiter reads.
+#:
+#: The second sentence says the text above is what was GENERATED, not what was
+#: spoken and not a prefix: in one of the two cases it is every sentence the
+#: model wrote, and telling the reader it stops at the failure would be the same
+#: lie one clause further along. It is never repaired or retidied either way,
+#: which is the part worth stating -- a reader who assumes the text was tidied
+#: up will not know it is verbatim.
 INCOMPLETE_ANSWER_NOTE = (
-    "> **Respuesta incompleta.** El modelo dejó de generar a mitad del turno. "
-    "Lo que aparece arriba es exactamente lo que se emitió antes del fallo."
+    "> **Respuesta incompleta.** El modelo dejó de generar a mitad del turno, o "
+    "parte de la respuesta no pudo escucharse. El texto de arriba es el que se "
+    "generó, sin recortes ni retoques, e incluye frases que el candidato no "
+    "llegó a oír."
 )
 
 
