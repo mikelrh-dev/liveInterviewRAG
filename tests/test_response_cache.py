@@ -8,6 +8,12 @@ from pathlib import Path
 
 import pytest
 
+from tests.real_wiki import (
+    COMMENT_FIGURES,
+    comment_figures_for,
+    resolved_cases,
+)
+
 from backend.services.response_cache import (  # noqa: F401  (_CACHED_QUESTIONS: repo precedent tests/test_api.py)
     _CACHED_QUESTIONS,
     get_cached_response,
@@ -1620,18 +1626,55 @@ def test_the_corpus_attributed_databases_are_the_ones_it_lists():
 #: ALLOWED to name. Recorded so a corpus edit that drops one is a visible,
 #: deliberate change to what the cache may claim, rather than a silent widening.
 #:
-#: Measured against the 37 loaded pages, not chosen. Two of these are grounded
-#: only incidentally, and that is the point of writing them down:
-#: ``desordenado`` is the one trait the candidate actually discloses
+#: Measured, not chosen -- and measured PER POPULATION, because this constant was
+#: frozen on the author's 37 loaded pages and a clean clone serves 33. The two
+#: rows live in ``tests/real_wiki.py::COMMENT_FIGURES`` as
+#: ``CommentFigures.attributed_traits``, the same record
+#: ``tests/test_recall_claims.py`` resolves for the figures the two RAG comments
+#: publish; ``_self_disclosure_attributed`` resolves this checkout's row and
+#: refuses an unknown population rather than scanning against a foreign one.
+#:
+#: The reduced row is two terms SHORTER, and that is the scan working rather than
+#: the scan weakening: ``curioso`` is grounded only by
+#: ``faq/por-que-contratarte.md`` and ``trabajador`` only by that same page as a
+#: whole word -- the one page that still has it in ``stories/huelga-camiones-
+#: mercadona.md`` has it pluralised, and ``_normalised_tokens`` does not stem. On
+#: a clone, neither term is attributed, so a cached answer naming one of them is
+#: a claim the clone's corpus does not support.
+#:
+#: Two of the terms that ARE in both rows are grounded only incidentally, and
+#: that is the point of writing them down: ``desordenado`` is the one trait the
+#: candidate actually discloses
 #: (wiki/faq/fortalezas-y-debilidades.md:21, in full, with its mitigation), and
 #: ``perfeccionista`` is grounded by a page that names it in order to WARN
 #: against claiming it (same file, line 24) -- so a union scan accepts it even
 #: though the corpus never attributes it as a trait. That is the limit this
 #: scanner has, exercised in a control rather than described in a comment.
-_SELF_DISCLOSURE_ATTRIBUTED = frozenset({
-    "autodidacta", "constante", "curioso", "desordenado", "perfeccionista",
-    "resolutivo", "trabajador",
-})
+def _self_disclosure_attributed(documents: dict[str, str]) -> frozenset[str]:
+    """The attributed trait set for the population ``documents`` IS.
+
+    Not a constant, and deliberately: a constant here was a figure from one
+    checkout compared against a live measurement of another, which is the defect
+    this function exists to end. ``_require_wiki_corpus`` has already refused a
+    substituted corpus, and ``comment_figures_for`` refuses a third population,
+    so the two guards together make "which corpus am I scanning" a checked
+    question rather than an assumption.
+    """
+    figures = comment_figures_for(documents)
+    assert figures is not None, (
+        f"this checkout resolves {len(resolved_cases(documents))} labelled "
+        "questions, a population this guard has no attributed-trait set for. "
+        "They live in tests/real_wiki.py::CommentFigures.attributed_traits, "
+        f"calibrated for {[f.questions for f in COMMENT_FIGURES]}. Re-measure "
+        "on the population that remains and add a row -- do not point this "
+        "checkout at another population's vocabulary, and do not widen the "
+        "vocabulary to make a control pass."
+    )
+    assert figures.pages == len(documents), (
+        f"the row resolved for {figures.population} names {figures.pages} pages "
+        f"but this corpus loaded {len(documents)}."
+    )
+    return figures.attributed_traits
 
 _CLAIM_VOCABULARIES: dict[str, frozenset[str]] = {
     "self_disclosure": frozenset({
@@ -1665,6 +1708,10 @@ _CLAIM_VOCABULARIES: dict[str, frozenset[str]] = {
 #: author's tree, and 33 on a clean clone, where the four FAQ pages that exist
 #: on disk but are not in the index (``_UNTRACKED_FAQ_PAGES``) are absent.
 #:
+#: Derived from ``COMMENT_FIGURES`` rather than written out, so there is one
+#: record of what a population is and not two that can drift apart -- the same
+#: reason ``_self_disclosure_attributed`` reads the trait set from there too.
+#:
 #: This is not a count for tidiness. It closes the SUBSTITUTE-CORPUS hole, and
 #: that hole was found by trying to break it: pointing ``WIKI_ROOT`` at a
 #: directory holding a single unrelated Markdown file makes ``load_documents()``
@@ -1674,7 +1721,7 @@ _CLAIM_VOCABULARIES: dict[str, frozenset[str]] = {
 #: this file calls "strictly worse than not running" -- so an unrecognised
 #: population is a failure, in the same spirit as ``measurement_for`` returning
 #: ``None`` rather than scoring a third population against a foreign floor.
-_CALIBRATED_CORPUS_POPULATIONS = frozenset({33, 37})
+_CALIBRATED_CORPUS_POPULATIONS = frozenset(f.pages for f in COMMENT_FIGURES)
 
 
 def _require_wiki_corpus() -> dict[str, str]:
@@ -1749,15 +1796,25 @@ def test_the_corpus_attributes_exactly_the_disclosed_traits_this_scan_assumes():
     If a corpus edit starts attributing "miedo", the negative control below
     becomes vacuous and would start passing for the wrong reason. That is a
     visible change here rather than a control that quietly stopped testing.
+
+    Scoped to the population this checkout produced. It was one frozen set of
+    seven terms, measured on the author's 37 pages, compared against a live
+    measurement of whatever corpus was loaded -- so on a clean clone it reported
+    a vocabulary the clone does not have. The comparison is still exact set
+    equality: what changed is which set it is compared against, not how
+    strictly.
     """
+    documents = _require_wiki_corpus()
     attributed = _corpus_vocabulary(
-        _CLAIM_VOCABULARIES["self_disclosure"], _require_wiki_corpus()
+        _CLAIM_VOCABULARIES["self_disclosure"], documents
     )
-    assert attributed == _SELF_DISCLOSURE_ATTRIBUTED, (
+    recorded = _self_disclosure_attributed(documents)
+
+    assert attributed == recorded, (
         f"the self_disclosure vocabulary's attributed set changed: "
         f"{sorted(attributed)}. The calibration and the negative control below "
-        f"are both written against {sorted(_SELF_DISCLOSURE_ATTRIBUTED)}; "
-        "re-derive them rather than let a control pass for the wrong reason."
+        f"are both written against {sorted(recorded)}; re-derive them rather "
+        "than let a control pass for the wrong reason."
     )
 
 

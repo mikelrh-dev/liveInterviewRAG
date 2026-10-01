@@ -109,35 +109,49 @@ tts_service = TTSService(
 # CHUNK_SIZE=400 / CHUNK_OVERLAP=50 are unreachable with the current corpus, so
 # RAGPipeline._chunk_document never takes its splitting branch.
 #
-# Measured on the 37 wiki pages CandidateProfile loads, chunked by
-# _chunk_document at 400/50: 124 chunks, median 54 words, p95 131, longest 266,
-# and ZERO chunks reach 400 words. The distribution is NOT bottom-heavy -- 0.0%
-# are under 15 words, and 13.7% are under 30 -- so the previous version of this
-# comment, which claimed 37.4% under 15 and concluded that a ceiling which
-# actually bites "would need to be far lower", had the shape of the corpus
-# backwards. The conclusion that survives is the one above, and it survives for
-# the opposite reason: not because the chunks cluster at the short end, but
-# because the longest is 266 words, 134 short of the ceiling.
+# There are TWO corpora, so there are two sets of figures, one row per
+# population. Four FAQ pages -- nivel-ingles, disponibilidad, hobbies-intereses
+# and por-que-contratarte -- exist in wiki/ on the author's disk and are NOT in
+# the index, so `git clone` serves 33 pages where the author's tree has 37. Same
+# method, same 400/50, different corpus: the chunk count moves by 8 and the
+# median by half a word. This comment used to publish the author's row alone,
+# which made every figure in it a true statement about a corpus that nobody else
+# has.
+#
+# Chunked by _chunk_document at 400/50, measured per population:
+#
+#     full (37 pages, 49 questions) 124 chunks, median 54 words, p95 131, longest 266, 0 chunks reach 400 words; 0.0% are under 15 words and 13.7% are under 30, longest 134 short of the ceiling
+#     reduced (33 pages, 41 questions) 116 chunks, median 53.5 words, p95 131, longest 266, 0 chunks reach 400 words; 0.0% are under 15 words and 13.8% are under 30, longest 134 short of the ceiling
+#
+# p95 is NEAREST RANK, sorted[ceil(0.95n)-1]; linear interpolation would put this
+# same corpus at 130.7, so the definition is named rather than assumed. The median
+# is a FLOAT because the chunk counts are even: statistics.median over 116 chunks
+# returns the mean of the two middle values, so 53.5 is what that corpus measures
+# rather than a rounded 54.
+#
+# The distribution is NOT bottom-heavy in either population -- and the previous
+# version of this comment, which claimed 37.4% under 15 and concluded that a
+# ceiling which actually bites "would need to be far lower", had the shape of the
+# corpus backwards. The conclusion that survives is the one above, and it
+# survives for the opposite reason: not because the chunks cluster at the short
+# end, but because the longest is 266 words in both, 134 short of the ceiling.
 # CHUNK_OVERLAP is inert for the same reason.
 #
-# RE-MEASURED 2026-09-29, one chunk down: 125 -> 124, and the short tail has
-# gone from 0.8% to 0.0%. Both come from the same change -- a heading section
-# with no body under it is no longer emitted (see `is_bare_heading`). The
-# `## Alternativas consideradas` section of
-# `decisions/fraud-detector-3-layer-architecture.md` was the corpus's ONLY
-# chunk under 15 words. It was also the top-1 context for 3 of the 49 labelled
+# RE-MEASURED 2026-09-29 on the full population, one chunk down: 125 -> 124, and
+# the short tail has gone from 0.8% to 0.0%. Both come from the same change -- a
+# heading section with no body under it is no longer emitted (see
+# `is_bare_heading`). The `## Alternativas consideradas` section of
+# `decisions/fraud-detector-3-layer-architecture.md` was the corpus's ONLY chunk
+# under 15 words. It was also the top-1 context for 3 of the 49 labelled
 # questions under the multilingual embedder, so removing it costs the
 # distribution one chunk and the reader one restated heading.
 #
-# The corpus is wiki/, which .gitignore excludes and which is therefore absent
-# from a clean clone -- a reader elsewhere cannot reproduce these figures and
-# should not be left to assume they are universal.
-# tests/test_chunk_size_comment.py re-derives every number above and fails when
-# the prose and the measurement disagree; it skips where wiki/ is absent, for
-# the same reason. Whether 400 is the RIGHT size rather than merely an inert one
-# is a separate question, answered by measurement in
-# tests/test_rag_chunk_size_sweep.py -- whose own figures are fixture-derived,
-# because a clean clone has no real corpus to sweep.
+# tests/test_chunk_size_comment.py re-derives every number above for the
+# population THIS checkout produced, and fails when a published row and a live
+# measurement disagree; it skips only where wiki/ is absent, which is a state
+# that also makes tests/test_rag.py fail rather than skip. Whether 400 is the
+# RIGHT size rather than merely an inert one is a separate question, answered by
+# measurement in tests/test_rag_chunk_size_sweep.py.
 #
 # Left as-is because rag.py is out of scope for this change; the constants are
 # consumed here, so this is the place the measurement belongs until then.

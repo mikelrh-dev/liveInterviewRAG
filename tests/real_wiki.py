@@ -80,16 +80,23 @@ primary-gold-page matching at ``top_k=3``.
 
 BECAUSE THE CORPUS HAS TWO STATES, THE COMMENTS DO TOO
 -----------------------------------------------------
-``Measurement`` covers the recall floor. The corpus-SHAPE figures the shipped
-comments publish -- chunk count, matrix shape, what the threshold filter costs
-a caller -- are recorded per population in ``CommentFigures`` below, because
-they differ between the two checkouts (124 chunks against 116). A comment
-naming only one of them describes a corpus the other checkout does not have,
-which is how ``tests/test_recall_claims.py`` came to fail on a clean clone.
+``Measurement`` covers the recall floor. The corpus-SHAPE figures this
+repository publishes -- chunk count, matrix shape, what the threshold filter
+costs a caller, the word-shape of the chunk distribution, what the per-page cut
+rescues, which self-disclosure traits the corpus attributes -- are recorded per
+population in ``CommentFigures`` below, because they differ between the two
+checkouts (124 chunks against 116; a median of 54.0 against 53.5; a page cut
+worth 1 rescued question against 2). A comment naming only one of them
+describes a corpus the other checkout does not have, which is how
+``tests/test_recall_claims.py`` came to fail on a clean clone and how
+``tests/test_chunk_size_comment.py``,
+``tests/test_rag_chunk_size_sweep.py`` and
+``tests/test_response_cache.py`` came to fail alongside it.
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, FrozenSet, List, Optional, Sequence, Tuple
@@ -414,25 +421,29 @@ MEASUREMENTS: Tuple[Measurement, ...] = (MEASURED_FULL, MEASURED_REDUCED)
 #
 # WHY THIS IS NOT ``Measurement`` DOING THE JOB
 # --------------------------------------------
-# A ``Measurement`` owns a recall figure and the floor derived from it. The
-# comments in ``backend/config.py`` and ``backend/services/rag.py`` publish more
-# than recall: a chunk count, a matrix shape, and the share the threshold filter
-# costs a caller. Those are corpus-SHAPE facts, so they differ between the two
-# populations exactly as recall does -- 124 chunks against 116, a 49 x 124
-# matrix against 41 x 116, 959 discarded results against 720.
+# A ``Measurement`` owns a recall figure and the floor derived from it. What this
+# repository publishes beyond recall is corpus-SHAPE: a chunk count, a matrix
+# shape, the share the threshold filter costs a caller, the shape of the chunk
+# word-length distribution, what the per-page top-k cut rescues, and which
+# self-disclosure traits the corpus attributes. Those are facts about a corpus,
+# so they differ between the two populations exactly as recall does -- 124
+# chunks against 116, a 49 x 124 matrix against 41 x 116, 959 discarded results
+# against 720, a median of 54.0 words against 53.5.
 #
-# Before this existed, those comments named the full population's figures and
-# nothing else, while describing themselves as measured on "the corpus this
-# repository's tests actually load". On a clean clone that sentence is false:
-# the corpus loads 33 pages and 116 chunks. ``tests/test_recall_claims.py``
-# turned red against a simulated clone for exactly that reason -- five
-# assertions binding a comment's number to a live measurement of a population
-# the comment never claimed to describe.
+# Before this existed, each of those figures was published for the full
+# population and nothing else. On a clean clone that sentence is false: the
+# corpus loads 33 pages and 116 chunks. ``tests/test_recall_claims.py`` turned
+# red against a simulated clone for exactly that reason -- five assertions
+# binding a comment's number to a live measurement of a population the comment
+# never claimed to describe -- and so, later, did one guard in each of
+# ``test_chunk_size_comment.py``, ``test_rag_chunk_size_sweep.py`` and
+# ``test_response_cache.py``. Same defect, same shape: a frozen figure from the
+# author's tree compared against a live measurement of a clone's.
 #
 # So the two populations are recorded here together with the recall
-# measurements they belong to, and both comments publish both. Nothing is
-# relaxed: the same live measurement is bound to the comment in either
-# population, against the figures for THAT population.
+# measurements they belong to, and every one of those figures is published per
+# population. Nothing is relaxed: the same live measurement is bound to the
+# published figure in either population, against the row for THAT population.
 #
 # MEASURED 2026-10-01, same production path as ``MEASURED_FULL``/``MEASURED_REDUCED``
 # (real loader, real 400/50 chunker, real ``expand_query``, strict
@@ -448,15 +459,62 @@ MEASUREMENTS: Tuple[Measurement, ...] = (MEASURED_FULL, MEASURED_REDUCED)
 # working tree -- where its figures are never exercised, because there the
 # population is ``full``. ``tests/test_committed_corpus_figures.py`` rebuilds
 # that corpus from ``git show HEAD:`` and holds this row to it.
+#
+# The word-shape, page-cut and attributed-traits fields are MEASURED
+# 2026-10-01, on both checkouts, through the same production path:
+# ``_chunk_document`` for the word shape, ``retrieve()`` with
+# ``_one_chunk_per_page`` neutralised for the duration of the comparison for the
+# page cut, and ``_corpus_vocabulary`` over the union of every served page for
+# the traits. ``p95`` is NEAREST RANK, ``sorted(words)[ceil(0.95 * n) - 1]``,
+# which is the definition that reproduces the 131 this row published before the
+# reduced population was measured at all; a linear-interpolation p95 would put
+# the same corpus at 130.7 and the reduced one at 129.5, so the definition is
+# named here because two of them are in common use and only one is this row's.
 
 
 @dataclass(frozen=True)
 class CommentFigures:
-    """One population's corpus-shape figures, as the shipped comments print them.
+    """One population's corpus-shape figures, as this repository publishes them.
 
     ``filtered``/``unfiltered`` are counts of RESULTS returned by ``retrieve()``
     at ``top_k`` = twice the chunk count -- the only space the public path can be
     asked about, and the unit the threshold comment had to be rewritten into.
+
+    The word-shape fields (``median_words`` .. ``chunks_at_ceiling``) were added
+    for ``backend/main.py``'s ``CHUNK_SIZE`` justification, and
+    ``rescued_by_page_cut`` for the guard in
+    ``tests/test_rag_chunk_size_sweep.py`` that pins what the per-page cut buys;
+    ``attributed_traits`` for the self-disclosure vocabulary in
+    ``tests/test_response_cache.py``. They live here for one reason: every one of
+    them is a function of the corpus, so every one of them has a different value
+    on each of the two checkouts. Measured on this branch:
+
+        field                  full (37pp/49q)    reduced (33pp/41q)
+        chunks                       124                 116
+        median_words                54.0               53.5
+        p95_words                    131                 131
+        longest_words                266                 266
+        under15_pct                  0.0                 0.0
+        under30_pct                 13.7                13.8
+        chunks_at_ceiling              0                   0
+        rescued_by_page_cut            1                   2
+        attributed_traits              7                   5
+
+    ``median_words`` is a float because it is one. ``statistics.median`` over an
+    EVEN number of chunks returns the mean of the two middle values, and 124 and
+    116 are both even, so the reduced population's median is genuinely ``53.5``.
+    That is not a rounding artefact and is not a defect in the measurement: an
+    assertion that could only compare an integer would have forced one of the
+    two populations to publish a number the measurement does not produce.
+
+    ``attributed_traits`` is smaller on the reduced population because two of
+    the terms are grounded ONLY by ``faq/por-que-contratarte.md``, one of the
+    four FAQ pages that exist on disk and are not in the index: ``curioso``
+    nowhere else, and ``trabajador`` nowhere else as a whole word (the
+    remaining page has it pluralised, which ``_normalised_tokens`` does not
+    stem). A union scan therefore attributes fewer traits on a clean clone, and
+    a cached answer naming one of those two is a claim the clone's corpus does
+    not support -- which is the scan working, not the scan weakening.
     """
 
     population: str
@@ -468,6 +526,14 @@ class CommentFigures:
     chunks: int
     filtered: int
     unfiltered: int
+    median_words: float
+    p95_words: int
+    longest_words: int
+    under15_pct: float
+    under30_pct: float
+    chunks_at_ceiling: int
+    rescued_by_page_cut: int
+    attributed_traits: FrozenSet[str]
 
     @property
     def dropped(self) -> int:
@@ -482,6 +548,16 @@ class CommentFigures:
     def matrix(self) -> str:
         return f"{self.questions} x {self.chunks}"
 
+    @property
+    def headroom(self) -> int:
+        """How far the longest chunk is from ``CHUNK_SIZE``.
+
+        The load-bearing number in the ``CHUNK_SIZE`` justification: it is what
+        "400 never binds" means, and it is derived rather than recorded so it
+        cannot drift away from ``longest_words``.
+        """
+        return CHUNK_SIZE - self.longest_words
+
 
 COMMENT_FIGURES_FULL = CommentFigures(
     population="full",
@@ -493,6 +569,17 @@ COMMENT_FIGURES_FULL = CommentFigures(
     chunks=124,
     filtered=854,
     unfiltered=1813,
+    median_words=54.0,
+    p95_words=131,
+    longest_words=266,
+    under15_pct=0.0,
+    under30_pct=13.7,
+    chunks_at_ceiling=0,
+    rescued_by_page_cut=1,
+    attributed_traits=frozenset({
+        "autodidacta", "constante", "curioso", "desordenado", "perfeccionista",
+        "resolutivo", "trabajador",
+    }),
 )
 
 COMMENT_FIGURES_REDUCED = CommentFigures(
@@ -505,6 +592,16 @@ COMMENT_FIGURES_REDUCED = CommentFigures(
     chunks=116,
     filtered=631,
     unfiltered=1353,
+    median_words=53.5,
+    p95_words=131,
+    longest_words=266,
+    under15_pct=0.0,
+    under30_pct=13.8,
+    chunks_at_ceiling=0,
+    rescued_by_page_cut=2,
+    attributed_traits=frozenset({
+        "autodidacta", "constante", "desordenado", "perfeccionista", "resolutivo",
+    }),
 )
 
 COMMENT_FIGURES: Tuple[CommentFigures, ...] = (
@@ -529,6 +626,21 @@ def comment_figures_for(
         if figures.questions == n:
             return figures
     return None
+
+def p95(words: Sequence[int]) -> int:
+    """The 95th percentile by NEAREST RANK, over ``words`` in any order.
+
+    Nearest rank, not interpolation: ``sorted(w)[ceil(0.95 * n) - 1]``. Two
+    percentile definitions are in common use and they disagree here -- on the
+    full population the nearest-rank p95 is 131 and the linearly interpolated
+    one is 130.7 -- so the published ``p95_words`` would be meaningless without
+    this. It lives here, next to the rows, so a guard cannot quietly re-derive
+    it with the other convention.
+    """
+    ordered = sorted(words)
+    assert ordered, "a percentile over an empty chunk set is not a measurement"
+    return ordered[math.ceil(0.95 * len(ordered)) - 1]
+
 
 #: Convenience aliases for the population most checkouts see. The guard resolves
 #: its measurement through ``measurement_for`` rather than through these, so a

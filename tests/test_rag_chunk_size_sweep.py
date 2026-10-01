@@ -166,9 +166,11 @@ from backend.services.rag import RAGPipeline
 # working.
 from tests.real_wiki import (
     LABELLED_CASES,
+    COMMENT_FIGURES,
     Case,
     FAQ,
     NARRATIVE,
+    comment_figures_for,
     guard_blocker,
     load_documents,
     measurement_for,
@@ -881,7 +883,11 @@ def test_duplicated_top_k_slots_are_now_impossible_and_that_is_worth_a_question(
     questions that miss, fewer have their gold page stranded at rank 4+ waiting
     for a slot, and more are crowded out by siblings of the page already in the
     list. Re-measured on the current configuration, deduplicating the cut
-    rescues a real question, and it is the one the old test used as its example.
+    rescues a real question — "para que sirven los tests hoy en dia con ia" on
+    the full population. That is NOT the question the old negative result used as
+    its example ("empezaste como frutero en mercadona no"), which is worth
+    saying out loud: the example was never the mechanism, it was a coincidence of
+    one configuration.
 
     So this is now the guard for the property the pipeline depends on, in two
     halves:
@@ -891,6 +897,18 @@ def test_duplicated_top_k_slots_are_now_impossible_and_that_is_worth_a_question(
       * deduplication is not cosmetic. The count of rescued questions is
         compared against a measured value, so a future change that quietly
         restores the repetition fails here instead of being argued about.
+
+    AND THAT COUNT IS PER POPULATION, which is what this guard used to get wrong.
+    It was pinned to the literal 1, a figure taken on the author's working tree.
+    On the committed corpus -- 33 pages, 41 questions -- the cut rescues TWO:
+    the question above plus "que estabas haciendo en mercadona los ultimos años",
+    whose gold page a clone reaches for through a different neighbourhood of
+    pages. One question is 1/41 = 0.024 of recall on the reduced population, so
+    a floor carried across populations unchanged is not a floor. The count is now
+    read from ``tests/real_wiki.py::COMMENT_FIGURES`` by population name, exactly
+    as ``tests/test_recall_claims.py`` does for the figures the two RAG comments
+    publish, and ``comment_figures_for`` refuses a third population rather than
+    scoring it against a foreign count.
 
     The un-deduplicated cut is obtained by neutralising
     ``_one_chunk_per_page`` for the duration of the comparison rather than by
@@ -939,11 +957,28 @@ def test_duplicated_top_k_slots_are_now_impossible_and_that_is_worth_a_question(
     finally:
         RAGPipeline._one_chunk_per_page = original
 
-    assert rescued == 1, (
-        f"the per-page cut now rescues {rescued} question(s), measured at 1 on "
-        f"2026-09-29. More means the ranking shifted and this floor wants "
-        f"re-deriving; fewer means the cut stopped buying anything and the cost "
-        f"of a top_k slot has to be re-argued."
+    figures = comment_figures_for(sweep.documents)
+    assert figures is not None, (
+        "this checkout resolves a labelled-question count this guard has no "
+        "recorded rescued-question count for. It lives in "
+        "tests/real_wiki.py::COMMENT_FIGURES, calibrated for "
+        f"{[f.questions for f in COMMENT_FIGURES]}. Re-measure on the population "
+        "that remains and add a row -- do not point this checkout at another "
+        "population's count."
+    )
+    assert figures.questions == len(cases), (
+        f"the row resolved for {figures.population} is calibrated for "
+        f"{figures.questions} questions but this sweep scored {len(cases)}."
+    )
+
+    assert rescued == figures.rescued_by_page_cut, (
+        f"the per-page cut now rescues {rescued} question(s) on the "
+        f"{figures.population} population, and this checkout measured "
+        f"{figures.rescued_by_page_cut} on 2026-10-01. More means the ranking "
+        f"shifted and the {figures.population} figure wants re-deriving; fewer "
+        "means the cut stopped buying anything and the cost of a top_k slot has "
+        "to be re-argued. This is a figure about a corpus, so it is recorded per "
+        "corpus; do not relax it into a range that fits both."
     )
 
 

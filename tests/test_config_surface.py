@@ -37,7 +37,7 @@ site's literal. A new ``_env_decimal`` wrapper added next year is picked up with
 no edit here.
 
 It parses with :mod:`ast` rather than a regex for a second reason:
-``backend/main.py:275`` mentions ``os.getenv("CORS_ORIGINS")`` inside a comment
+``backend/main.py:289`` mentions ``os.getenv("CORS_ORIGINS")`` inside a comment
 explaining what the old code did. A regex reads that comment as a read site and
 attributes a live key to a line of prose. The AST does not see comments at all.
 
