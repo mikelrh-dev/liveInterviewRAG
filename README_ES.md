@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <img src="https://lh3.googleusercontent.com/aida/AEtjO1XDN3xw7saf4qPk_UZR4781Gexk8-NmlXM4XutayLy7jiMZ7pVX2mMGHVy2J0sU91_vBtxWLqOIGRA13TCCJmOr8S9AZTURQnIyHYB-BfLoF-1erRaT_RqrH_kbNWdIeXRj4iwfYhSh11Efr0WYUtFsGSj4vDK6ZS00pM4d3mZGhkYGJpCjZaa9mqQ9jPZDfTUIOKY0Bq0_JK8nFIk0RsdbRXBskpdtivX1vkhq_Sx8RFFA_XQJHqgRv9I" alt="InterviewTTS - Gemelo Digital con IA por Voz" width="100%"/>
+  <img src="docs/hero-banner.png" alt="InterviewTTS — gemelo digital con IA por voz para recrutadores" width="100%"/>
 </p>
 
 <p align="center">
@@ -49,12 +49,6 @@ No es una demo. Es un sistema desplegable con tradeoffs reales, restricciones re
 - **Rate limiting** — 10 solicitudes por minuto por IP para prevenir abuso
 - **Limpieza periódica de audio** — Archivos TTS antiguos se eliminan automáticamente
 - **Testeado** — 1006 tests de Python más 333 tests de Node cubriendo config, RAG, LLM, STT, TTS, endpoints de API, memoria de conversación, caché de respuestas, persistencia de embeddings, framing SSE, el procedimiento TLS de nginx y la ruta de despliegue
-
----
-
-<p align="center">
-  <img src="https://lh3.googleusercontent.com/aida/AEtjO1XDN3xw7saf4qPk_UZR4781Gexk8-NmlXM4XutayLy7jiMZ7pVX2mMGHVy2J0sU91_vBtxWLqOIGRA13TCCJmOr8S9AZTURQnIyHYB-BfLoF-1erRaT_RqrH_kbNWdIeXRj4iwfYhSh11Efr0WYUtFsGSj4vDK6ZS00pM4d3mZGhkYGJpCjZaa9mqQ9jPZDfTUIOKY0Bq0_JK8nFIk0RsdbRXBskpdtivX1vkhq_Sx8RFFA_XQJHqgRv9I" alt="Pipeline de InterviewTTS" width="100%"/>
-</p>
 
 ---
 
@@ -188,10 +182,6 @@ las estimaciones de arriba, y eso no está en este repositorio.
 
 El enfoque: verificar con tests, documentar el tradeoff y marcar una estimación como
 estimación.
-
-<p align="center">
-  <img src="https://lh3.googleusercontent.com/aida/AEtjO1WlIlZaXyG8jJTVSZFt4aoV8lMVzD6waZPeCteST98zN6YcdOqwmP0rIVmfOBhmzFRrBPKWZvwXJO00XjL5m03UbE-MVl87dXjI8LmwJk4mWMaOxzOLEe0b9JMVc8OrFnWxjANMdDYbkMVrSt-wu_1w7SlYkQjkmYSNvbDarmtv0i2lmsyZCifOFxV8WSYEU7JXiq7-VX9Q-BSwlV7wHvVuZiTBYZwMqyyk6qZB75fJf7xg6fDz4zoBcG0" alt="Comparación de Rendimiento" width="100%"/>
-</p>
 
 ---
 

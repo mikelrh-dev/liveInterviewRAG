@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <img src="https://lh3.googleusercontent.com/aida/AEtjO1XDN3xw7saf4qPk_UZR4781Gexk8-NmlXM4XutayLy7jiMZ7pVX2mMGHVy2J0sU91_vBtxWLqOIGRA13TCCJmOr8S9AZTURQnIyHYB-BfLoF-1erRaT_RqrH_kbNWdIeXRj4iwfYhSh11Efr0WYUtFsGSj4vDK6ZS00pM4d3mZGhkYGJpCjZaa9mqQ9jPZDfTUIOKY0Bq0_JK8nFIk0RsdbRXBskpdtivX1vkhq_Sx8RFFA_XQJHqgRv9I" alt="InterviewTTS - Voice-based AI Digital Twin" width="100%"/>
+  <img src="docs/hero-banner.png" alt="InterviewTTS — a voice-based AI digital twin for recruiters" width="100%"/>
 </p>
 
 <p align="center">
@@ -49,12 +49,6 @@ It's not a demo. It's a deployable system with real tradeoffs, real constraints,
 - **Rate limiting** — 10 requests per minute per IP to prevent abuse
 - **Periodic audio cleanup** — Old TTS files are pruned automatically
 - **Tested** — 1006 Python tests plus 333 Node tests covering config, RAG, LLM, STT, TTS, API endpoints, conversation memory, response cache, embedding persistence, SSE framing, the nginx TLS procedure and the deploy path
-
----
-
-<p align="center">
-  <img src="https://lh3.googleusercontent.com/aida/AEtjO1XDN3xw7saf4qPk_UZR4781Gexk8-NmlXM4XutayLy7jiMZ7pVX2mMGHVy2J0sU91_vBtxWLqOIGRA13TCCJmOr8S9AZTURQnIyHYB-BfLoF-1erRaT_RqrH_kbNWdIeXRj4iwfYhSh11Efr0WYUtFsGSj4vDK6ZS00pM4d3mZGhkYGJpCjZaa9mqQ9jPZDfTUIOKY0Bq0_JK8nFIk0RsdbRXBskpdtivX1vkhq_Sx8RFFA_XQJHqgRv9I" alt="InterviewTTS Pipeline" width="100%"/>
-</p>
 
 ---
 
@@ -188,10 +182,6 @@ way to make the estimates above checkable, and it is not in this repository.
 
 The approach: verify with tests, document the tradeoff, and mark an estimate as an
 estimate.
-
-<p align="center">
-  <img src="https://lh3.googleusercontent.com/aida/AEtjO1WlIlZaXyG8jJTVSZFt4aoV8lMVzD6waZPeCteST98zN6YcdOqwmP0rIVmfOBhmzFRrBPKWZvwXJO00XjL5m03UbE-MVl87dXjI8LmwJk4mWMaOxzOLEe0b9JMVc8OrFnWxjANMdDYbkMVrSt-wu_1w7SlYkQjkmYSNvbDarmtv0i2lmsyZCifOFxV8WSYEU7JXiq7-VX9Q-BSwlV7wHvVuZiTBYZwMqyyk6qZB75fJf7xg6fDz4zoBcG0" alt="Performance Comparison" width="100%"/>
-</p>
 
 ---
 
