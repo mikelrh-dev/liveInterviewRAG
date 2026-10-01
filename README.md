@@ -130,7 +130,7 @@ sequenceDiagram
 | --- | --- | --- |
 | Backend | Python 3.10 + FastAPI | Async-first, OpenAPI docs auto-generated, Pydantic validation |
 | STT | faster-whisper (CTranslate2) | CTranslate2 is way faster than vanilla Whisper on CPU, int8 quantization keeps RAM at ~1.4 GB |
-| Embeddings | sentence-transformers (paraphrase-multilingual-MiniLM-L12-v2) | Multilingual because the corpus and the questions are Spanish; the English model it replaced charged a language gap on every paraphrase (recall@3 0.653 → 0.816 on the 49-question labelled set). ~1.1 GB RSS, CPU-only |
+| Embeddings | sentence-transformers (paraphrase-multilingual-MiniLM-L12-v2) | Multilingual because the corpus and the questions are Spanish; the English model it replaced charged a language gap on every paraphrase. That swap **alone** — the model as the only lever touched — is recall@3 0.653 → 0.796 on the 49-question labelled set (2026-09-29). 0.816 is where **four** levers sit together: this model, the page-identity prefix, the one-chunk-per-page cut and the bodyless-heading filter. Reading it as the embedder's share of the movement overstates what the model did. ~1.1 GB RSS, CPU-only |
 | LLM | Google AI (Gemini) + OpenRouter | Google AI as primary (fast, cheap), OpenRouter as fallback with model flexibility |
 | TTS | Edge TTS (`edge-tts`) | No API key to configure, no GPU, no local model to ship. It is a *cloud* service — the text is sent to Microsoft — so there is no offline synthesis |
 | Frontend | Vanilla HTML/CSS/JS | No framework overhead, faster cold start on the free tier |
