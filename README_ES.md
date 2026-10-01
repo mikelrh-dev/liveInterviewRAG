@@ -28,7 +28,9 @@ Construido como proyecto de portfolio para demostrar ingeniería fullstack con a
 
 ## Por qué este proyecto
 
-La idea original era simple: hacer un portfolio que no desaparezca en los 6 segundos del escaneo del CV. La ejecución fue más profunda: un pipeline de voz completo que combina speech-to-text, generación aumentada por recuperación y text-to-speech, ejecutándose de extremo a extremo en producción en un VPS gratuito.
+La idea original era simple: hacer un portfolio que no desaparezca en los 6 segundos del escaneo del CV. La ejecución fue más profunda: un pipeline de voz completo que combina speech-to-text, generación aumentada por recuperación y text-to-speech, más un procedimiento de despliegue reproducible para el hardware al que apunta: un VPS ARM64 de 0 $, sin GPU, todo open source. [`scripts/deploy.sh`](scripts/deploy.sh), la unidad de systemd, `nginx/interview.conf` y el script de TLS llevan un clon limpio a un servicio en marcha, y la ruta de nginx y la de despliegue están cubiertas por la suite de tests.
+
+Lo que este repositorio no registra es si algún host concreto lo está ejecutando ahora mismo. `scripts/deploy.sh:17` pone `VPS_HOST` por defecto al placeholder `your-vps-hostname`, no aparece ningún host ni dirección en todo el árbol, y el único tag es `pre/wiki-pipeline`. Así que esto es un procedimiento de despliegue que puedes ejecutar, no un enlace a una instancia en marcha — juzga la desplegabilidad por el script y por los tests, no por una afirmación de disponibilidad.
 
 No es una demo. Es un sistema desplegable con tradeoffs reales, restricciones reales y una UX real para reclutadores. El código es el portfolio.
 

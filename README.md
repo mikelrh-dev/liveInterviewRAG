@@ -28,7 +28,9 @@ Built as a portfolio project to demonstrate fullstack engineering with real-time
 
 ## Why this project
 
-The original idea was simple: make a portfolio that doesn't disappear in the 6-second CV scan. The execution went deeper — a full voice pipeline that combines speech-to-text, retrieval-augmented generation, and text-to-speech, running end-to-end in production on a free VPS.
+The original idea was simple: make a portfolio that doesn't disappear in the 6-second CV scan. The execution went deeper — a full voice pipeline that combines speech-to-text, retrieval-augmented generation, and text-to-speech, plus a reproducible deployment procedure for the hardware it targets: a $0 ARM64 VPS, no GPU, all open-source. [`scripts/deploy.sh`](scripts/deploy.sh), the systemd unit, `nginx/interview.conf` and the TLS setup script take a clean checkout to a running service, and the nginx and deploy paths are covered by the test suite.
+
+What this repository does not record is whether any particular host is running it right now. `scripts/deploy.sh:17` defaults `VPS_HOST` to the placeholder `your-vps-hostname`, no host or address appears anywhere in the tree, and the only tag is `pre/wiki-pipeline`. So this is a deployment procedure you can run, not a link to a running instance — judge the deployability from the script and the tests, not from a claim of uptime.
 
 It's not a demo. It's a deployable system with real tradeoffs, real constraints, and a real recruiter-facing UX. The code is the portfolio.
 
