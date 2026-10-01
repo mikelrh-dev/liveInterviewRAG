@@ -264,12 +264,21 @@ nunca tuvo. Para cambiar el bind, cambia la línea de comandos.
 
 Haz bind a `127.0.0.1`, que es lo que hace el servicio desplegado
 (`deployment/interviewtts.service:24`). La API solo debería ser alcanzable a través
-del reverse proxy local: nginx termina el TLS, añade las cabeceras de seguridad y es
-donde se aplica el rate limit por IP. Hacer bind a `0.0.0.0` expone la API
-directamente y se salta las tres cosas. Para alcanzar la API desde otra máquina
-mientras desarrollas, usa un túnel SSH en vez de abrir el bind. Ver
-[RUNBOOK.md](RUNBOOK.md) para los flags `--proxy-headers` que hacen falta cuando hay
-otro proxy delante.
+del reverse proxy local: nginx termina el TLS y añade las cabeceras de seguridad,
+las dos cosas que hacer bind a `0.0.0.0` se salta.
+
+El rate limit por IP **no** es una de ellas, ni es de nginx. Es
+`RateLimitMiddleware` en `backend/middleware.py:110`, que indexa cada cubo por
+`resolve_client_ip(request)`: el mismo middleware con bind `0.0.0.0` que con
+loopback, así que cambiar el bind no lo salta nunca. Lo que decide el proxy es
+*qué* dirección resuelve esa clave: con `--proxy-headers` y un
+`--forwarded-allow-ips` restringido a loopback (ver [RUNBOOK.md](RUNBOOK.md)), cada
+visitante detrás del proxy tiene su propio cubo; sin ellos, todo internet comparte
+el del proxy. `nginx/interview.conf` no tiene ningún `limit_req` y ahí no vive el
+límite.
+
+Para alcanzar la API desde otra máquina mientras desarrollas, usa un túnel SSH en
+vez de abrir el bind.
 
 ---
 
