@@ -159,7 +159,7 @@ These are documented tradeoffs, not bugs. The point is that every decision has a
 
 Every optimization targets real latency in the voice pipeline. Here's what I implemented and why:
 
-| Optimization | Latency saved | Technique | Risk |
+| Optimization | Latency effect (estimated, not measured) | Technique | Risk |
 | --- | --- | --- | --- |
 | System prompt trimming | -0.5-1.5s | Reduced 50% of tokens, kept essential instructions | Low |
 | FAQ response cache | -4-8s (hits) | 20 common questions with pre-generated answers | None |
@@ -168,10 +168,24 @@ Every optimization targets real latency in the voice pipeline. Here's what I imp
 | Embedding persistence | -2-3s startup | Pre-computed embeddings saved to disk, validated on load | Medium |
 | Streaming SSE | Perceived 0s | Tokens arrive before full response, avatar starts talking | None |
 
-**Before optimizations:** ~15-25s per response
-**After optimizations:** ~8-12s (cache hits: ~4-6s)
+**No latency figure in this repository is measured, so none is quoted here.** There is
+no per-turn latency telemetry. `backend/turns/streaming.py` logs the STT duration
+(`:280`) and the LLM+TTS duration (`:656`), but nothing logs the gap between them —
+the RAG stage — and nothing records time-to-first-token, so the per-turn total
+cannot be reconstructed from a log. The "latency effect" column above is therefore
+an estimate, not a measurement.
 
-The approach: measure first, optimize the bottleneck, verify with tests, document the tradeoff.
+The old "~15-25s before, ~8-12s after" pair is gone for a second reason: the
+"before" number describes a version of this code that no longer exists, so nothing
+in the repository could reproduce it on demand.
+
+The UI is the honest part of this. `frontend/index.html:118` shows `TTFT —` until a
+turn has actually been measured, and it does not estimate in the meantime — which
+is the behaviour the README should have had. Real instrumentation would be the only
+way to make the estimates above checkable, and it is not in this repository.
+
+The approach: verify with tests, document the tradeoff, and mark an estimate as an
+estimate.
 
 <p align="center">
   <img src="https://lh3.googleusercontent.com/aida/AEtjO1WlIlZaXyG8jJTVSZFt4aoV8lMVzD6waZPeCteST98zN6YcdOqwmP0rIVmfOBhmzFRrBPKWZvwXJO00XjL5m03UbE-MVl87dXjI8LmwJk4mWMaOxzOLEe0b9JMVc8OrFnWxjANMdDYbkMVrSt-wu_1w7SlYkQjkmYSNvbDarmtv0i2lmsyZCifOFxV8WSYEU7JXiq7-VX9Q-BSwlV7wHvVuZiTBYZwMqyyk6qZB75fJf7xg6fDz4zoBcG0" alt="Performance Comparison" width="100%"/>

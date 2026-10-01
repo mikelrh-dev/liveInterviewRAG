@@ -159,7 +159,7 @@ Estos son tradeoffs documentados, no bugs. El punto es que cada decisión tiene 
 
 Cada optimización apunta a latencia real en el pipeline de voz. Esto es lo que implementé y por qué:
 
-| Optimización | Latencia ahorrada | Técnica | Riesgo |
+| Optimización | Efecto en latencia (estimado, no medido) | Técnica | Riesgo |
 |---|---|---|---|
 | Reducción del system prompt | -0.5-1.5s | Reduje 50% de tokens, mantuve instrucciones esenciales | Bajo |
 | Caché de respuestas FAQ | -4-8s (hits) | 20 preguntas comunes con respuestas pre-generadas | Ninguno |
@@ -168,10 +168,24 @@ Cada optimización apunta a latencia real en el pipeline de voz. Esto es lo que 
 | Persistencia de embeddings | -2-3s al arrancar | Embeddings pre-computados guardados en disco, validados al cargar | Medio |
 | Streaming SSE | 0s percibido | Tokens llegan antes de la respuesta completa, avatar empieza a hablar | Ninguno |
 
-**Antes de las optimizaciones:** ~15-25s por respuesta
-**Después de las optimizaciones:** ~8-12s (cache hits: ~4-6s)
+**Ninguna cifra de latencia de este repositorio está medida, así que aquí no se cita
+ninguna.** No hay telemetría de latencia por turno. `backend/turns/streaming.py`
+registra la duración del STT (`:280`) y la de LLM+TTS (`:656`), pero nada registra el
+hueco entre ambas —la etapa RAG— ni el time-to-first-token, así que el total del turno
+no se puede reconstruir a partir de un log. La columna de efecto en latencia de
+arriba es por tanto una estimación, no una medición.
 
-El enfoque: medir primero, optimizar el cuello de botella, verificar con tests, documentar el tradeoff.
+El par antiguo "~15-25s antes, ~8-12s después" desaparece por un segundo motivo: la
+cifra de "antes" describe una versión de este código que ya no existe, así que nada
+en el repositorio podría reproducirla bajo demanda.
+
+La parte honesta de esto es la UI. `frontend/index.html:118` muestra `TTFT —` hasta que
+hay un turno realmente medido, y mientras tanto no estima — que es la conducta que
+debería tener el README. Instrumentar de verdad es lo único que haría comprobables
+las estimaciones de arriba, y eso no está en este repositorio.
+
+El enfoque: verificar con tests, documentar el tradeoff y marcar una estimación como
+estimación.
 
 <p align="center">
   <img src="https://lh3.googleusercontent.com/aida/AEtjO1WlIlZaXyG8jJTVSZFt4aoV8lMVzD6waZPeCteST98zN6YcdOqwmP0rIVmfOBhmzFRrBPKWZvwXJO00XjL5m03UbE-MVl87dXjI8LmwJk4mWMaOxzOLEe0b9JMVc8OrFnWxjANMdDYbkMVrSt-wu_1w7SlYkQjkmYSNvbDarmtv0i2lmsyZCifOFxV8WSYEU7JXiq7-VX9Q-BSwlV7wHvVuZiTBYZwMqyyk6qZB75fJf7xg6fDz4zoBcG0" alt="Comparación de Rendimiento" width="100%"/>
