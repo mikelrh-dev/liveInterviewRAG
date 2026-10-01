@@ -560,15 +560,22 @@ def build_stream(
                             # (logged in full at the raise site) and never in
                             # the payload.
                             logger.error("LLM streaming error: %s", data)
-                            # The candidate heard whatever was synthesised and
-                            # read every token that was streamed, so the
-                            # exchange is real and it is kept — marked, because
-                            # a half-answer presented as a whole one is the one
-                            # thing this product must not do. A provider that
-                            # died before emitting a single token has no answer
-                            # to keep, and stores nothing.
+                            # One rule, both ways round: the exchange is kept
+                            # when the candidate HEARD something, and dropped
+                            # when nothing was ever asked of the synthesiser.
+                            #
+                            # The second half is not a rare branch. `SentenceBuffer`
+                            # only emits on `. ! ? \n`, so a provider that dies
+                            # before its first terminator leaves
+                            # `dispatched_sentences` empty -- synthesis is never
+                            # called, nothing is ever announced, and the tokens
+                            # that did stream were read on screen and never
+                            # spoken. Storing that writes a turn into the
+                            # transcript for an exchange that did not happen,
+                            # and `incomplete: true` would label a silence as a
+                            # half-answer rather than as the absence of one.
                             committed = None
-                            if full_response.strip():
+                            if full_response.strip() and announced_audio:
                                 committed = await _store_truncated_turn(
                                     conversation_id,
                                     user_text,

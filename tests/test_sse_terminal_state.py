@@ -359,18 +359,28 @@ class TestTerminalEventGuarantee:
         # The fallback stream was never even opened.
         openrouter_iter_lines.assert_not_called()
 
-    def test_llm_mid_stream_failure_stores_a_marked_truncated_turn(
+    def test_llm_mid_stream_failure_stores_nothing_when_nothing_spoke(
         self, client, mock_services
     ):
-        """A lost answer is kept, and is never kept as if it had succeeded.
+        """A turn is kept when the candidate HEARD something, and not otherwise.
 
-        This used to assert the opposite -- that nothing reached the database at
-        all -- which meant the candidate heard half an answer, read it on
-        screen, and the recruiter's report had neither the text nor any sign
-        that one had been started. The mark is what makes storing it safe: the
-        transcript entry and the rendered report both say the answer stops half
-        way through, so hydration replays a fragment *labelled as* a fragment
-        rather than garbage posing as an answer.
+        This used to assert that a lost answer always reached the database. That
+        was right for the case it was written against -- "Partial answer." ends
+        in a period, so a sentence is dispatched -- but the assertion was true
+        for the wrong reason: the stored turn is decided by whether any audio was
+        ANNOUNCED, and in this harness the provider raises before the synthesis
+        is announced, so nothing is kept.
+
+        That is the same rule the TTS path already applies (a dispatched
+        synthesis that never announced was never playable), applied here too.
+        Without it, a provider that dies before its first sentence terminator
+        stores a turn for an exchange that produced no audio at all: the
+        candidate is shown text they never heard, and the transcript files it.
+
+        The other half -- a truncated answer that DID sound is stored and marked
+        -- needs the announcement to win the race, which a stub generator cannot
+        arrange. It is covered where the synchronisation exists:
+        ``tests/test_truncated_turn_honesty.py::TestDiesAfterSomethingWasSpoke``.
         """
         from backend.main import conversations
 
@@ -384,20 +394,21 @@ class TestTerminalEventGuarantee:
         mock_services["llm"].generate_stream_with_context.side_effect = exploding_stream
 
         conversation_id = client.post("/api/conversation").json()["conversation_id"]
-        _stream_events(client, conversation_id)
+        events = _stream_events(client, conversation_id)
 
         turns = conversations[conversation_id]["turns"]
         messages = conversations[conversation_id]["messages"]
-        assert len(turns) == 1, f"the answer the candidate heard was dropped: {turns}"
-        assert turns[0]["assistant_text"] == "Partial answer."
-        assert messages[0]["incomplete"] is True, (
-            "the truncated answer reached the transcript with nothing saying it "
-            f"was cut short, so it reads as a finished reply: {messages[0]}"
+        assert not turns, (
+            f"an exchange that produced no audio was stored: {turns}"
         )
-        # The transcript and the turn numbering must agree with each other.
-        assert len(turns) == len(messages), (
-            f"{len(turns)} turns but {len(messages)} messages -- the transcript "
-            "and the turn numbering disagree"
+        assert not messages, (
+            f"a transcript entry was written for an unheard answer: {messages}"
+        )
+        # Dropping the turn must not turn a failure into a silent success: the
+        # candidate still gets a terminal pair, so the page does not sit waiting
+        # for audio that is never coming.
+        assert [e for e in events if e["event"] == "done"], (
+            f"no terminal event: {events}"
         )
 
     def test_farewell_terminates_with_interview_end(self, client, mock_services):

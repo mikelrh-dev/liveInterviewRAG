@@ -379,6 +379,214 @@ class TestNothingToKeepStoresNothing:
         )
 
 
+# ─── 1b. Dies AFTER streaming text, but before anything could be spoken ─────
+#
+#
+# THE DEFECT THIS EXTENDS
+# -----------------------
+# The case above is an LLM that dies before a WORD. The guard there is
+# `if full_response.strip():`, so it holds. The gap is the provider that streams
+# real text and THEN dies, before the first sentence terminator.
+#
+# `SentenceBuffer` (backend/services/llm.py:60) only emits a sentence on `.`,
+# `!`, `?` or `\n`. So a provider that dies mid-clause has dispatched NOTHING:
+# no synthesis was requested, no audio exists, and nothing can be spoken. The
+# `error` handler skips `flush()` entirely -- the except arm at :513 jumps
+# straight to the queue -- so the fragment sitting in the buffer is never
+# rescued either.
+#
+# `full_response.strip()` is nevertheless truthy, so :571 stored the fragment.
+# Measured, before the fix:
+#
+#     transcription, token, token, error, done
+#     done : {'n': 0, 'has_context': False, 'incomplete': True}
+#     turns persisted: 1   audio announced: 0   mp3 on disk: []
+#     report: **Gemelo:** Tengo experiencia senior en deteccion de fraude y equipo
+#             > **Respuesta incompleta.**
+#
+# Two readers are lied to. The candidate reads text they never heard, and the
+# report files an exchange that did not happen -- with the honesty mark ON it,
+# which is worse, because the mark is supposed to mean "this was cut short",
+# not "this was never spoken".
+#
+# WHY THE POST-LOOP GUARD MISSED IT
+# `dispatched_sentences and not announced_audio` (:670) is deliberately "asked
+# and delivered nothing" rather than "no audio", because an answer with nothing
+# speakable in it is a real exchange worth filing
+# (tests/test_tts_silence_honesty.py::TestNothingWasEverAskedToBeSpoken pins
+# that). Here synthesis was never ASKED, so the condition is false -- correctly,
+# for its own case, and wrongly for this one. It also cannot help: it lives
+# after the `return` at :589.
+
+
+#: A provider that dies mid-clause: real text, no terminator, so no sentence.
+DIE_BEFORE_ANY_TERMINATOR = [
+    "Gemelo: Tengo experiencia senior en deteccion de fraude y equipo",
+    " de deteccion de anomalias en transacciones",
+]
+
+
+class TestDiesAfterStreamingTextButBeforeAnythingSpoke:
+    """The ghost turn: filed, read, and never spoken."""
+
+    @pytest.fixture
+    def ghost_turn(self, isolated_write_targets, store, tmp_path):
+        """One real turn in which the provider dies before the first period."""
+        cid = _register("died-before-first-terminator")
+        probe = _TTSProbe(hold_last=False)
+        try:
+            raw = _run_stream(
+                _container(
+                    probe, tokens=DIE_BEFORE_ANY_TERMINATOR, dies=True, store=store
+                ),
+                cid,
+                tmp_path,
+                isolated_write_targets.audio,
+            )
+            yield {
+                "cid": cid,
+                "events": _events(raw),
+                "probe": probe,
+                "turns": list(conversations[cid]["turns"]),
+                "messages": list(conversations[cid]["messages"]),
+            }
+        finally:
+            conversations.pop(cid, None)
+
+    def test_the_precondition_nothing_was_ever_synthesised(self, ghost_turn):
+        """Guard first: the whole defect lives in this being empty.
+
+        A test that does not establish it can pass on the healthy path, where
+        the fragment IS filed, and prove nothing about the death path.
+        """
+        assert ghost_turn["probe"].written == [], (
+            f"synthesis was called for {ghost_turn['probe'].written}; this case "
+            "needs a provider that dies before the first terminator, so no "
+            "sentence is ever dispatched"
+        )
+        assert _of_type(ghost_turn["events"], "audio_url") == [], (
+            "no audio can be announced when nothing was synthesised"
+        )
+
+    def test_no_turn_is_persisted(self, ghost_turn):
+        assert ghost_turn["turns"] == [], (
+            f"a turn the candidate never heard was committed: {ghost_turn['turns']}\n"
+            "The provider died mid-clause. Synthesis was never requested, so "
+            "there is no audio and no exchange -- only a fragment of an answer "
+            "the model never finished."
+        )
+
+    def test_nothing_is_written_to_the_transcript(self, ghost_turn):
+        assert ghost_turn["messages"] == [], (
+            f"a transcript entry was written for a turn that never happened: "
+            f"{ghost_turn['messages']}"
+        )
+
+    def test_the_terminal_event_names_no_turn(self, ghost_turn):
+        done = _of_type(ghost_turn["events"], "done")[-1]["data"]
+
+        assert "n" not in done, (
+            f"`done` counted a turn that was never stored: {done}. The client "
+            "advances its counter and the Context panel is asked about a turn "
+            "that does not exist."
+        )
+        assert done.get("incomplete") is not True, (
+            f"the turn was filed as `incomplete`, which claims something WAS "
+            f"spoken and cut short: {done}. Nothing was spoken at all. The mark "
+            "has to mean one thing or it teaches its reader to ignore it."
+        )
+
+    def test_the_report_records_no_exchange(self, ghost_turn, tmp_path):
+        report = ReportService(tmp_path / "reports")
+        path = report.generate(
+            ghost_turn["cid"], conversations[ghost_turn["cid"]]
+        )
+
+        # `generate` returns None when there is nothing to report, and a turn
+        # that never happened is exactly that. Asserting the file exists would
+        # assert the opposite of the fix: it would demand an empty transcript be
+        # written for an exchange with no audio and no stored turn.
+        assert path is None, (
+            f"a report was written for an exchange that never happened: {path}\n"
+            + path.read_text(encoding="utf-8")
+        )
+
+    def test_the_candidate_is_still_told_the_provider_failed(self, ghost_turn):
+        """Dropping the turn must not turn a failure into a silent success.
+
+        The turn is not stored and nothing is spoken, but the terminal pair is
+        unchanged: an `error` then a `done`. A `done` alone would leave the page
+        waiting for audio that will never arrive.
+        """
+        errors = _of_type(ghost_turn["events"], "error")
+
+        assert errors, (
+            "the provider failure was swallowed: the candidate is left with a "
+            f"terminal event and no explanation. events: {ghost_turn['events']}"
+        )
+        assert _of_type(ghost_turn["events"], "done"), "precondition: a terminal event exists"
+
+
+class TestDiesAfterSomethingWasSpoken:
+    """The control. `incomplete: true` keeps exactly the meaning it had.
+
+    Commit `1f4b0a2` documented the mark as "the answer was cut short" -- which
+    is only true when the candidate HEARD something. This pins that half so the
+    fix above cannot quietly take the whole thing with it.
+    """
+
+    @pytest.fixture
+    def spoken_turn(self, isolated_write_targets, store, tmp_path):
+        """One real turn in which a sentence sounded and then the provider died."""
+        cid = _register("died-after-a-sentence-spoke")
+        probe = _TTSProbe()
+        try:
+            raw = _run_stream(
+                _container(probe, tokens=["Uno. ", "Dos y medio"], dies=True, store=store),
+                cid,
+                tmp_path,
+                isolated_write_targets.audio,
+            )
+            yield {
+                "cid": cid,
+                "events": _events(raw),
+                "probe": probe,
+                "turns": list(conversations[cid]["turns"]),
+                "messages": list(conversations[cid]["messages"]),
+            }
+        finally:
+            conversations.pop(cid, None)
+
+    def test_the_turn_is_still_persisted(self, spoken_turn):
+        assert _of_type(spoken_turn["events"], "audio_url"), (
+            "precondition: a sentence sounded, which is what earns the turn a "
+            "place on disk"
+        )
+        assert len(spoken_turn["turns"]) == 1, (
+            f"a turn the candidate actually heard was dropped: {spoken_turn['turns']}"
+        )
+
+    def test_it_is_still_marked_incomplete(self, spoken_turn):
+        messages = spoken_turn["messages"]
+
+        assert len(messages) == 1
+        assert messages[0]["incomplete"] is True, (
+            "the answer was cut off mid-sentence and nothing says so, so a "
+            f"half-answer reads as a whole one: {messages}"
+        )
+
+    def test_the_terminal_event_still_names_it(self, spoken_turn):
+        done = _of_type(spoken_turn["events"], "done")[-1]["data"]
+
+        # Zero-based, like every other turn on the wire: `build_turn` derives
+        # `n` from `len(conversations[cid]["turns"])`, so the first committed
+        # turn of a fresh conversation is 0. `fetchContext` treats `n < 0` as
+        # "no such turn" and 0 as real, so reporting the wrong number here
+        # would 404 the panel for a turn that is on disk.
+        assert done.get("n") == 0, f"`done` lost the committed turn: {done}"
+        assert done.get("incomplete") is True, f"the mark was dropped: {done}"
+
+
 # ─── 2. Orphan audio is deleted; announced audio is not ────────────────────
 
 
