@@ -516,7 +516,7 @@ class RAGPipeline:
         # WHAT THE FILTER COSTS, in one unit. At ``top_k`` = twice the chunk
         # count, the labelled questions return these counts of RESULTS:
         #     full (37 pages, 49 questions) discards 959 of the 1813 results (52.9%) -- 854 results with the filter and 1813 without
-        #     reduced (33 pages, 41 questions) discards 720 of the 1353 results (53.2%) -- 633 results with the filter and 1353 without
+        #     reduced (33 pages, 41 questions) discards 722 of the 1353 results (53.4%) -- 631 results with the filter and 1353 without
         # and at the shipped top_k=3 it costs the caller nothing at all, which
         # is the fact the two numbers together say: a wide filter that is
         # invisible until a question runs thin.

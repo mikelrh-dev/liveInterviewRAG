@@ -98,10 +98,22 @@ class Config:
         # replaced, all-MiniLM-L6-v2, is an ENGLISH model, so every Spanish
         # paraphrase paid for the language gap.
         #
-        # CURRENT — measured 2026-09-29 and re-verified 2026-09-30, through the
-        # production path (real loader, real 400/50 chunker, real
+        # CURRENT — the full row measured 2026-09-29 on the working tree, the
+        # reduced row re-measured 2026-10-01 on the COMMITTED corpus. Both
+        # through the production path (real loader, real 400/50 chunker, real
         # `expand_query`, strict primary-gold-page match at top_k=3, one chunk
         # per page), on the labelled questions in `tests/real_wiki.py`.
+        #
+        # "ON WHICH TREE" is the part that decides which row a number belongs
+        # to, and the reduced row was previously calibrated on the wrong one.
+        # `full` IS the working tree, so its row belongs there. `reduced` is what
+        # `git clone` produces, so its row has to be measured on what is
+        # COMMITTED: 15 uncommitted `wiki/*.md` files gave the same 33 pages and
+        # the same 116 chunks with none of the same text, and therefore a
+        # different ranking. A count that stays right while the text behind it
+        # changes is the worst kind of corroboration -- it makes a wrong row
+        # look checked. `tests/test_committed_corpus_figures.py` rebuilds that
+        # corpus from `git show HEAD:` and holds this row to it.
         #
         # TWO POPULATIONS, because `wiki/` has two states. Four FAQ pages
         # (`nivel-ingles`, `disponibilidad`, `hobbies-intereses`,
@@ -110,7 +122,7 @@ class Config:
         # only the 49-question figures made this comment describe a corpus a
         # clone does not have:
         #     full (37 pages, 49 questions) recall@1 0.7347 · recall@3 0.8163 · MRR@5 0.7803
-        #     reduced (33 pages, 41 questions) recall@1 0.7317 · recall@3 0.8293 · MRR@5 0.7935
+        #     reduced (33 pages, 41 questions) recall@1 0.7561 · recall@3 0.8537 · MRR@5 0.8118
         # On the full population 40 of 49 gold pages are served, 2 of 49
         # absent from the ranking entirely.
         # Four things differ from the 2026-08-28 English baseline and none of

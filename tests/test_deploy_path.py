@@ -208,9 +208,9 @@ def _unit_paths() -> set[str]:
 def _deployed_rag_cache_dir() -> str:
     """Where ``RAGPipeline`` persists embeddings once deployed, as an absolute path.
 
-    ``Config.RAG_CACHE_DIR`` is the single source of truth (backend/config.py:157,
+    ``Config.RAG_CACHE_DIR`` is the single source of truth (backend/config.py:169,
     overridable with ``RAG_CACHE_DIR``), and it is built from ``BASE_DIR``, which
-    is the repository root (``config.py:142``). Deployed, the repository root IS
+    is the repository root (``config.py:154``). Deployed, the repository root IS
     ``DEPLOY_ROOT`` -- that is what the clone target and the unit's
     ``WorkingDirectory`` are. So the path the unit file has to name is
     ``DEPLOY_ROOT / <RAG_CACHE_DIR relative to BASE_DIR>``, computed here rather

@@ -68,9 +68,11 @@ never has to guess which vector space a number belongs to:
     audit trail; it describes a configuration that no longer ships.
   * 2026-09-29, ``paraphrase-multilingual-MiniLM-L12-v2`` (multilingual), the
     page-identity prefix on the embedded text, the one-chunk-per-page top-k cut
-    and the bodyless-heading filter. recall@3 40/49 = 0.8163 full, 34/41 =
-    0.8293 reduced; floors 0.7755 and 0.7805. THESE are the floors the guard
-    enforces now.
+    and the bodyless-heading filter. recall@3 40/49 = 0.8163 full. THE FULL
+    FLOOR IS FROM THAT RUN; the reduced floor is not (see ``MEASURED_REDUCED``).
+  * 2026-10-01, the reduced population re-measured on the COMMITTED corpus --
+    35/41 = 0.8537, floor 0.8049 -- after the 34/41 = 0.8293 published for it
+    turned out to have been measured on the author's working tree.
 
 Both populations were measured through the production path -- the real loader,
 the real 400/50 chunker, real embeddings, real ``expand_query``, strict
@@ -385,13 +387,22 @@ MEASURED_FULL = Measurement(
 #:
 #: It is a SEPARATE measurement with its own floor rather than the 49-question
 #: floor applied to 41 questions, which is the exact mistake this module exists
-#: to stop. The two floors land within 0.005 of each other (0.7755 against
-#: 0.7805), which is the sanity check: the reduced population is not a weaker
-#: instrument, it is a different one, and it happens to agree.
+#: to stop. It is not a weaker instrument, it is a different one: 35/41 =
+#: 0.8537, above the full population's own 0.8163, on a corpus where the eight
+#: dropped questions are exactly the FAQ group the H1 decision turns on.
+#:
+#: RE-MEASURED 2026-10-01, and this is the second re-measurement of this
+#: population because the first one measured the wrong tree. The 34/41 = 0.8293
+#: published until then was derived on the author's working tree -- 15 uncommitted
+#: ``wiki/*.md`` files -- so it described a corpus with the same 33 pages and the
+#: same 116 chunks and none of the same text, and therefore a different ranking.
+#: ``tests/test_committed_corpus_figures.py`` is the guard that measures this
+#: population against ``git show HEAD:`` rather than against disk, which is the
+#: only checkout this row is ever read on.
 MEASURED_REDUCED = Measurement(
     name="reduced",
     questions=41,
-    hits=34,
+    hits=35,
     corpus="wiki/ as actions/checkout produces it -- 33 loaded pages, 4 untracked "
            "FAQ pages absent",
 )
@@ -429,6 +440,14 @@ MEASUREMENTS: Tuple[Measurement, ...] = (MEASURED_FULL, MEASURED_REDUCED)
 # is ``resolved_cases`` and the divisor is that population's size, because the
 # eight questions whose gold page a clean clone lacks cannot be scored against a
 # corpus that does not contain it.
+#
+# AND ON WHICH CHECKOUT, which is not a detail: the ``full`` row is measured on
+# the author's working tree, which is what that population IS. The ``reduced``
+# row is measured on the COMMITTED corpus, because that is the only checkout
+# anybody else ever has, and its previous calibration had been taken on the
+# working tree -- where its figures are never exercised, because there the
+# population is ``full``. ``tests/test_committed_corpus_figures.py`` rebuilds
+# that corpus from ``git show HEAD:`` and holds this row to it.
 
 
 @dataclass(frozen=True)
@@ -480,11 +499,11 @@ COMMENT_FIGURES_REDUCED = CommentFigures(
     population="reduced",
     pages=33,
     questions=41,
-    recall1=0.7317,
-    recall3=0.8293,
-    mrr5=0.7935,
+    recall1=0.7561,
+    recall3=0.8537,
+    mrr5=0.8118,
     chunks=116,
-    filtered=633,
+    filtered=631,
     unfiltered=1353,
 )
 

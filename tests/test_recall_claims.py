@@ -232,7 +232,15 @@ def measured(figures: CommentFigures) -> dict:
     size. Scoring all 49 questions and dividing by 49 is what this fixture used
     to do, and against a clean clone it silently turned 8 unanswerable
     questions into 8 misses: it reported 0.6939 where the population's recall@3
-    is 0.8293, and then failed the very comments it was meant to defend.
+    is 0.8537, and then failed the very comments it was meant to defend.
+
+    THIS IS THE POPULATION-SCOPED HALF OF THE FIX ONLY. It binds the row to
+    whichever corpus the checkout has, which is right for ``full`` and, before
+    ``tests/test_committed_corpus_figures.py`` existed, quietly wrong for
+    ``reduced``: in the author's working tree the reduced row is never
+    exercised, so a check scoped to "this checkout" cannot catch a figure that
+    describes a different one. That file measures the reduced row against
+    ``git show HEAD:`` on purpose.
     """
     documents = load_documents()
     cases = resolved_cases(documents)
