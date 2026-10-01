@@ -36,7 +36,7 @@ THE FRAME
 A comment-only SSE frame: ``": keepalive\\n\\n"``. Per the HTML spec a line
 beginning with ``:`` is a comment, ignored by ``EventSource`` and by every
 hand-rolled reader. This repository's own reader skips it at
-``frontend/app.js:2624`` (``if (!trimmed || !trimmed.startsWith("data: "))
+``frontend/app.js:2637`` (``if (!trimmed || !trimmed.startsWith("data: "))
 continue;``), which is asserted here by re-implementing that filter rather than
 by importing it -- the point is that the frame is dropped by the *filter*, not
 by a lucky parser.
@@ -78,7 +78,7 @@ MIN_TIMEOUT_TO_KEEPALIVE_RATIO = 3
 
 
 def frontend_reads(raw: str) -> list:
-    """Exactly the line filter in ``frontend/app.js:2622-2631``.
+    """Exactly the line filter in ``frontend/app.js:2635-2644``.
 
     Reproduced rather than imported: the assertion is that the frame is dropped
     by the client's own filter, so the filter has to be the client's, written
