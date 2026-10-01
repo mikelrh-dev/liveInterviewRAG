@@ -847,8 +847,42 @@ class TestFarewellDetectionIgnoresDiacritics:
         from backend.farewell import _DOMINANT_PATTERNS, _SPANNING_PATTERNS
 
         for pattern in [*_DOMINANT_PATTERNS, *_SPANNING_PATTERNS]:
-            assert not any(ch in pattern for ch in "\u00e1\u00e9\u00ed\u00f3\u00fa\u00fc\u00f1\u00e0\u00e7"), (
+            assert not any(ch in pattern for ch in "áéíóúüñàç"), (
                 f"an accented literal is back in the pattern table: {pattern!r}. "
                 "Either fold the input or keep the pattern folded -- not both "
                 "and not neither."
             )
+
+    def test_every_signoff_tail_word_is_reachable_after_folding(self):
+        """The same argument, applied to the word set the patterns gate on.
+
+        ``_is_signoff_tail`` is only ever reached with text that has already
+        been folded: ``detect_farewell`` folds the input once, then slices the
+        remainder out of the folded string. So a token carrying a diacritic
+        cannot be produced there at all, and any such entry in
+        ``_SIGNOFF_TAIL_WORDS`` is a word that matches nothing, ever.
+
+        That is not a harmless duplicate. ``"más"`` and ``"mas"`` both being
+        present reads as "both spellings are handled", which is exactly the
+        belief a future editor would act on -- and it is false, because only the
+        folded one can ever fire. "más", "aquí" and "acá" were in the set for
+        the whole time ``_fold`` existed, half of them dead, and no behavioural
+        test could see it: the sign-offs that end an interview pass either way.
+
+        The invariant is therefore the strong form of the one above. Every entry
+        must EQUAL ITS OWN FOLD, which makes the set a description of the only
+        alphabet that can reach it.
+        """
+        from backend.farewell import _SIGNOFF_TAIL_WORDS, _fold
+
+        unreachable = {
+            word: _fold(word) for word in _SIGNOFF_TAIL_WORDS if _fold(word) != word
+        }
+        assert not unreachable, (
+            f"these sign-off tail words can never match: {unreachable}. "
+            "_is_signoff_tail() only sees text that has already been through "
+            "_fold(), so a diacritic here is dead weight that reads as "
+            "'both spellings are handled'. If a caller ever needs raw text, "
+            "fold THAT text before tokenizing rather than adding the accented "
+            "spelling back here."
+        )

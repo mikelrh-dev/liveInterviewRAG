@@ -42,16 +42,32 @@ class STTService:
         self.model_name = model_name
         self.device = device
         self.compute_type = compute_type
-        #: CTranslate2 inference threads, and the parallelism between
-        #: concurrent transcriptions. ``faster_whisper`` defaults this to 1,
-        #: which is faster_whisper's own docstring describing a single inference
-        #: worker: several workers each get their own copy of the model, so two
-        #: overlapping transcriptions really do run at once.
+        #: CTranslate2's ``inter_threads``, and the parallelism between
+        #: concurrent transcriptions. ``faster_whisper`` passes it straight
+        #: through as ``inter_threads=num_workers`` when it builds the single
+        #: ``ctranslate2.models.Whisper`` in its own ``__init__`` (1.2.1).
+        #:
+        #: What that does, in faster-whisper's own words: "When transcribe() is
+        #: called from multiple Python threads, having multiple workers enables
+        #: true parallelism when running the model (concurrent calls to
+        #: self.model.generate() will run in parallel). This can improve the
+        #: global throughput at the cost of increased memory usage."
+        #:
+        #: This comment used to say several workers "each get their own copy of
+        #: the model", and that is not what the parameter does. There is ONE
+        #: model object, built once in ``WhisperModel.__init__`` no matter what
+        #: ``num_workers`` is; the parallelism is inside CTranslate2, and the
+        #: memory it costs is that library's, not N copies of the weights. The
+        #: distinction is not pedantry: "a copy per worker" is the reasoning
+        #: behind capping the value at the core count, and it is the wrong
+        #: reasoning, because the cap that matters is the one CTranslate2
+        #: already applies to intra-op threads. ``cpu_threads`` -- ``intra_threads``
+        #: -- is the parameter that is about cores.
         #:
         #: The default here is 1 -- faster-whisper's -- and the deployed value
         #: comes from ``config.WHISPER_NUM_WORKERS``, because a service does not
         #: read configuration. What the number buys in THIS project, measured on
-        #: two concurrent turns against the same two run in series: 28.5 s -> 21.5
+        #: two concurrent turns against the same two in series: 28.5 s -> 21.5
         #: s (1.32x) at the shipped default, and 1.60x with four workers. Turns
         #: overlap whenever a second tab, or a retry the rate limiter delayed
         #: past the first turn's decode, is in flight.

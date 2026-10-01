@@ -94,6 +94,23 @@ _CONTRADICTED_RE = re.compile(r"^[\s,.;:!?—–-]*(?:pero|aunque|y)\b|^\s*\(")
 #: false positive could return, and "gracias" plus "por hoy" are the two the
 #: pattern list genuinely needs ("eso es todo, gracias", "terminamos la
 #: entrevista por hoy").
+#:
+#: EVERY SPELLING HERE IS UNACCENTED, and that is load-bearing rather than
+#: careless. ``_is_signoff_tail`` is reached only with text that has already
+#: been through ``_fold`` -- ``detect_farewell`` folds the input once, at line
+#: 148, and slices the remainder out of the folded string -- so a token
+#: carrying a diacritic can never be produced by ``_TOKEN_RE`` on that
+#: remainder. "más", "aquí" and "acá" sat in this set as reachable entries until
+#: ``_fold`` was introduced; since then they have been half-dead: the unaccented
+#: "mas", "aqui" and "aca" carry every real match, and the accented twins match
+#: nothing at all. They are removed rather than documented-as-intentional
+#: because there is no intentionality to document -- they are the residue of a
+#: refactor, and a reader who found them would reasonably assume some caller
+#: passes unfolded text.
+#:
+#: If a future caller ever needs to match raw text, the fix is to fold THAT
+#: text before tokenizing, not to restore the accented entries: an entry here
+#: that the folding makes unreachable is indistinguishable from a typo.
 _SIGNOFF_TAIL_WORDS = frozenset(
     {
         "gracias",
@@ -104,13 +121,10 @@ _SIGNOFF_TAIL_WORDS = frozenset(
         "ya",
         "nada",
         "mas",
-        "más",
         "por",
         "hoy",
         "aqui",
-        "aquí",
         "aca",
-        "acá",
         "listo",
         "ok",
         "okay",

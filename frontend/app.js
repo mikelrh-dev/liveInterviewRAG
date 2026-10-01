@@ -60,6 +60,19 @@ let ttsVolumeBuffer = null;
 // The mic analyser's time-domain buffer, hoisted out of the animation loop for
 // the same reason ttsVolumeBuffer is: it is overwritten before it is read, so
 // reallocating it per frame is pure garbage.
+//
+// This comment used to state that as if it were a property of the file, and the
+// file did not agree. `vadLoop` still opens every frame with
+// `const buf = new Uint8Array(analyserNode.fftSize)` -- a fresh allocation,
+// sixty times a second, for exactly as long as a recording runs. The hoisting
+// here is real and it is local to `visualizationFrame`; it is not how this file
+// treats the analyser buffer in general.
+//
+// That asymmetry is worth stating rather than tidying away in a comment. Hoisting
+// the VAD's buffer is a two-line change with the same argument, but it is
+// BEHAVIOUR, not documentation, and a comment is the wrong place to smuggle it.
+// Until someone makes it, the honest reading is: this loop is the fixed one,
+// that one is not, and the reasoning above has only ever applied to this one.
 let micTimeBuffer = null;
 // The last volume handed to the orb, so an unchanged one is not restated.
 let lastBlendVolume = null;
