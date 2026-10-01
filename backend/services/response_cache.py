@@ -175,8 +175,8 @@ _CACHED_QUESTIONS = [
         #     gestionas."
         # and line 25 gives the rule this answer already follows ("siempre
         # acompaña la debilidad con mitigación"). The page is tracked (git ls-
-        # files wiki) and is one of the 37 pages the loader serves, so this is
-        # not a page the candidate has only locally.
+        # files wiki) and the loader serves it in either corpus population, so
+        # this is not a page the candidate has only locally.
         #
         # Removing it would have been the defect: a cached answer to "what are
         # your weaknesses" that discloses nothing, on the strength of a
