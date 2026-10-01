@@ -79,11 +79,15 @@ XFAILED = 0
 #: for a count the Node side already prints on its own CI run. Regenerate with
 #:   node --test "tests/frontend/*.test.mjs"
 #:
+#: 340 -> 348 on 2026-10-01: `vad_noisy_room.test.mjs` adds eight, for the
+#: silence detector in a room that does not go quiet. The Python side of that
+#: same change is measured rather than declared, which is why the two counts move
+#: by different amounts in the same commit and why regenerating this one is a
+#: manual step.
+#:
 #: 333 -> 340 on 2026-10-01: `llm_credential_notice.test.mjs` adds seven, for
-#: the missing-LLM-key notice. The Python side of that same change is measured
-#: rather than declared, which is why the two counts move by different amounts
-#: in the same commit and why regenerating this one is a manual step.
-NODE_TESTS = 340
+#: the missing-LLM-key notice.
+NODE_TESTS = 348
 
 #: The oldest Node whose ``node --test`` expands a glob in its positional
 #: arguments. Glob support landed in v21 and was explicitly NOT backported to

@@ -125,6 +125,41 @@ const RMS_THRESHOLD = 0.015;
 // recording is bounded by maxRecordingMs whatever the VAD decides, so a
 // threshold that lingers costs a longer answer, never a lost one.
 const NOISE_FLOOR_MULTIPLE = 2;
+// The ceiling on the threshold, as a fraction of the turn's loudest frame.
+//
+// THIS IS THE HALF THAT MAKES THE DETECTOR REACHABLE, and it is arithmetic
+// rather than tuning. The guard in `vadLoop` is `loudPeakRms > threshold`: it
+// must be true for a real pause to be recognised, and it is the only thing
+// keeping a runaway floor from cutting a turn mid-word. With the threshold at
+// `NOISE_FLOOR_MULTIPLE x floor` alone, the guard reduces to
+//
+//     peak > 2 x floor        and since floor -> voice during speech,
+//                             peak = voice, so:  voice > 2 x voice
+//
+// which is false, permanently, for the rest of the turn. The floor converges to
+// the signal because it is fed every frame, so the ONLY quantity that stays
+// below the threshold is one that is itself a fraction of the peak. Capping the
+// threshold there makes the guard an identity instead of a hope:
+//
+//     threshold <= PEAK_HEADROOM x peak  <  peak  whenever PEAK_HEADROOM < 1
+//
+// so the guard cannot fail for any value of the floor, at any SNR, for any
+// length of speech. That is what the old comment claimed and did not have.
+//
+// 2/3 rather than 1/2, and the difference is the margin. A frame counts as
+// silence when it falls BELOW the threshold, so the cut needs
+// `noise < threshold <= 2/3 x voice`, i.e. `voice/noise > 1.5`, i.e.
+//
+//     SNR > 20 x log10(1.5) = 3.5 dB
+//
+// and 1/2 would put the boundary at 6 dB -- exactly the SNR the previous commit
+// claimed to fix, which is too tight to survive a quiet speaker. The cost of the
+// larger number is the other direction: a frame at the turn's own peak now sits
+// 1.5x above the threshold instead of 2x, so a voice that dips to two thirds of
+// its own peak starts reading as a pause sooner. At 2/3 that dip has to persist
+// for the whole SILENCE_TIMEOUT_MS, and a speaker does not hold one note two
+// thirds down for 1.2 s while talking.
+const PEAK_HEADROOM = 2 / 3;
 // How fast the floor may RISE towards the signal, as a fraction of the gap per
 // frame.
 //
@@ -1616,6 +1651,11 @@ function disarmRecordingCap() {
 /**
  * Move the noise-floor estimate by one frame, and return the cut threshold.
  *
+ * `peak` is this turn's loudest RMS, maintained by `vadLoop`, and it is the
+ * ceiling the threshold is held under. It is a PARAMETER rather than a module
+ * read so the relationship between the two is visible at the call site, and so
+ * the arithmetic can be exercised on its own.
+ *
  * THE ALGORITHM, AND WHY THIS ONE
  * -------------------------------
  * An exponential minimum: the floor chases the signal, quickly downwards and
@@ -1649,6 +1689,28 @@ function disarmRecordingCap() {
  * recognising a pause are two separate problems, and only the first one is an
  * estimation problem.
  *
+ * THE HALF THAT WAS MISSING
+ * -------------------------
+ * That paragraph was the whole justification for the previous fix, and it was
+ * wrong in the direction that mattered. It shows the runaway floor cannot cause
+ * a SPURIOUS cut. It does not show a real pause is still seen, and it is not,
+ * because the guard compares the peak against a threshold built from the floor
+ * and both numbers track the same signal:
+ *
+ *     floor -> voice,  threshold = 2 x floor -> 2 x voice,  peak = voice
+ *     guard: voice > 2 x voice     FALSE, on every remaining frame of the turn
+ *
+ * The peak is a running maximum, so it does not fall, and the floor is fed every
+ * frame, so it does not either. The guard therefore does not recover, and while
+ * it is false the `else` branch clears the silence timer sixty times a second.
+ * The turn cannot end for any pause, at any length, until the recording is cut by
+ * the recording cap instead.
+ *
+ * Since the floor provably reaches the voice, the ceiling on the threshold has
+ * to be a fraction of the PEAK rather than a multiple of the floor. That is what
+ * `PEAK_HEADROOM` above does, and it is why the guard below is an identity
+ * (`threshold <= 2/3 x peak < peak`) rather than a comparison that can fail.
+ *
  * WHY THE ABSOLUTE THRESHOLD STILL EXISTS
  * --------------------------------------
  * It is the lower bound of the pair, not a replacement. In a genuinely quiet
@@ -1656,10 +1718,18 @@ function disarmRecordingCap() {
  * threshold is RMS_THRESHOLD -- the same number, and the same behaviour, that
  * always worked.
  */
-function updateNoiseFloor(rms) {
+function updateNoiseFloor(rms, peak) {
     const rate = rms > noiseFloor ? NOISE_FLOOR_RISE_RATE : NOISE_FLOOR_FALL_RATE;
     noiseFloor += (rms - noiseFloor) * rate;
-    return Math.max(RMS_THRESHOLD, noiseFloor * NOISE_FLOOR_MULTIPLE);
+    // The lower of "twice the room" and "a fixed fraction of the loudest thing
+    // this turn has heard". The `min` is what keeps the guard in `vadLoop` true:
+    // whichever term wins, the threshold stays at or under
+    // PEAK_HEADROOM x peak, and a peak can never be below that. See
+    // PEAK_HEADROOM for the arithmetic.
+    return Math.max(
+        RMS_THRESHOLD,
+        Math.min(noiseFloor * NOISE_FLOOR_MULTIPLE, peak * PEAK_HEADROOM),
+    );
 }
 
 function startVad() {
@@ -1688,7 +1758,14 @@ function vadLoop() {
     // The floor moves on EVERY frame, including the loud ones. Restricting the
     // update to frames already judged silent is circular: in a noisy room there
     // are no such frames, which is the bug.
-    const threshold = updateNoiseFloor(rms);
+    //
+    // The second argument is the half the first commit was missing. It caps the
+    // threshold at a fraction of this turn's loudest frame, which is the only
+    // comparison in the loop that stays true however far the floor has run: the
+    // floor is fed the voice and converges to it, so a threshold derived from
+    // the floor alone ends up above the voice and the guard below goes false
+    // permanently. See PEAK_HEADROOM.
+    const threshold = updateNoiseFloor(rms, loudPeakRms);
 
     if (rms >= threshold) {
         hasSpoken = true;
@@ -1697,6 +1774,10 @@ function vadLoop() {
     } else if (hasSpoken && loudPeakRms > threshold) {
         // Below the threshold AND this turn has been louder than it, so this is
         // a pause and not merely a level the room happens to sit at.
+        //
+        // With PEAK_HEADROOM in the threshold this is reachable for any SNR: the
+        // threshold is at most 2/3 of the peak, so the peak is above it by
+        // construction rather than by luck.
         if (silenceStart === null) silenceStart = Date.now();
         else if (Date.now() - silenceStart >= SILENCE_TIMEOUT_MS) {
             setStatus("Procesando…");

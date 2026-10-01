@@ -61,7 +61,22 @@ function appConstants() {
         floorMultiple: read("NOISE_FLOOR_MULTIPLE"),
         riseRate: read("NOISE_FLOOR_RISE_RATE"),
         fallRate: read("NOISE_FLOOR_FALL_RATE"),
+        // PEAK_HEADROOM is a RATIO, written as `2 / 3` in app.js because that is
+        // the arithmetic it is. `read` above stops at the `/`, so it is read by
+        // its own pattern rather than by widening `read` for one caller: a reader
+        // that accepts both a plain number and a quotient has to decide what to
+        // do when both are absent, and the failure would be a NaN threshold
+        // rather than a named error.
+        peakHeadroom: readRatio("PEAK_HEADROOM"),
     };
+}
+
+/** A constant written as a quotient, e.g. `const PEAK_HEADROOM = 2 / 3`. */
+function readRatio(name) {
+    const match = readAppJs().match(
+        new RegExp(`const\\s+${name}\\s*=\\s*(\\d+(?:\\.\\d+)?)\\s*/\\s*(\\d+(?:\\.\\d+)?)`, "i"),
+    );
+    return match ? Number(match[1]) / Number(match[2]) : undefined;
 }
 
 /**
@@ -129,6 +144,12 @@ function moduleConstants() {
         NOISE_FLOOR_MULTIPLE: c.floorMultiple,
         NOISE_FLOOR_RISE_RATE: c.riseRate,
         NOISE_FLOOR_FALL_RATE: c.fallRate,
+        // The ceiling `vadLoop` puts on the threshold, as a fraction of the turn's
+        // loudest frame. Handed over because `updateNoiseFloor` reads it, and a
+        // lifted body with a missing binding throws inside the animation frame --
+        // which surfaces as a VAD failure in every test in the file at once, with
+        // a ReferenceError that names the constant instead of the behaviour.
+        PEAK_HEADROOM: c.peakHeadroom,
     };
 }
 
