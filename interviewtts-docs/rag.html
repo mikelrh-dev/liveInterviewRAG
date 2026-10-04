@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>03 — RAG — InterviewTTS</title>
+  <meta name="description" content="El pipeline RAG de InterviewTTS: embeddings multilingües paraphrase-multilingual-MiniLM-L12-v2, similitud coseno con umbral 0,25, rescate léxico BM25, reranking cross-encoder, chunking por encabezados H1-H3 y caché de embeddings en disco validada por 7 campos.">
+  <meta property="og:title" content="03 — RAG — InterviewTTS">
+  <meta property="og:description" content="Cómo el gemelo responde preguntas usando los documentos Markdown del candidato (37 en el árbol de trabajo, 33 en un clon limpio): chunking, embeddings multilingües, filtros de lectura, BM25, cross-encoder y expansión honesta de consultas.">
+  <meta property="og:type" content="website">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230f1214'/%3E%3Crect x='12' y='5' width='8' height='14' rx='4' fill='%2300d4ff'/%3E%3Cpath d='M8 14a8 8 0 0 0 16 0' fill='none' stroke='%2300d4ff' stroke-width='2' stroke-linecap='round'/%3E%3Cpath d='M16 22v4' stroke='%2300d4ff' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;0,6..72,700;1,6..72,400&family=Source+Sans+3:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <nav class="nav" role="navigation" aria-label="Navegación principal">
+    <div class="nav-inner">
+      <a href="index.html" class="nav-logo">InterviewTTS</a>
+      <ul class="nav-links">
+        <li><a href="index.html">00 Inicio</a></li>
+        <li><a href="arquitectura.html">01 Arquitectura</a></li>
+        <li><a href="whisper-stt.html">02 Whisper</a></li>
+        <li><a href="rag.html" class="active">03 RAG</a></li>
+        <li><a href="llm-prompting.html">04 LLM</a></li>
+        <li><a href="cache-latencia.html">05 Caché</a></li>
+        <li><a href="persistencia.html">06 Persistencia</a></li>
+        <li><a href="despliegue.html">07 Despliegue</a></li>
+        <li><a href="aprendizajes.html">08 Aprendizajes</a></li>
+      </ul>
+    </div>
+  </nav>
+
+  <main class="main">
+    <header class="chapter-header">
+      <span class="chapter-num">Capítulo 03</span>
+      <h1 class="chapter-title">RAG: Recuperación Aumentada por Generación</h1>
+      <p class="chapter-subtitle">La estrella del sistema. Cómo el candidato puede responder preguntas que nunca se planteó, usando contexto recuperado de su wiki personal.</p>
+    </header>
+
+    <section class="reveal">
+      <h2>Qué es RAG</h2>
+      <p>RAG (Retrieval-Augmented Generation) es una técnica que combina <strong>recuperación de información</strong> con <strong>generación de texto</strong>. En lugar de que un LLM responda solo con su conocimiento entrenado, RAG le proporciona documentos relevantes como contexto antes de generar la respuesta.</p>
+      <img src="assets/stitch-vector-search.png" alt="Espacio vectorial semántico con grupos de documentos agrupados por similitud" class="img-full" width="860" height="486" loading="lazy" decoding="async">
+      <p class="img-label">Espacio vectorial semántico: documentos agrupados por similitud de significado, no por palabras exactas</p>
+      <p>La clave es que los documentos no se buscan por palabras clave, sino por <strong>similitud semántica</strong>. Si el reclutador pregunta por algo dicho con otras palabras en la wiki, el sistema recupera el fragmento correcto igualmente.</p>
+    </section>
+
+    <section class="reveal">
+      <h2>Embeddings: texto a vectores</h2>
+      <p>Para calcular similitud semántica, cada fragmento de texto se representa como un <strong>vector numérico</strong>. Se usa <strong>sentence-transformers</strong> con el modelo <span class="code-inline">paraphrase-multilingual-MiniLM-L12-v2</span>, que genera vectores de <strong>384 dimensiones</strong>.</p>
+      <div class="callout"><div class="callout-title">¿Por qué un modelo multilingüe?</div><p>Porque el corpus y las preguntas lo son. La wiki vive en español y la pregunta llega al RAG <strong>literalmente desde Whisper</strong>, en español y sin puntuación. El modelo anterior, <span class="code-inline">all-MiniLM-L6-v2</span>, era inglés: toda paráfrasis española pagaba el salto de idioma. El sustituto cuesta más descarga (~457 MB frente a los ~80 MB del inglés) y es el único criterio que-justifica-el-cambio aquí.</p></div>
+      <p>Cada fragmento de la wiki se convierte en un vector de 384 dimensiones, normalizado para coseno. La consulta del reclutador también se vectoriza, y se calcula la <strong>similitud coseno</strong> entre la consulta y todos los fragmentos.</p>
+      <p>Lo que se embebe no es el cuerpo desnudo del chunk, sino un <strong>prefijo de identidad</strong> —H1 de la página, <span class="code-inline">summary</span> y sección— seguido del cuerpo. Sin ese prefijo, un cross-encoder de 0,1B lee un párrafo sin saber de qué página salió.</p>
+    </section>
+
+    <section class="reveal">
+      <h2>Similitud coseno y el umbral 0,25</h2>
+      <p>Mide qué tan similares son dos vectores en términos de su <strong>dirección</strong>, ignorando la magnitud. Va de -1 (opuestos) a 1 (idénticos).</p>
+      <div class="formula">cos(theta) = (A · B) / (||A|| × ||B||)</div>
+      <p>Una escala de coseno es propiedad del <strong>espacio vectorial</strong>, no del corpus: cambiar de modelo la invalida. Por eso la tabla de referencia se reconstruyó sobre el embedder actual y sobre el prefijo de identidad, no se heredó.</p>
+      <ul>
+        <li><strong>0,8 – 1,0:</strong> Coincidencia semántica fuerte</li>
+        <li><strong>0,5 – 0,8:</strong> Relación temática clara</li>
+        <li><strong>0,3 – 0,5:</strong> Parcialmente relevante</li>
+        <li><strong>&lt; 0,3:</strong> Poco o nada relevante</li>
+      </ul>
+      <p>El umbral configurado es <span class="code-inline">0.25</span>: los fragmentos con score menor se descartan. El valor anterior, <span class="code-inline">0.30</span>, estaba calibrado contra el embedder inglés y además se apoyaba sobre una premisa falsa —que el filtro nunca quitaba nada— extraída del mejor chunk por pregunta en vez de medida sobre el filtro. Re-barrido sobre el modelo actual, de 0,20 a 0,35 en pasos de 0,01:</p>
+      <div class="table-wrapper">
+        <table>
+          <caption>Re-barrido del umbral sobre el embedder actual (top-3 de las preguntas etiquetadas)</caption>
+          <thead><tr><th scope="col">Umbral</th><th scope="col">Preguntas cuyo top-3 cambia</th><th scope="col">Supervivientes mínimos</th></tr></thead>
+          <tbody>
+            <tr><td>0,20 – 0,28</td><td>0</td><td>3</td></tr>
+            <tr><td>0,29</td><td>1</td><td>2</td></tr>
+            <tr><td>0,30</td><td>2</td><td>2</td></tr>
+            <tr><td>0,35</td><td>9</td><td>0</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>0,30 estaba justo sobre el precipicio: el tercer mejor score de dos preguntas reales era 0,2861 y 0,2980, así que el umbral antiguo no podía servir un top-3 completo a ninguna de las dos. Se elige 0,25 sobre el 0,28 más alto que pasa porque 0,28 deja pasar la pregunta más delgada por 0,006 mientras que 0,25 la deja por 0,036, y un valor por defecto a un ruido de una pregunta de la inanición no es un valor por defecto, es una coincidencia.</p>
+      <p>El filtro no es inerte: como corre <strong>antes</strong> del corte <span class="code-inline">top_k</span>, cambia lo que recibe el llamador siempre que sobre el umbral queden menos chunks que slots. Medido al doble del número de chunks, descarta 959 de 1813 resultados (52,9%) en el árbol de trabajo y 722 de 1353 (53,4%) en el clon limpio. Y al <span class="code-inline">top_k</span> enviado (3) le cuesta un slot de cada tres al rescate léxico.</p>
+    </section>
+
+    <section class="reveal">
+      <h2>Chunking por encabezados Markdown</h2>
+      <p>La wiki tiene <strong>dos estados</strong>, y por eso el documento se cuenta de dos maneras. En el <strong>árbol de trabajo</strong> son 37 páginas; en un <strong>clon limpio</strong> son 33, porque cuatro páginas de FAQ están en disco y no en el índice comiteado. Ambas cifras están medidas, no aproximadas.</p>
+      <p>El cargador (<code class="code-inline">candidate.py</code>) excluye los directorios <span class="code-inline">templates</span>, <span class="code-inline">__pycache__</span> y <span class="code-inline">.git</span>, y tres ficheros por nombre: <span class="code-inline">README.md</span>, <span class="code-inline">CONVENCIONES.md</span> e <span class="code-inline">index.md</span>. Este último es un <strong>artefacto de build</strong> —lo regenera <span class="code-inline">scripts/wiki/generate_index.py</span> y su cabecera dice "AUTO-GENERATED": es una tabla de enlaces cuyo texto es el resumen de cada otro documento, así que lee como densidad de palabras clave sobre Mercadona, DAM, backend, RAG y AI sin contener ninguna respuesta. Aportaba 10 chunks al pool de recuperación por su cuenta.</p>
+      <p>Casi todos los documentos llevan frontmatter YAML. Se dividen así:</p>
+      <ul>
+        <li><strong>División por encabezados H1-H3:</strong> cualquier encabezado Markdown de nivel 1 a 3 (<code class="code-inline">#</code>, <code class="code-inline">##</code>, <code class="code-inline">###</code>) inicia un nuevo chunk, respetando la estructura natural del documento.</li>
+        <li><strong>El H1 propio se re-adjunta:</strong> partir antes de <em>cada</em> H1-H3 convertía el título de la página en un chunk suelto sin cuerpo, y la primera sección real se quedaba sin el título que le daba sentido. Ahora el H1 del documento se pega a la sección que sigue. Un H1 posterior sí es una frontera legítima y sigue partiendo, porque si no dos secciones de primer nivel se fusionarían y <span class="code-inline">section</span> quedaría mal etiquetada para el cuerpo fusionado.</li>
+        <li><strong>Máximo 400 palabras:</strong> si una sección excede ese tamaño, se divide por conteo de palabras.</li>
+        <li><strong>Overlap de 50 palabras:</strong> las últimas 50 palabras del fragmento anterior se repiten al inicio del siguiente.</li>
+      </ul>
+      <div class="callout"><div class="callout-title">Por qué overlap?</div><p>Sin overlap, una pregunta que cruza la frontera entre dos chunks perdería contexto en ambos. El solape garantiza que la información limítrofe esté representada en al menos uno.</p></div>
+      <div class="callout"><div class="callout-title">Los dos últimos knobs están muertos en este corpus</div><p>Con el corpus real, <span class="code-inline">CHUNK_SIZE=400</span> y <span class="code-inline">CHUNK_OVERLAP=50</span> <strong>nunca se ejecutan</strong>: la sección más larga del corpus tiene 266 palabras, 134 por debajo del techo, así que la rama de división por tamaño no llega a dispararse ni una vez. Un barrido completo de <span class="code-inline">CHUNK_SIZE</span> no encontró ninguna celda que lo justificara cambiar. Están como knobs de futuro, no como comportamiento observable.</p></div>
+    </section>
+
+    <section class="reveal">
+      <h2>Metadatos del frontmatter YAML</h2>
+      <p>Cada documento declara metadatos que se adjuntan a cada uno de sus chunks:</p>
+      <div class="code-block" data-lang="yaml"><span class="pr">---</span>
+<span class="pr">type:</span> <span class="st">experience</span>
+<span class="pr">tags:</span> [<span class="st">python</span>, <span class="st">fastapi</span>, <span class="st">api</span>]
+<span class="pr">summary_1line:</span> <span class="st">Experiencia construyendo APIs con FastAPI</span>
+<span class="pr">---</span>
+<span class="cm"># Experiencia con APIs</span></div>
+      <p>El filtrado por tipo <strong>ya no es un paso del pipeline</strong>. Existió como <span class="code-inline">detect_doc_type</span>: una tabla de palabras clave que comparaba la pregunta, devolvía una conjetura de tipo y la pasaba tal cual a un filtro duro sobre el conjunto de candidatos. Sobre las 49 preguntas etiquetadas del corpus real, la conjetura disparaba 14 veces y nombraba un tipo que la página dorada no tiene en 8 de ellas, lo que <strong>borraba la respuesta</strong> del conjunto de candidatos: recall@3 estricto por la ruta de producción era 0,5714 con la conjetura y 0,6531 sin ella. Dos preguntas arregladas, seis rotas. Se eliminó en lugar de repararse, porque una coincidencia de subcadena no tiene nada que decidir sobre qué puede leer el modelo, y porque la única reparación honesta de un filtro que a veces borra la respuesta correcta es no filtrar. La tabla de palabras clave se fue con él: conservar una tabla cuyas claves nombran un tipo sobre el que ya no se filtra es conservar una consulta que nadie llama.</p>
+      <p><span class="code-inline">Chunk.type</span> sigue existiendo: se lee del frontmatter, aparece en la cabecera de contexto y forma parte de la identidad de la caché de embeddings. Lo que desapareció es el filtro sobre él.</p>
+      <p>Los metadatos también viajan en el contexto entregado al LLM como cabecera legible: <code class="code-inline">[Source: archivo.md | Tipo: experience | Resumen: …]</code>. Importante: esa cabecera alimenta el <strong>panel de contexto del frontend</strong>; nunca debe llegar al TTS — la historia de ese bug está en el capítulo 05.</p>
+    </section>
+
+    <section class="reveal">
+      <h2>Filtros de lectura: lo que nunca se sirve</h2>
+      <p>Antes de embeber, cada documento pasa por cuatro filtros. Son puro: <strong>nada bajo <span class="code-inline">wiki/</span> se modifica jamás</strong>, solo cambia cómo lee el RAG los datos del candidato, y la transformación es reversible rellenando el marcador en el fichero. Los cuatro comparten la misma propiedad: lo que eliminan <em>no podía contestar nada</em>.</p>
+      <ul>
+        <li><strong>Marcadores <span class="code-inline">[TODO]</span>:</strong> se eliminan del texto antes de embeber. La wiki marca con ellos lo que está sin escribir, y el LLM recibía 11 chunks con un <span class="code-inline">[TODO</span> literal del corpus real — dentro de "Outcomes" y "What I'd do differently", justo lo que pregunta un reclutador. El modelo podía leer un TODO en voz alta, o inventarse la cifra que falta, sin nada en la wiki que lo contradijera. La stripping es <em>puro</em>: no toca nada más del texto, y distingue el extremo que ensucia del que es puntuación escrita a propósito.</li>
+        <li><strong>Descartes de <span class="code-inline">confidence: low</span>:</strong> la wiki tasa cada página y <span class="code-inline">low</span> significa borrador esperando confirmación del dueño. <span class="code-inline">medium</span> significa "revisado pero no probado", contenido real, y se sirve tal cual; lo mismo cuando la etiqueta no existe. Descartar <span class="code-inline">medium</span> sería el movimiento peligroso: es el nivel en el que está la mayor parte de la wiki y contiene respuestas revisadas.</li>
+        <li><strong>Secciones solo-wikilink:</strong> una sección que solo dice <span class="code-inline">- [[profile/mikel]]</span> no afirma nada. Como texto de chunk es activamente dañina: la cadena literal no significa nada para un embedder de frase, y "Fuentes" / "Ver también" es español genérico que no casa con ninguna pregunta real. 42 de los chunks del corpus eran exactamente eso. El test decisivo es el <strong>contenido</strong>, no el encabezado, así que una fuente que explica <em>por qué</em> apunta a otro sitio conserva su prosa.</li>
+        <li><strong>Encabezados sin cuerpo:</strong> un encabezado con nada debajo no puede ser una respuesta, y no lo detecta el filtro anterior. Lo produce la partición, no el autor: el corpus tiene exactamente uno, <span class="code-inline">## Alternativas consideradas</span> en la decisión de arquitectura de tres capas, cuyos hijos H3 vienen en la línea siguiente. Descartarlo no pierde nada por una razón estructural: la sección no tiene caracteres que perder, y sus subsecciones son secciones aparte de todos modos.</li>
+      </ul>
+      <p>Además, <span class="code-inline">_chunk_document</span> <strong>avisa una vez por documento afectado</strong>, para que el dueño aprenda que su wiki todavía tiene huecos en vez de que los huecos desaparezcan en silencio.</p>
+      <div class="callout"><div class="callout-title">CHUNK_FILTER_VERSION = "5"</div><p>Cada cambio de semántica de partición sube esta versión, y la versión se guarda en los metadatos de la caché. Hace falta porque el <span class="code-inline">document_hash</span> de la caché cubre el texto <em>crudo</em> de la wiki, que estos filtros no tocan: sin el guardia, una caché anterior al filtro se restauraría y dejaría sin efecto cada arreglo. La historia de las versiones es legible en el propio número — "3" re-adjuntó el H1 y descartó las secciones solo-wikilink; "4" pasó el texto embebido al prefijo de identidad sin cambiar ningún chunk; "5" eliminó los encabezados sin cuerpo, que <em>sí</em> cambian el conjunto de chunks a partir de texto sin modificar.</p></div>
+    </section>
+
+    <section class="reveal">
+      <h2>Query expansion, con honestidad</h2>
+      <p>Antes de vectorizar la consulta, un mapa artesanal añade sinónimos a los temas conocidos. La versión honesta de esta feature: es un <strong>mapa diminuto hecho a mano</strong> que cubre exactamente dos familias temáticas — tests/proyectos:</p>
+      <div class="table-wrapper">
+        <table>
+          <caption>Mapa real de expansión (backend/services/rag.py)</caption>
+          <thead><tr><th scope="col">Palabra detectada</th><th scope="col">Sinónimos añadidos</th></tr></thead>
+          <tbody>
+            <tr><td>tests / testing / test</td><td>testing, pytest, tdd, skills</td></tr>
+            <tr><td>projects / proyectos / proyecto</td><td>project, entrevista, prácticas</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>Ejemplo real: si el reclutador dice "¿hace pruebas unitarias?", la query se expande con "pytest tdd" antes de <strong>convertirla en embedding</strong>, mejorando la recuperación de fragmentos que hablan de pytest sin usar la palabra "pruebas". No es expansión con LLM ni sinónimos automáticos: es un diccionario pequeño, consciente de sus límites, que resuelve las dos familias de fallo más frecuentes del corpus.</p>
+    </section>
+
+    <section class="reveal">
+      <h2>Persistencia de embeddings en disco</h2>
+      <p>Calcular embeddings para todo el corpus en cada arranque sería desperdicio. Los vectores se persisten en disco en formato <span class="code-inline">.npz</span> (comprimido de NumPy) junto a metadatos de validación en JSON.</p>
+      <p>Un caché solo es tan bueno como lo que afirma de sí mismo, así que la identidad tiene <strong>siete campos</strong>, no tres. Todo lo que la caché <em>no</em> declara —incluido lo que se escribió antes de que el campo existiera— se trata como "recalcula", nunca como "supón". En <span class="code-inline">backend/.rag_cache/embeddings.json</span>:</p>
+      <div class="table-wrapper">
+        <table>
+          <caption>Identidad de la caché de embeddings: los 7 campos validados al arrancar</caption>
+          <thead><tr><th scope="col">Campo</th><th scope="col">Qué protege</th></tr></thead>
+          <tbody>
+            <tr><td><span class="code-inline">embedder</span></td><td>Identidad del backend de embeber, no solo el nombre del modelo</td></tr>
+            <tr><td><span class="code-inline">model</span></td><td>El nombre del embedder. Cambiar de modelo invalida por definición</td></tr>
+            <tr><td><span class="code-inline">chunk_size</span></td><td>Decide <em>qué</em> chunks existen, no solo su tamaño</td></tr>
+            <tr><td><span class="code-inline">chunk_overlap</span></td><td>Ídem, y por tanto inseparable del anterior</td></tr>
+            <tr><td><span class="code-inline">chunk_filter_version</span></td><td>La semántica de filtrado. El hash cubre el texto crudo, que el filtrado no toca</td></tr>
+            <tr><td><span class="code-inline">document_hash</span></td><td>SHA256 del conjunto completo de documentos</td></tr>
+            <tr><td><span class="code-inline">chunk_count</span></td><td>Que el número de filas del <span class="code-inline">.npz</span> sea el que la identidad declara</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>Cualquier divergencia → re-cómputo completo. Cualquier error de lectura degrada a re-cómputo silencioso: el caché acelera, jamás bloquea.</p>
+      <p>Un detalle que parece un descuido y es lo contrario: el rescate léxico y el reranker <strong>no</strong> forman parte de esta identidad. La caché guarda vectores y cuatro campos de texto; el rescate se ajusta en tiempo de consulta a partir de ese mismo texto y el reranker solo reordena. Invalidar por ellos costaría un re-embed de ~100 s para reconstruir números que no se movieron. La invariante que de verdad importa —que una run restaurada de caché y una run recalculada producen los mismos textos y por tanto los mismos logits— la afirma un test explícito.</p>
+      <p class="see-also"><strong>Ver también:</strong> el capítulo <a href="persistencia.html">06 — Persistencia</a> cubre la otra mitad del almacenamiento del sistema: la base SQLite donde viven conversaciones e informes.</p>
+    </section>
+
+    <section class="reveal">
+      <h2>El pipeline RAG completo</h2>
+      <p>Flujo de una consulta, en el <strong>orden real del código</strong>:</p>
+      <ol>
+        <li><strong>Query expansion:</strong> Se añaden sinónimos del mapa (solo temas tests/proyectos)</li>
+        <li><strong>Embedding de la query:</strong> La consulta expandida se convierte en vector de 384d normalizado</li>
+        <li><strong>Similitud coseno:</strong> Se compara contra todos los chunks candidatos</li>
+        <li><strong>Filtrado por umbral:</strong> Se descartan los fragmentos con score &lt; 0,25</li>
+        <li><strong>Corte de un chunk por página:</strong> La lista ordenada se deduplica por página, de modo que una página larga no ocupe los tres slots</li>
+        <li><strong>Rescate léxico BM25:</strong> Uno de cada tres slots se ofrece a un rango léxico sobre <em>el mismo texto</em>, cuando lo que perdió la respuesta fue el corte y no el filtro</li>
+        <li><strong>Permutación cross-encoder:</strong> Un <span class="code-inline">cross-encoder/mmarco-mMiniLMv2-L12-H384-v1</span> reordena la lista ya elegida. Solo reordena: no añade ni quita nada</li>
+        <li><strong>Context assembly:</strong> Se formatean con sus cabeceras de metadatos para el LLM</li>
+      </ol>
+      <p>Si no hay resultados sobre el umbral, se devuelve cadena vacía: el LLM responde sin contexto extra en lugar de improvisar sobre material pobre.</p>
+      <div class="callout"><div class="callout-title">Por qué el rescate léxico existe</div><p>El filtro de coseno es la causa de que algunas respuestas no lleguen: hay preguntas cuya página dorada puntúa 0,2301 y 0,1703 contra el 0,25, así que quedan <em>fuera del conjunto de candidatos</em> en lugar de clasificadas abajo, y ningún slot léxico alcanza una página que el lado denso nunca propuso. El rescate ranks sobre <strong>todos</strong> los chunks, no sobre los supervivientes del filtro, que es exactamente lo que hace falta en ese caso.</p>
+      <p>No es gratis y no se disimula: gana cinco preguntas y pierde una en cada población, y un test afirma el conjunto exacto de preguntas que cuesta, de modo que el coste no puede cambiar sin que el guardia se ponga rojo. Un umbral que hiciera el rescate sin pérdidas se barrió de 0,01 en 0,01 entre 0,25 y 0,69 y no sobrevivió a la segunda población.</p></div>
+      <div class="callout"><div class="callout-title">Por qué el reranker no puede subir el recall@3</div><p>Porque <strong>reordena</strong>. Una permutación de tres elementos deja el mismo conjunto, así que el <span class="code-inline">recall@3</span> queda intacto por construcción y no por una medición favorable. Lo que se mueve es el <em>orden</em>, y con él el <span class="code-inline">recall@1</span>: medido sobre las 49 preguntas etiquetadas, de 36 a 40 (neto +4: 7 promociones, 3 despromociones); sobre la población reducida, de 31 a 33 (neto +2).</p>
+      <p>Y el límite explícito: un reranker no recupera una página que el filtro de coseno ya descartó. Cinco de las 49 preguntas siguen fuera del top-3 por eso, y están nombradas en el código. Ese es el techo real de la técnica sobre este corpus.</p></div>
+      <h3>Las cifras, medidas a top_k = 3</h3>
+      <p>El ancho enviado importa: un <span class="code-inline">top_k</span> igual al tamaño de la población responde a "está la página dorada en algún puesto del rango", que es lo que la identidad del caché quiere saber. No es lo que vive un entrevistador. Medido al <span class="code-inline">top_k</span> = 3 que se envía, por la ruta de producción:</p>
+      <div class="table-wrapper">
+        <table>
+          <caption>Recall@3 al top_k enviado, con y sin rescate léxico</caption>
+          <thead><tr><th scope="col">Población</th><th scope="col">Recall@3</th><th scope="col">Detalle</th></tr></thead>
+          <tbody>
+            <tr><td>Árbol de trabajo (37 páginas, 49 preguntas)</td><td><strong>0,8980</strong></td><td>44 de 49, incluye el rescate BM25</td></tr>
+            <tr><td>Clon limpio (33 páginas, 41 preguntas)</td><td><strong>0,9268</strong></td><td>38 de 41, incluye el rescate BM25</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>Se publican los dos anchos y no uno porque el rescate no puede ejecutarse a un <span class="code-inline">top_k</span> más ancho que el corpus, que es el ancho al que se miden las filas de filtro: si se publicara solo el ancho de población, la afirmación sería cierta y engañosa a la vez.</p>
+      <p class="see-also"><strong>Ver también:</strong> cómo este contexto se inyecta en el prompt real, en el capítulo <a href="llm-prompting.html">04 — LLM</a>; y lo que el reranker le cuesta a la latencia, en <a href="cache-latencia.html">05 — Caché y latencia</a>.</p>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="footer-inner">
+      <div class="footer-col">
+        <p><strong>InterviewTTS</strong> — Proyecto de aprendizaje</p>
+        <p>Construido por <strong>Mikel</strong> como proyecto de portafolio en IA/ML.</p>
+      </div>
+      <div class="footer-col">
+        <p><a href="https://github.com/mikelrh-dev/liveInterviewRAG" target="_blank" rel="noopener">Ver repositorio en GitHub &rarr;</a></p>
+        <p>Stack: Python, FastAPI, Whisper, RAG, Edge TTS</p>
+      </div>
+    </div>
+    <p class="footer-copy">Documento técnico construido para fines educativos. 2025.</p>
+  </footer>
+
+  <script src="script.js"></script>
+</body>
+</html>

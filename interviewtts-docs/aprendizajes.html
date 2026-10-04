@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>08 — Aprendizajes — InterviewTTS</title>
+  <meta name="description" content="Lo aprendido construyendo InterviewTTS: FastAPI async, RAG desde cero con BM25 y cross-encoder, TDD con 1152 tests de Python y 349 de Node, portabilidad de hardware y documentación revisada como código.">
+  <meta property="og:title" content="08 — Aprendizajes — InterviewTTS">
+  <meta property="og:description" content="Lecciones reales del proyecto: float16 vs hardware, el bug de leer contexto recuperado en voz alta, y la auditoría que cazó fabricaciones en este propio dossier.">
+  <meta property="og:type" content="website">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230f1214'/%3E%3Crect x='12' y='5' width='8' height='14' rx='4' fill='%2300d4ff'/%3E%3Cpath d='M8 14a8 8 0 0 0 16 0' fill='none' stroke='%2300d4ff' stroke-width='2' stroke-linecap='round'/%3E%3Cpath d='M16 22v4' stroke='%2300d4ff' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;0,6..72,700;1,6..72,400&family=Source+Sans+3:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <nav class="nav" role="navigation" aria-label="Navegación principal">
+    <div class="nav-inner">
+      <a href="index.html" class="nav-logo">InterviewTTS</a>
+      <ul class="nav-links">
+        <li><a href="index.html">00 Inicio</a></li>
+        <li><a href="arquitectura.html">01 Arquitectura</a></li>
+        <li><a href="whisper-stt.html">02 Whisper</a></li>
+        <li><a href="rag.html">03 RAG</a></li>
+        <li><a href="llm-prompting.html">04 LLM</a></li>
+        <li><a href="cache-latencia.html">05 Caché</a></li>
+        <li><a href="persistencia.html">06 Persistencia</a></li>
+        <li><a href="despliegue.html">07 Despliegue</a></li>
+        <li><a href="aprendizajes.html" class="active">08 Aprendizajes</a></li>
+      </ul>
+    </div>
+  </nav>
+
+  <main class="main">
+    <header class="chapter-header">
+      <span class="chapter-num">Capítulo 08</span>
+      <h1 class="chapter-title">Aprendizajes y Reflexión</h1>
+      <p class="chapter-subtitle">Lo aprendido construyendo esto: FastAPI async, RAG desde cero con rescate léxico y reranking, TDD con 1152 tests de Python y 349 de Node — y las lecciones que solo aparecen cuando algo se rompe.</p>
+    </header>
+
+    <section class="reveal">
+      <h2>Patrones async de FastAPI</h2>
+      <p>FastAPI no es solo un framework HTTP. Su soporte nativo para <strong>async/await</strong> y <code class="code-inline">StreamingResponse</code> lo convierte en un orquestador ideal para pipelines de IA.</p>
+      <p>Lo aprendido:</p>
+      <ul>
+        <li><strong>async no es magia:</strong> si tu componente bloquea (como Whisper en CPU), necesitas <code class="code-inline">asyncio.to_thread</code> o un executor para no bloquear el event loop.</li>
+        <li><strong>StreamingResponse es perfecto para SSE:</strong> emite eventos a medida que se generan, sin acumular la respuesta entera.</li>
+        <li><strong>El puente thread→loop importa:</strong> correr el LLM en un executor exige devolver los tokens al event loop con una cola thread-safe (<code class="code-inline">call_soon_threadsafe</code>) — un detalle que ningún tutorial menciona hasta que lo necesitas.</li>
+      </ul>
+    </section>
+
+    <section class="reveal">
+      <h2>Docker: una copia de la unidad, no una aventura</h2>
+      <p>El <code class="code-inline">Dockerfile</code> se escribió como <strong>espejo de la unidad systemd</strong>: mismo punto de entrada, misma postura sin root, mismo conjunto de rutas de escritura, expresado como contenedor. Esa decisión de diseño es lo que hizo que la imagen fuera corta de escribir y fácil de mantener.</p>
+      <p>Una versión anterior de este dossier narraba un "Docker por prueba y error" con <code class="code-inline">docker buildx</code>, imágenes multi-arch y la lucha contra incompatibilidades de ARM64. <strong>Eso no ocurrió</strong>, y contarlo como anécdota es tan inventado como el float16 "porque hay RAM de sobra" que se cuenta en otra sección. Lo que hay es <strong>una sola arquitectura</strong>, sin buildx ni manifest list, porque el despliegue real corre en Docker Desktop sobre Windows. La lección que sí se puede extraer es la inversa de la que se inventó: la complejidad multi-arch no se pidió porque el caso no la necesitaba.</p>
+      <p>Lo que sí enseñó el <code class="code-inline">Dockerfile</code>:</p>
+      <ul>
+        <li><strong><code class="code-inline">--extra-index-url</code>, no <code class="code-inline">--index-url</code>:</strong> el índice de PyTorch no replica todas las distribuciones, así que usarlo como único índice rompe el build en una dependencia de build que no tiene. Como índice extra, PyPI sirve el resto y la ordenación de versiones de PEP 420 hace que gane la rueda CPU sola.</li>
+        <li><strong>Los volúmenes con nombre heredan el propietario de la imagen.</strong> Montados sobre una ruta que no existe, se crean root y un servicio sin root no puede escribir — así fue como la caché de HuggingFace se convirtió en una redescarga de 457 MB en cada <code class="code-inline">up</code>.</li>
+        <li><strong>Un <span class="code-inline">COPY</span> explícito es una red de seguridad.</strong> <span class="code-inline">.dockerignore</span> excluye secretos; un COPY amplio haría de ese fichero lo único entre la clave de API y una capa publicada.</li>
+      </ul>
+    </section>
+
+    <section class="reveal">
+      <h2>Los tres cambios que más cambiaron el sistema</h2>
+      <p>Más allá de las lecciones por sección, hubo tres decisiones que alteraron el comportamiento medido del pipeline y que conviene nombrar como tales:</p>
+      <ul>
+        <li><strong>Rescate léxico BM25 + cross-encoder.</strong> El sistema denso tenía un techo estructural: cinco de las 49 preguntas etiquetadas quedan fuera del top-3 porque su página dorada no supera el umbral de coseno, y ningún reordenamiento las alcanza. Añadir un ranking léxico sobre el mismo texto —que rankea <em>todos</em> los chunks, no solo los que superan el filtro— y luego un cross-encoder que reordena lo ya elegido llevó el recall@3 al ancho enviado de <strong>0,8980</strong> (44 de 49). El coste fue ~8× en la latencia de recuperación, y la lección doble es: el coste se publica y se ofrece un interruptor, y <strong>las cifras se miden a su ancho</strong>. Comparar el 0,8980 (medido a top_k=3) con el 0,8163 (medido a ancho de población) como si fuera un antes/después sería leer dos mediciones distintas como un movimiento, que es exactamente el error que este proyecto ya cometió dos veces con las unidades.</li>
+        <li><strong>Reescritura de la caché de embeddings, separando desarrollo y producción.</strong> El harness de medición dejó de escribir en la caché real del servicio —que la app sobrescribe al arrancar— y pasó a <code class="code-inline">cache_dir=None</code>. Eso cuesta re-embeber ~120 chunks en cada pasada (9–17 s) y elimina la reutilización de vectores entre ejecuciones. A cambio, ningún número medido puede contaminar un caché de producción. El coste se paga <em>siempre</em> para que el error se pague <em>nunca</em>.</li>
+        <li><strong>Guard del <code class="code-inline">.env</code> real.</strong> Ninguna de las dos claves LLM se valida al arrancar, así que un clon sin <code class="code-inline">.env</code> levantaba limpio y fallaba en su primer turno. Publicar <span class="code-inline">llm_configured</span> desde un endpoint que la página ya consulta convierte el fallo-tardío en un aviso-a-tiempo.</li>
+      </ul>
+    </section>
+
+    <section class="reveal">
+      <h2>Arquitectura RAG desde cero</h2>
+      <p>Antes de este proyecto, RAG era solo un concepto leído por ahí. Ahora se entiende como un <strong>sistema de ingeniería</strong> con componentes concretos:</p>
+      <ul>
+        <li><strong>Chunking:</strong> No es trivial. La estrategia de división afecta directamente la calidad de recuperación. Y hay una trampa fácil: partir antes de <em>cada</em> encabezado convierte el título de cada página en un chunk sin cuerpo. Re-adjuntar el H1 a la sección siguiente no es un detalle de formato, es la diferencia entre que el modelo sepa de qué página habla el párrafo.</li>
+        <li><strong>Embeddings:</strong> Elegir el modelo correcto importa, y las dimensiones no son el criterio. <span class="code-inline">all-MiniLM-L6-v2</span> se dio durante mucho tiempo por "el punto dulce para CPU" porque lo es para CPU <em>y para inglés</em>. Aquí el corpus es español y la pregunta llega de Whisper en español y sin puntuación, así que el sustituto es multilingüe y cuesta varias veces más descarga. La lección general: "el punto dulce" es una afirmación sobre un par (modelo, corpus), nunca sobre el modelo solo. Las 384 dimensiones del glosario, por cierto, siguen siendo las mismas — ese dato nunca fue el problema.</li>
+        <li><strong>Filtrar puede ser peor que no filtrar:</strong> el filtro por tipo de documento parecía sensato y destruía respuestas. Una conjetura por palabra clave pasada tal cual a un filtro duro es una heurística instalada donde hace falta una garantía, y la única reparación honesta de un filtro que a veces borra la respuesta correcta es no filtrar.</li>
+        <li><strong>Un ranker no basta cuando hay techo estructural:</strong> el sistema denso solo tenía un límite medible —cinco de las 49 preguntas etiquetadas se caían porque su página dorada no superaba el umbral de coseno—. Añadir un segundo ranker de naturaleza distinta, el léxico, y un tercero que solo reordena lo ya elegido es lo que mueve la aguja. Y conviene saber de antemano qué métrica <em>no</em> puede mover cada uno: un reranker que reordena no sube el recall@k, porque una permutación deja el mismo conjunto.</li>
+        <li><strong>Persistencia:</strong> Calcular embeddings es costoso; persistirlos en disco es obligatorio.</li>
+        <li><strong>Invalidación:</strong> La identidad de la caché son <strong>7 campos</strong>, no un hash. Un hash de documentos no ve los cambios de semántica de partición, porque esos no tocan el documento.</li>
+      </ul>
+      <p class="see-also"><strong>Ver también:</strong> cada uno de estos componentes en detalle, en el capítulo <a href="rag.html">03 — RAG</a>.</p>
+    </section>
+
+    <section class="reveal">
+      <h2>TDD: 1152 tests de Python y 349 de Node</h2>
+      <p>El proyecto tiene <strong>1152 tests de Python más 349 de Node</strong> pasando, escritos siguiendo el ciclo estricto: <strong>rojo → verde → refactor</strong>. Los de Node no son un lujo: cubren el contrato SSE y el despacho del frontend, que es donde un evento emitido sin rama en el cliente se pierde en silencio en lugar de denunciarse.</p>
+      <ul>
+        <li><strong>Rojo:</strong> Escribo el test primero. Falla porque la funcionalidad no existe.</li>
+        <li><strong>Verde:</strong> Implemento lo mínimo necesario para que pase.</li>
+        <li><strong>Refactor:</strong> Limpio el código sin cambiar el comportamiento.</li>
+      </ul>
+      <p>La conclusión: TDD no va sobre tests. Va sobre <strong>diseñar antes de implementar</strong>. Cada test es un mini-diseño de cómo debería funcionar el código.</p>
+      <div class="callout"><div class="callout-title">Disciplina TDD</div><p>La tentación de "escribir el código primero y los tests después" es constante. Pero cada vez que cede, el código resultante era peor: más acoplado, menos claro, más difícil de cambiar. TDD fuerza una separación natural de responsabilidades.</p></div>
+    </section>
+
+    <section class="reveal">
+      <h2>Especificación de papel ≠ silicio real</h2>
+      <p>Versión temprana de este dossier presumía de float16 «porque hay RAM de sobra». La realidad: CTranslate2 rechaza float16 en CPUs sin soporte FP16 eficiente con un <code class="code-inline">ValueError</code>. La memoria nunca fue la restricción — el hardware disponible sí.</p>
+      <ul>
+        <li><strong>int8 ganó por portabilidad:</strong> funciona en cualquier CPU moderna; float16 solo donde hay aceleración FP16.</li>
+        <li><strong>Las specs venden promedios:</strong> "float16 es más rápido" es cierto en algunos chips y falso en otros. La única spec confiable es la tuya medida en tu máquina.</li>
+        <li><strong>Cambiar de opinión es señal de salud:</strong> small + int8 salió a producción porque sobrevivió al contacto con el hardware real, no al papel.</li>
+      </ul>
+      <p class="see-also"><strong>Ver también:</strong> la historia completa en el capítulo <a href="whisper-stt.html">02 — Whisper</a>.</p>
+    </section>
+
+    <section class="reveal">
+      <h2>Nunca hables con la voz de tus datos crudos</h2>
+      <p>Un bug temprano y formativo: concatenar la salida cruda de recuperación de RAG a la respuesta hizo que el TTS leyera literalmente <em>"[Source: cv.md | Tipo: experience]"</em> al reclutador.</p>
+      <ul>
+        <li><strong>Dos canales, dos formatos:</strong> lo que ve el panel de contexto (metadatos, fuentes, scores) y lo que se pronuncia (texto limpio y saneado) son contratos distintos. Mezclarlos produce momentos surrealistas.</li>
+        <li><strong>Saneamiento como barrera obligatoria:</strong> hoy todo texto pasa por <code class="code-inline">sanitize_for_tts</code> (fuera Markdown y emojis) antes de sintetizarse.</li>
+        <li><strong>Los bugs embarazosos enseñan más:</strong> nadie olvida el día en que su gemelo lee metadatos en voz alta.</li>
+      </ul>
+      <p class="see-also"><strong>Ver también:</strong> el contrato actual de chunks-solo-al-panel, en el capítulo <a href="cache-latencia.html">05 — Caché</a>.</p>
+    </section>
+
+    <section class="reveal">
+      <h2>Revisa tu documentación como código</h2>
+      <p>Una auditoría técnica adversarial sobre este dossier encontró <strong>fabricaciones factuales</strong>: float16 presentado como decisión enviada, un "entity boost" que nunca existió en el código, un parámetro <span class="code-inline">top_p</span> que jamás se envió, Pocket TTS acreditado como motor activo y un conteo de tests desactualizado. La cifra de tests era lo más fácil de cazar y lo más difícil de aceptar: cuando el README dice 1152 y el dossier dice 256, alguien tiene razón y el dossier pierde —y resulta que la cifra se multiplicó por cuatro y media en el tiempo que el documento no se miró.</p>
+      <ul>
+        <li><strong>La documentación también es código:</strong> se le escapan bugs igual — solo que sus bugs se llaman mentiras involuntarias.</li>
+        <li><strong>La revisión adversarial funciona:</strong> contrastar cada afirmación contra la fuente (grep incluido) atrapa lo que la auto-revisión normaliza.</li>
+        <li><strong>Números sin método = rumores:</strong> toda cifra de este dossier declara cómo se obtuvo o se marca explícitamente como estimado.</li>
+        <li><strong>Lo que no se puede verificar se dice:</strong> es preferible "estimado, sin medición formal" a un número que parece medido y no lo está.</li>
+      </ul>
+    </section>
+
+    <section class="reveal">
+      <h2>Decisiones de producto bajo restricciones</h2>
+      <p>Las mejores lecciones vinieron de las restricciones:</p>
+      <ul>
+        <li><strong>$0/mes:</strong> me obligó a buscar alternativas open source y a optimizar lo que ya tenía.</li>
+        <li><strong>Sin GPU:</strong> me enseñó a medir y optimizar cada fase del pipeline — y a publicar el coste de lo que optimicé, no solo el beneficio.</li>
+        <li><strong>ARM64:</strong> la restricción de infraestructura que sí aparece en el README. Lo que <em>no</em> aparece es una saga de compilación multi-arch: la imagen es de arquitectura única.</li>
+        <li><strong>Solo CPU:</strong> me mostró que la ingeniería correcta puede compensar hardware limitado.</li>
+        <li><strong>TLS obligatorio:</strong> una restricción de plataforma, no de preferencia: sin certificado no hay micrófono, porque el navegador solo concede <span class="code-inline">getUserMedia</span> en contexto seguro.</li>
+      </ul>
+      <p>Las restricciones no son enemigas. Son <strong>maestras</strong>: fuerzan a ser creativo, a entender realmente los sistemas con los que trabajas, y a tomar decisiones informadas en lugar de al azar.</p>
+    </section>
+
+    <section class="reveal">
+      <h2>Glosario mínimo</h2>
+      <div class="glossary">
+        <dl>
+          <dt>Embedding</dt>
+          <dd>Representación de un texto como vector numérico (aquí, 384 dimensiones, tanto con el modelo inglés anterior como con el multilingüe actual) que captura su significado. Textos parecidos producen vectores cercanos.</dd>
+          <dt>Cuantización</dt>
+          <dd>Reducir la precisión numérica de los pesos de un modelo (float32 → int8) para ahorrar memoria y cómputo, perdiendo poca precisión.</dd>
+          <dt>WAL</dt>
+          <dd>Write-Ahead Logging: modo de SQLite donde las escrituras van primero a un registro. Efecto práctico: lectores y escritor no se bloquean entre sí.</dd>
+          <dt>RAG</dt>
+          <dd>Retrieval-Augmented Generation: recuperar documentos relevantes y entregárselos al LLM como contexto para que responda con datos reales en vez de memoria entrenada.</dd>
+          <dt>SSE</dt>
+          <dd>Server-Sent Events: protocolo HTTP unidireccional servidor→cliente, ideal para streaming de tokens y fragmentos de audio.</dd>
+          <dt>Similitud coseno</dt>
+          <dd>Métrica de parecido entre dos vectores según su ángulo, ignorando magnitud: 1 significa misma dirección, 0 nada en común.</dd>
+        </dl>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="footer-inner">
+      <div class="footer-col">
+        <p><strong>InterviewTTS</strong> — Proyecto de aprendizaje</p>
+        <p>Construido por <strong>Mikel</strong> como proyecto de portafolio en IA/ML.</p>
+      </div>
+      <div class="footer-col">
+        <p><a href="https://github.com/mikelrh-dev/liveInterviewRAG" target="_blank" rel="noopener">Ver repositorio en GitHub &rarr;</a></p>
+        <p>Stack: Python, FastAPI, Whisper, RAG, Edge TTS</p>
+      </div>
+    </div>
+    <p class="footer-copy">Documento técnico construido para fines educativos. 2025.</p>
+  </footer>
+
+  <script src="script.js"></script>
+</body>
+</html>

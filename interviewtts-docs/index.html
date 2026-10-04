@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>00 — Inicio — InterviewTTS</title>
+  <meta name="description" content="InterviewTTS: un gemelo digital de voz que permite a reclutadores entrevistar a un candidato mediante conversación asistida por IA. Dossier técnico en 8 capítulos.">
+  <meta property="og:title" content="InterviewTTS — Gemelo digital por voz">
+  <meta property="og:description" content="Gemelo digital de voz para entrevistas técnicas: Whisper, RAG con embeddings multilingües y rescate léxico, LLM multi-proveedor, caché de respuestas y Edge TTS. Documentación técnica completa.">
+  <meta property="og:type" content="website">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230f1214'/%3E%3Crect x='12' y='5' width='8' height='14' rx='4' fill='%2300d4ff'/%3E%3Cpath d='M8 14a8 8 0 0 0 16 0' fill='none' stroke='%2300d4ff' stroke-width='2' stroke-linecap='round'/%3E%3Cpath d='M16 22v4' stroke='%2300d4ff' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;0,6..72,700;1,6..72,400&family=Source+Sans+3:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <nav class="nav" role="navigation" aria-label="Navegación principal">
+    <div class="nav-inner">
+      <a href="index.html" class="nav-logo">InterviewTTS</a>
+      <ul class="nav-links">
+        <li><a href="index.html" class="active">00 Inicio</a></li>
+        <li><a href="arquitectura.html">01 Arquitectura</a></li>
+        <li><a href="whisper-stt.html">02 Whisper</a></li>
+        <li><a href="rag.html">03 RAG</a></li>
+        <li><a href="llm-prompting.html">04 LLM</a></li>
+        <li><a href="cache-latencia.html">05 Caché</a></li>
+        <li><a href="persistencia.html">06 Persistencia</a></li>
+        <li><a href="despliegue.html">07 Despliegue</a></li>
+        <li><a href="aprendizajes.html">08 Aprendizajes</a></li>
+      </ul>
+    </div>
+  </nav>
+
+  <main class="main">
+    <section class="hero">
+      <div class="hero-bg" aria-hidden="true"></div>
+      <div class="hero-content">
+        <img src="assets/stitch-hero-mic-neural.png" alt="Micrófono de estudio conectado a una red neuronal, representando la interfaz de voz del sistema InterviewTTS" width="640" height="360">
+        <h1><span class="accent">InterviewTTS</span><br>Gemelo digital por voz</h1>
+        <p class="tagline">Un gemelo digital de voz que permite a los reclutadores entrevistar a un candidato mediante una conversación de voz asistida por IA. Construido como proyecto de aprendizaje en IA/ML.</p>
+        <div class="link-btn-group" style="justify-content:center;">
+          <a href="https://github.com/mikelrh-dev/liveInterviewRAG" class="link-btn" target="_blank" rel="noopener">GitHub &rarr;</a>
+          <a href="arquitectura.html" class="link-btn">Capítulo 01 &rarr;</a>
+        </div>
+      </div>
+    </section>
+
+    <section class="reveal">
+      <h2>El problema</h2>
+      <p>Los currículums reducen a una persona a líneas de texto plano. La voz, el tono, la capacidad de explicar ideas complejas... todo eso se pierde antes de la primera llamada.</p>
+      <p>Este proyecto explora la pregunta contraria: ¿qué pasaría si un reclutador pudiera <strong>hablar directamente con un gemelo digital del candidato</strong>, hacerle preguntas técnicas y escuchar respuestas basadas en su perfil real?</p>
+    </section>
+
+    <section class="reveal">
+      <h2>Qué es InterviewTTS</h2>
+      <p>InterviewTTS es un sistema de <strong>gemelo digital basado en voz</strong>. Funciona así:</p>
+      <ol>
+        <li>El reclutador habla al micrófono del navegador y el audio viaja en un POST multipart a un servidor FastAPI.</li>
+        <li>Faster-Whisper (modelo <em>small</em> cuantizado a int8) transcribe la voz a texto en español.</li>
+        <li>Un caché literal de 20 preguntas frecuentes se interpone antes de gastar cómputo. No hay un segundo caché: el semántico se midió y se eliminó.</li>
+        <li>Si el caché no acierta, un sistema RAG busca contexto relevante en la wiki del candidato —37 páginas en el árbol de trabajo, 33 en un clon limpio—, usando embeddings multilingües y un umbral de coseno de 0,25. Un rescate léxico BM25 recupera las respuestas que el filtro de coseno descarta, y un cross-encoder reordena las ya elegidas.</li>
+        <li>Un LLM genera la respuesta con ese contexto, en streaming token a token.</li>
+        <li>Edge TTS (voz es-ES-AlvaroNeural) sintetiza cada frase completa en cuanto está lista y el navegador la reproduce vía eventos SSE.</li>
+      </ol>
+      <p>El resultado es una entrevista por voz que se siente conversacional: el gemelo responde con información real del candidato y empieza a hablar antes de terminar de generar.</p>
+    </section>
+
+    <section class="reveal">
+      <h2>Índice de capítulos</h2>
+      <div class="chapter-index">
+        <a href="arquitectura.html" class="chapter-card reveal reveal-delay-1">
+          <span class="chapter-card-num">01</span>
+          <div class="chapter-card-body">
+            <h3>Arquitectura End-to-End</h3>
+            <p>Pipeline de voz completo: del micrófono del navegador al audio sintetizado. Flujo por turno, eventos SSE reales, servicios de persistencia e informes, y por qué elegimos SSE frente a WebSockets.</p>
+          </div>
+        </a>
+        <a href="whisper-stt.html" class="chapter-card reveal reveal-delay-2">
+          <span class="chapter-card-num">02</span>
+          <div class="chapter-card-body">
+            <h3>Speech-to-Text con Whisper</h3>
+            <p>Deep dive en faster-whisper y CTranslate2: por qué small + int8 es la configuración enviada a producción, y la lección del float16 que no arrancaba en CPU sin soporte FP16.</p>
+          </div>
+        </a>
+        <a href="rag.html" class="chapter-card reveal reveal-delay-3">
+          <span class="chapter-card-num">03</span>
+          <div class="chapter-card-body">
+            <h3>RAG: Recuperación Aumentada por Generación</h3>
+            <p>Embeddings multilingües, similitud coseno con umbral 0,25, chunking por encabezados H1-H3 con filtros de lectura, rescate léxico BM25, cross-encoder, expansión honesta de consultas y caché de embeddings validada por 7 campos.</p>
+          </div>
+        </a>
+        <a href="llm-prompting.html" class="chapter-card reveal reveal-delay-4">
+          <span class="chapter-card-num">04</span>
+          <div class="chapter-card-body">
+            <h3>LLM y Prompt Engineering</h3>
+            <p>El system prompt real (plantilla de 632 caracteres medida), reglas negativas, cascada Google AI → OpenRouter condicionada a la clave, timeout de 60 s y streaming por frases.</p>
+          </div>
+        </a>
+        <a href="cache-latencia.html" class="chapter-card reveal reveal-delay-1">
+          <span class="chapter-card-num">05</span>
+          <div class="chapter-card-body">
+            <h3>Caché y Optimización de Latencia</h3>
+            <p>El único caché de respuestas (FAQ literal, 20 entradas) y por qué el semántico se eliminó. Tabla de latencias con su método de medición, identidad de 7 campos de la caché de embeddings y el coste del reranker.</p>
+          </div>
+        </a>
+        <a href="persistencia.html" class="chapter-card reveal reveal-delay-2">
+          <span class="chapter-card-num">06</span>
+          <div class="chapter-card-body">
+            <h3>Persistencia y Memoria</h3>
+            <p>SQLite en modo WAL como memoria durable: escritura write-through, hidratación tras reinicio, informes que sobreviven a la expulsión y filosofía log-and-continue.</p>
+          </div>
+        </a>
+        <a href="despliegue.html" class="chapter-card reveal reveal-delay-3">
+          <span class="chapter-card-num">07</span>
+          <div class="chapter-card-body">
+            <h3>Despliegue en Producción</h3>
+            <p>Oracle Free Tier ARM64, $0/mes, sin GPU. TLS obligatorio, Nginx y systemd reales del repositorio con su hardening, Docker como segunda vía de despliegue y copia de seguridad de datos.</p>
+          </div>
+        </a>
+        <a href="aprendizajes.html" class="chapter-card reveal reveal-delay-4">
+          <span class="chapter-card-num">08</span>
+          <div class="chapter-card-body">
+            <h3>Aprendizajes y Reflexión</h3>
+            <p>FastAPI async, RAG desde cero con BM25 y reranking, TDD con 1152 tests de Python y 349 de Node, y las lecciones que solo se aprenden cuando algo se rompe en producción.</p>
+          </div>
+        </a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="footer-inner">
+      <div class="footer-col">
+        <p><strong>InterviewTTS</strong> — Proyecto de aprendizaje</p>
+        <p>Construido por <strong>Mikel</strong> como proyecto de portafolio en IA/ML.</p>
+      </div>
+      <div class="footer-col">
+        <p><a href="https://github.com/mikelrh-dev/liveInterviewRAG" target="_blank" rel="noopener">Ver repositorio en GitHub &rarr;</a></p>
+        <p>Stack: Python, FastAPI, Whisper, RAG, Edge TTS</p>
+      </div>
+    </div>
+    <p class="footer-copy">Documento técnico construido para fines educativos. 2025.</p>
+  </footer>
+
+  <script src="script.js"></script>
+</body>
+</html>

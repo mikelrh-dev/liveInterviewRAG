@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>05 — Caché y Latencia — InterviewTTS</title>
+  <meta name="description" content="El único caché de InterviewTTS: FAQ literal de 20 entradas, con matching textual normalizado y sin embeddings. Tabla de latencias con su método de medición, identidad de 7 campos de la caché de embeddings y el coste del reranker cross-encoder.">
+  <meta property="og:title" content="05 — Caché y Latencia — InterviewTTS">
+  <meta property="og:description" content="El FAQ literal y su guardrail de precisión, por qué el caché semántico se eliminó, la lección del bug [Source:] y una tabla de latencias honesta con etiqueta de método.">
+  <meta property="og:type" content="website">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230f1214'/%3E%3Crect x='12' y='5' width='8' height='14' rx='4' fill='%2300d4ff'/%3E%3Cpath d='M8 14a8 8 0 0 0 16 0' fill='none' stroke='%2300d4ff' stroke-width='2' stroke-linecap='round'/%3E%3Cpath d='M16 22v4' stroke='%2300d4ff' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;0,6..72,700;1,6..72,400&family=Source+Sans+3:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <nav class="nav" role="navigation" aria-label="Navegación principal">
+    <div class="nav-inner">
+      <a href="index.html" class="nav-logo">InterviewTTS</a>
+      <ul class="nav-links">
+        <li><a href="index.html">00 Inicio</a></li>
+        <li><a href="arquitectura.html">01 Arquitectura</a></li>
+        <li><a href="whisper-stt.html">02 Whisper</a></li>
+        <li><a href="rag.html">03 RAG</a></li>
+        <li><a href="llm-prompting.html">04 LLM</a></li>
+        <li><a href="cache-latencia.html" class="active">05 Caché</a></li>
+        <li><a href="persistencia.html">06 Persistencia</a></li>
+        <li><a href="despliegue.html">07 Despliegue</a></li>
+        <li><a href="aprendizajes.html">08 Aprendizajes</a></li>
+      </ul>
+    </div>
+  </nav>
+
+  <main class="main">
+    <header class="chapter-header">
+      <span class="chapter-num">Capítulo 05</span>
+      <h1 class="chapter-title">Caché y Optimización de Latencia</h1>
+      <p class="chapter-subtitle">Medir primero, optimizar el cuello de botella y verificar. Un único caché de respuestas, una tabla de latencias con cada cifra y su método a la vista, y el precio que paga la recuperación por reranking.</p>
+    </header>
+
+    <section class="reveal">
+      <h2>El método: medir, optimizar, verificar</h2>
+      <p>Cada optimización del pipeline siguió el mismo patrón:</p>
+      <ol>
+        <li><strong>Medir:</strong> instrumentar cada fase. La ruta de bloqueo registra por turno <code class="code-inline">Pipeline: STT=…s RAG=…s LLM=…s TTS=…s TOTAL=…s</code>; esa línea es la fuente primaria de toda cifra seria de este capítulo. La ruta SSE no desglosa: loguea <code class="code-inline">Stream STT: …s</code> y un total combinado <code class="code-inline">Stream LLM + TTS interleaved: …s total, N frases</code>, porque LLM y TTS corren intercalados y un desglose por fase mediría una intercalación que no existe.</li>
+        <li><strong>Identificar el cuello de botella:</strong> ¿qué fase domina el tiempo?</li>
+        <li><strong>Optimizar:</strong> atacar esa fase con la técnica adecuada.</li>
+        <li><strong>Verificar:</strong> confirmar con logs y tests que mejoró.</li>
+        <li><strong>Documentar el tradeoff:</strong> para que la decisión sea auditable.</li>
+      </ol>
+    </section>
+
+    <section class="reveal">
+      <h2>La tabla de latencia (única, con método)</h2>
+      <p>Versiones anteriores de este dossier mostraban dos narrativas contradictorias ("de ~20 s a ~5 s" frente a "de ~15-25 s a ~8-12 s"). Ambas eran estimaciones sin trazabilidad. Esta es la reconciliación, con el origen de cada número explícito:</p>
+      <div class="table-wrapper">
+        <table>
+          <caption>Tiempos por escenario y método con que se obtuvieron</caption>
+          <thead><tr><th scope="col">Escenario</th><th scope="col">Tiempo</th><th scope="col">Método / fuente</th></tr></thead>
+          <tbody>
+            <tr><td>Turno sin caché (antes de optimizar)</td><td>~15-25 s</td><td>Estimación histórica documentada en el README del repositorio</td></tr>
+            <tr><td>Turno sin caché (estado actual)</td><td>~8-12 s</td><td>Estimación (README); las fases STT/RAG/LLM/TTS se miden individualmente en los logs del pipeline</td></tr>
+            <tr><td>Acierto de caché FAQ</td><td>Respuesta instantánea (RAG y LLM se saltan por completo)</td><td>Flujo del código: lookup previo a RAG; el turno sigue incluyendo STT y una síntesis TTS</td></tr>
+            <tr><td>Recuperación RAG sin reranker</td><td>mediana 21,9–23,9 ms · p95 24,2–33,8 ms · peor llamada 59,8 ms</td><td>Medido en una pasada sin calentar, que es la forma de producción: el primer <code class="code-inline">retrieve()</code> paga el ajuste perezoso del BM25 y el primer <code class="code-inline">encode()</code> del proceso</td></tr>
+            <tr><td>Recuperación RAG con cross-encoder</td><td>mediana ~196 ms · p95 ~413 ms · máximo 627,7 ms</td><td>Medido sobre el corpus de 124 chunks en CPU, sin GPU. Las filas guardan la pasada <em>más lenta</em> observada, no la más rápida</td></tr>
+            <tr><td>Keep-alive HTTP</td><td>Ahorra ~200-500 ms por llamada al proveedor</td><td>Coste estimado del handshake TCP+TLS evitado (propuesta del cambio)</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>En barras (escala hasta 12 s; solo aplica a la generación de respuesta, no al turno completo):</p>
+      <div class="bar-chart" role="img" aria-label="Comparación de tiempos: turno sin caché entre 8 y 12 segundos estimados; recuperación RAG con cross-encoder con mediana de 196 milisegundos; recuperación sin reranker con mediana de 24 milisegundos; pregunta frecuente, generación nula porque la respuesta es literal">
+        <div class="bar-row">
+          <span class="bar-name">Turno sin caché (est.)</span>
+          <span class="bar-track"><span class="bar-fill slow" style="width:100%"></span></span>
+          <span class="bar-value">~8–12 s</span>
+        </div>
+        <div class="bar-row">
+          <span class="bar-name">RAG con cross-encoder</span>
+          <span class="bar-track"><span class="bar-fill" style="width:2%"></span></span>
+          <span class="bar-value">~196 ms</span>
+        </div>
+        <div class="bar-row">
+          <span class="bar-name">RAG sin reranker</span>
+          <span class="bar-track"><span class="bar-fill" style="width:1%"></span></span>
+          <span class="bar-value">~24 ms</span>
+        </div>
+        <div class="bar-row">
+          <span class="bar-name">Caché FAQ (generación)</span>
+          <span class="bar-track"><span class="bar-fill" style="width:1%"></span></span>
+          <span class="bar-value">≈ 0 s</span>
+        </div>
+      </div>
+      <p>Recuerda: cualquier turno paga además el STT del audio entrante y su síntesis final. El caché elimina RAG + LLM, no todo el pipeline.</p>
+      <div class="callout"><div class="callout-title">El coste del reranker, publicado en vez de tragado</div><p>El cross-encoder multiplica por ocho la latencia de recuperación: mediana de ~24 ms a ~196 ms. Dos cosas hacen que ese número sea el que es, y ninguna es el modelo de embeddings: puntúa <strong>tres pasajes cortos</strong>, no diez largos —aislado, su mediana es de 145 a 156 ms—; y el resto del coste es CPU, porque en este despliegue no hay GPU y torch corre sobre los hilos que encuentre, lo que explica que la dispersión entre la pasada más rápida y la más lenta sea ancha (114–196 ms de mediana).</p>
+      <p>En contexto, no es el coste dominante: la documentación del propio caché de respuestas sitúa un turno LLM en 4–8 s, así que ~196 ms de recuperación es un porcentaje de un dígito. Pero <strong>sí</strong> es ocho veces lo que este proyecto publicaba para la recuperación, y la vuelta atrás es una variable de entorno: <span class="code-inline">RERANK_ENABLED=false</span>. <span class="code-inline">/api/health</span> reporta <span class="code-inline">rerank_mode: "disabled"</span> y lo trata como decisión, no como fallo.</p></div>
+    </section>
+
+    <section class="reveal">
+      <h2>Caché 1: FAQ literal (20 preguntas)</h2>
+      <p>El primer nivel es un diccionario en memoria (<code class="code-inline">response_cache.py</code>) con <strong>exactamente 20 entradas</strong>: las preguntas más probables de una entrevista técnica, con sus respuestas pre-generadas en la voz del candidato.</p>
+      <ul>
+        <li><strong>Matching textual normalizado, NO embeddings:</strong> la pregunta se normaliza (minúsculas, sin tildes ni puntuación) y se compara por <em>frases</em> y palabras clave <strong>con límites de palabra</strong>. La razón de anclar los dos extremos no es cosmética: <span class="code-inline">if phrase in normalized</span> se satisfacía con una palabra más larga que contuviera la frase —"¿Qué es ragged?" contenía "que es rag", y "Háblame de ti" contenía "hablame de ti"—, y las dos se respondieron con una respuesta pre-generada. Una pregunta real contiene su frase en límites de palabra, así que anclar ambos extremos no cuesta ni un acierto y evita que el vocabulario se empareje consigo mismo.</li>
+        <li><strong>Vocabulario de keywords diminuto, a propósito:</strong> tres términos en total, y cada uno contextualmente específico. Una keyword genérica selecciona una respuesta pre-generada para preguntas que no trata: "¿Qué cobertura de tests tiene el proyecto de fraude?" no es "¿Haces tests?". Seis keywords que hacían exactamente eso se eliminaron, y las preguntas que servían ahora están cubiertas por frases.</li>
+        <li><strong>Orden significativo:</strong> las entradas específicas van primero ("fortalezas y debilidades" antes que "fortalezas") para que una keyword genérica nunca tape una frase precisa.</li>
+        <li><strong>Contrato de acierto:</strong> la respuesta sale <strong>literal</strong>, tal cual está escrita en el código. El LLM nunca se invoca.</li>
+      </ul>
+      <div class="callout"><div class="callout-title">Por qué aquí la precisión es el coste entero</div><p>El acierto <strong>se salta la recuperación</strong> y devuelve antes del paso de RAG. Así que un acierto equivocado no es solo una respuesta obsoleta: el anclaje que habría contestado la pregunta desde el corpus del propio candidato nunca llega a ejecutarse. Ser rápido respondiendo una pregunta que nadie hizo es un peor resultado que ser lento respondiendo la correcta.</p></div>
+    </section>
+
+    <section class="reveal">
+      <h2>Por qué no hay un segundo caché: el semántico fue eliminado</h2>
+      <p>El FAQ literal falla ante paráfrasis: "Háblame de ti" está cacheado, pero "Cuéntame tu historia" no coincide textualmente y pagaría el pipeline completo. Existió un caché para cerrar ese hueco —guardaba pares (pregunta, embedding, respuesta) en SQLite y servía la respuesta cuando una nueva pregunta era <em>casi la misma pregunta</em>— y ya no está.</p>
+      <p>No se reparó: se midió y se quitó. Con el embedder real que el pipeline tenía entonces, el umbral enviado <strong>no lo alcanzaba ninguna paráfrasis</strong>, y bajarlo hasta un suelo de cero falsos positivos seguía sirviendo alrededor del 7% de ellas. La razón es estructural: un embedder solo-ingles no puede separar una paráfrasis española de una pregunta española distinta. El corpus es español, así que ese modelo dejó de ser el defecto — pero el caché <strong>se queda fuera igual</strong>, y re-medirlo contra el embedder multilingüe es un trabajo distinto que no se ha hecho. Un caché no se reintegra porque un espacio vectorial distinto haga que los números viejos parezcan ranciosos.</p>
+      <p>Había además un defecto de privacidad, que es la razón por la que su eliminación no fue opcional: la tabla guardaba <strong>la pregunta del reclutador</strong> en crudo y <strong>no tenía retención</strong>, mientras que la transcripción que contenía ese mismo intercambio se poda a las 2 horas por defecto. Una copia de las preguntas del candidato que nunca expiraba no era desorden, era una fuga. El código que la escribía ya no existe y el esquema actual no la recrea; lo que se añadió fue el <code class="code-inline">DROP TABLE</code> que limpia los ficheros desplegados antes de la eliminación, con un aviso en el log solo cuando encuentra algo.</p>
+      <p>La política real queda en <strong>dos escalones</strong>: FAQ literal → LLM. No hay un tercer escalón.</p>
+    </section>
+
+    <section class="reveal">
+      <h2>El otro caché: identidad de embeddings en disco</h2>
+      <p>Existe una segunda caché, de naturaleza distinta: los vectores, no las respuestas. Vive en <code class="code-inline">backend/.rag_cache/embeddings.json</code> más un <code class="code-inline">.npz</code>, y su identidad son <strong>siete campos</strong>: <span class="code-inline">embedder</span>, <span class="code-inline">model</span>, <span class="code-inline">chunk_size</span>, <span class="code-inline">chunk_overlap</span>, <span class="code-inline">chunk_filter_version</span>, <span class="code-inline">document_hash</span> y <span class="code-inline">chunk_count</span>. Todo lo que la caché no declara se trata como "recalcula", nunca como "supón".</p>
+      <div class="callout"><div class="callout-title">Lo que este caché NO hace</div><p>No se ve afectado por el modo TF-IDF. Si <span class="code-inline">sentence-transformers</span> no está disponible, el pipeline cae a TF-IDF y registra un <strong>error</strong> —no un warning— nombrando la consecuencia: la calidad de recuperación baja y la caché en disco es inservible, porque un espacio TF-IDF se reconstruye en cada ingest y los vectores de dos ejecuciones no comparten geometría. Es decir: la caché no se degrada en silencio, sino que desaparece, y el modo real es consultable.</p></div>
+      <h3>El modo de recuperación se publica, no se supone</h3>
+      <p><code class="code-inline">RAGPipeline.mode</code> devuelve <span class="code-inline">embeddings</span>, <span class="code-inline">tfidf</span> o <span class="code-inline">uninitialized</span>, y existe porque un pipeline que cayó a TF-IDF en silencio es indistinguible de uno sano: el número de chunks es idéntico y <span class="code-inline">status: ok</span> sigue siendo cierto en el único sentido que importa para la vivacidad. El tercer valor no es decorativo: preguntar antes de <span class="code-inline">initialize()</span> no puede producir <span class="code-inline">embeddings</span>, porque una afirmación sobre un modelo que no se ha cargado es la misma clase de mentira que la propiedad existe para detener.</p>
+      <p><code class="code-inline">/api/health</code> publica eso como <span class="code-inline">rag_mode</span>, junto a <span class="code-inline">rerank_mode</span> y <span class="code-inline">rerank_identity</span>. El estado HTTP no cambia por un cuerpo degradado: una respuesta degradada no es una caída, y el resto del payload sigue siendo cierto.</p>
+      <p class="see-also"><strong>Ver también:</strong> los siete campos en detalle y el motivo de cada uno, en el capítulo <a href="rag.html">03 — RAG</a>.</p>
+    </section>
+
+    <section class="reveal">
+      <h2>Mini-lección: el bug del [Source:] leído en voz alta</h2>
+      <p>Versión temprana del sistema "enriquecía" las respuestas cacheadas concatenándoles el contexto recuperado. Resultado: el TTS leía literalmente <em>"abre corchetes, Source, dos puntos..."</em>. La salida cruda de retrieval es <strong>dato para un panel visual</strong>, no texto para locución.</p>
+      <div class="callout roadmap">
+        <div class="callout-title">Lección de arquitectura</div>
+        <p>Nunca concatenes salida cruda de recuperación en salida hablada. Hoy los chunks alimentan exclusivamente el panel de contexto del frontend (eventos y API aparte); el canal de voz recibe solo la respuesta limpia y saneada.</p>
+      </div>
+    </section>
+
+    <section class="reveal">
+      <h2>Resto de optimizaciones</h2>
+      <div class="table-wrapper">
+        <table>
+          <caption>Optimizaciones vigentes, con fuente de cada mejora</caption>
+          <thead><tr><th scope="col">Optimización</th><th scope="col">Mejora</th><th scope="col">Detalle</th></tr></thead>
+          <tbody>
+            <tr><td>Prompt ajustado</td><td>-0,5 a -1,5 s (estimado, README)</td><td>Menos tokens en cada turno; la plantilla del system prompt mide 632 caracteres, contados sobre el código real</td></tr>
+            <tr><td>Embeddings en disco</td><td>-2 a -3 s en arranque (estimado, README)</td><td>Caché <span class="code-inline">.npz</span> invalidada por 7 campos de identidad, incluido el SHA256 de los documentos</td></tr>
+            <tr><td>Keep-alive HTTP</td><td>-200 a -500 ms por llamada (estimado)</td><td>Cliente httpx compartido; sin handshake TCP+TLS repetido</td></tr>
+            <tr><td>Streaming SSE por frases</td><td>Latencia percibida ≈ 0 s</td><td>El usuario escucha la primera frase antes de que termine la generación</td></tr>
+            <tr><td>Whisper small + int8</td><td>Configuración enviada</td><td>Punto dulce documentado precisión/esfuerzo en CPU (capítulo 02)</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="reveal">
+      <h2>Los tradeoffs fundamentales</h2>
+      <ul>
+        <li><strong>Respuestas literales vs frescura:</strong> Las entradas del FAQ viven en código — actualizarlas exige un commit consciente. Es un precio aceptable por respuestas perfectamente controladas.</li>
+        <li><strong>Acierto textual vs acierto semántico:</strong> Se eligió el matching literal sobre la similitud. El matching literal falla ante paráfrasis; el semántico servía respuestas equivocadas. Ninguna de las dos es gratuita, y la segunda se pagó con un 7% de falsos positivos que ningún umbral plancher eliminaba.</li>
+        <li><strong>Reranker vs latencia:</strong> ~8× en la latencia de recuperación a cambio de +4 en recall@1 sobre 49 preguntas. Medido y con interruptor (<span class="code-inline">RERANK_ENABLED</span>), no oculto.</li>
+        <li><strong>beam_size=1 vs calidad STT:</strong> Menos exploración de hipótesis a cambio de latencia; aceptable en conversación clara.</li>
+        <li><strong>SSE vs WebSockets:</strong> SSE es unidireccional y simple; exactamente lo que este flujo necesita.</li>
+      </ul>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="footer-inner">
+      <div class="footer-col">
+        <p><strong>InterviewTTS</strong> — Proyecto de aprendizaje</p>
+        <p>Construido por <strong>Mikel</strong> como proyecto de portafolio en IA/ML.</p>
+      </div>
+      <div class="footer-col">
+        <p><a href="https://github.com/mikelrh-dev/liveInterviewRAG" target="_blank" rel="noopener">Ver repositorio en GitHub &rarr;</a></p>
+        <p>Stack: Python, FastAPI, Whisper, RAG, Edge TTS</p>
+      </div>
+    </div>
+    <p class="footer-copy">Documento técnico construido para fines educativos. 2025.</p>
+  </footer>
+
+  <script src="script.js"></script>
+</body>
+</html>

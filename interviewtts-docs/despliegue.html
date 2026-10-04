@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>07 — Despliegue — InterviewTTS</title>
+  <meta name="description" content="Despliegue de InterviewTTS en Oracle Free Tier ARM64 ($0/mes, sin GPU): TLS obligatorio con certbot, Nginx y systemd reales del repositorio con hardening y ReadWritePaths, y la vía alternativa por Docker.">
+  <meta property="og:title" content="07 — Despliegue — InterviewTTS">
+  <meta property="og:description" content="Las dos vías reales de despliegue —systemd con TLS y Docker—, con la configuración de Nginx y la unidad systemd tal como viven en el repositorio.">
+  <meta property="og:type" content="website">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230f1214'/%3E%3Crect x='12' y='5' width='8' height='14' rx='4' fill='%2300d4ff'/%3E%3Cpath d='M8 14a8 8 0 0 0 16 0' fill='none' stroke='%2300d4ff' stroke-width='2' stroke-linecap='round'/%3E%3Cpath d='M16 22v4' stroke='%2300d4ff' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;0,6..72,700;1,6..72,400&family=Source+Sans+3:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <nav class="nav" role="navigation" aria-label="Navegación principal">
+    <div class="nav-inner">
+      <a href="index.html" class="nav-logo">InterviewTTS</a>
+      <ul class="nav-links">
+        <li><a href="index.html">00 Inicio</a></li>
+        <li><a href="arquitectura.html">01 Arquitectura</a></li>
+        <li><a href="whisper-stt.html">02 Whisper</a></li>
+        <li><a href="rag.html">03 RAG</a></li>
+        <li><a href="llm-prompting.html">04 LLM</a></li>
+        <li><a href="cache-latencia.html">05 Caché</a></li>
+        <li><a href="persistencia.html">06 Persistencia</a></li>
+        <li><a href="despliegue.html" class="active">07 Despliegue</a></li>
+        <li><a href="aprendizajes.html">08 Aprendizajes</a></li>
+      </ul>
+    </div>
+  </nav>
+
+  <main class="main">
+    <header class="chapter-header">
+      <span class="chapter-num">Capítulo 07</span>
+      <h1 class="chapter-title">Despliegue en Producción</h1>
+      <p class="chapter-subtitle">Restricciones reales: Oracle Free Tier ARM64, 4 cores, 24 GB RAM, $0/mes. Sin GPU, toda la inferencia CPU-bound. TLS obligatorio, Nginx y systemd tal como viven en el repositorio, y Docker como segunda vía.</p>
+    </header>
+
+    <section class="reveal">
+      <h2>La restricción: $0/mes</h2>
+      <p>Uno de los objetivos del proyecto era demostrar que se puede construir un sistema de IA funcional <strong>sin gastar dinero en infraestructura</strong>. Esto es relevante para estudiantes sin presupuesto para GPUs, prototipos donde el costo no debe superar al MVP, y aprendizaje: cuando no puedes escalar con dinero, aprendes a escalar con ingeniería.</p>
+    </section>
+
+    <section class="reveal">
+      <h2>Oracle Free Tier ARM64</h2>
+      <div class="stat-card"><span class="stat-value">4</span><span class="stat-label">Cores ARM64 (Ampere A1)</span></div>
+      <div class="stat-card"><span class="stat-value">24 GB</span><span class="stat-label">RAM compartida (hasta 4 instancias)</span></div>
+      <div class="stat-card"><span class="stat-value">$0</span><span class="stat-label">Costo mensual (siempre-disponible, no trial)</span></div>
+      <p>Oracle Cloud Free Tier ofrece cómputo ARM64 con hasta 4 OCPU y 24 GB de RAM <strong>siempre gratis</strong>. Es suficiente para correr todo el pipeline en carga de conversación única. Solo Whisper consume ~1,4 GB en memoria (valor aproximado del README), así que el margen es holgado para el modelo elegido — la restricción real es tiempo de CPU, no RAM.</p>
+      <div class="callout"><div class="callout-title">ARM64 vs x86</div><p>ARM64 es una arquitectura RISC con mejor eficiencia energética. Para inferencia CPU ofrece buen balance precio/rendimiento. CTranslate2 y PyTorch tienen soporte nativo.</p></div>
+      <p class="see-also"><strong>Ver también:</strong> cómo se eligió entre tamaños de Whisper bajo esta restricción, en el capítulo <a href="whisper-stt.html">02 — Whisper</a>.</p>
+    </section>
+
+    <section class="reveal">
+      <h2>Sin GPU: CPU-bound</h2>
+      <p>Sin GPU, toda la inferencia es <strong>CPU-bound</strong>. El impacto por componente: Whisper STT domina el presupuesto de cada turno (ver capítulo 02), los embeddings de RAG son rápidos (el embedder multilingüe actual son 384 dimensiones y cabe en CPU), y Edge TTS ni siquiera compite por la CPU local: sintetiza en el servicio de Microsoft y devuelve MP3 listo para servir, sin GPU propia.</p>
+      <p>El README lo resume: el presupuesto del pipeline ronda los 8 segundos en CPU, y es el endpoint de streaming el que hace que la experiencia se sienta responsiva pese a ello.</p>
+    </section>
+
+    <section class="reveal">
+      <h2>TLS no es opcional: sin certificado no hay micrófono</h2>
+      <p>Antes de nada, una restricción que no es de configuración sino de la plataforma: <strong>la API de <code class="code-inline">getUserMedia</code> solo se sirve en contexto seguro</strong>. Sobre HTTP plano el navegador no concede acceso al micrófono, sin importar qué headers envíes. Y <code class="code-inline">nginx/interview.conf</code> <strong>no arranca sin certificado</strong>: el bloque 443 tiene <span class="code-inline">ssl_certificate</span> y nginx se niega a arrancar con "cannot load certificate". Es decir, el orden no es una preferencia, es la diferencia entre una app que funciona y una que no arranca.</p>
+      <div class="table-wrapper">
+        <table>
+          <caption>Orden de despliegue TLS (ejecutable en el orden dado)</caption>
+          <thead><tr><th scope="col">#</th><th scope="col">Paso</th><th scope="col">Detalle</th></tr></thead>
+          <tbody>
+            <tr><td>1</td><td>Certificado, con nginx <strong>aún sin escuchar</strong> en el 80</td><td><code class="code-inline">certbot certonly --standalone --cert-name interviewtts -d &lt;dominio&gt;</code>. <span class="code-inline">--standalone</span> occupies el puerto 80 él mismo, así que falla con "Address already in use" si algo ya escucha ahí: en un VPS nuevo nada escucha; si nginx está instalado y corriendo, páralo primero</td></tr>
+            <tr><td>2</td><td>Instalar el conf y arrancar nginx por primera vez</td><td><code class="code-inline">nginx -t &amp;&amp; systemctl enable --now nginx</code>. <span class="code-inline">enable --now</span>, no <span class="code-inline">reload</span>: una instalación nueva tiene nginx deshabilitado y parado, y <span class="code-inline">reload</span> sobre una unidad parada no la arranca</td></tr>
+            <tr><td>3</td><td><strong>Solo entonces</strong> habilitar el <span class="code-inline">return 301</span> del bloque 80</td><td>Va comentado a propósito: activarlo con TLS roto cierra la puerta a todos los visitantes, incluido tú, y el sitio HTTP plano se vuelve inalcanzable</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>El <span class="code-inline">--cert-name interviewtts</span> no es cosmético. Sin él, certbot deriva el directorio de salida del <em>primer</em> <span class="code-inline">-d</span>, así que la forma simple escribe en <span class="code-inline">/etc/letsencrypt/live/&lt;dominio&gt;/fullchain.pem</span> —una ruta distinta de la que apunta el conf, y nginx se niega a arrancar. Nombrar el certificado desacopla el directorio del dominio, así que el conf es correcto para cualquier dominio y sigue siendo correcto cuando el dominio cambie. Y <span class="code-inline">certbot renew</span> re-emite a la misma ruta, así que nada de lo de abajo hay que cambiarlo cuando lo haga.</p>
+      <p>Revertir el paso 3 es fácil. Revertir la decisión HSTS que el navegador cacheó después de ver la cabecera, no.</p>
+    </section>
+
+    <section class="reveal">
+      <h2>Nginx: el conf real del repositorio</h2>
+      <p>Este es el contenido de <code class="code-inline">nginx/interview.conf</code>, versión resumida pero fiel:</p>
+      <div class="code-block" data-lang="nginx"><span class="cm"># nginx/interview.conf (espejo fiel)</span>
+<span class="cm"># Bloque 1: HTTP plano. Solo redirección.</span>
+<span class="kw">server</span> {
+    <span class="pr">listen</span> <span class="nm">80</span>;
+    <span class="pr">server_name</span> _;
+    <span class="cm"># Descomentar SOLO tras confirmar que el bloque 443 funciona:</span>
+    <span class="cm"># return 301 https://$host$request_uri;</span>
+}
+
+<span class="kw">server</span> {
+    <span class="pr">listen</span> <span class="nm">443</span> ssl;
+    <span class="pr">server_name</span> _;
+    <span class="pr">ssl_certificate</span>     /etc/letsencrypt/live/interviewtts/fullchain.pem;
+    <span class="pr">ssl_certificate_key</span> /etc/letsencrypt/live/interviewtts/privkey.pem;
+    <span class="pr">ssl_protocols</span> TLSv1.2 TLSv1.3;
+    <span class="pr">ssl_prefer_server_ciphers</span> off;
+
+    <span class="cm"># Frontend estático servido directamente del disco</span>
+    <span class="pr">location</span> / {
+        <span class="pr">root</span> /opt/interviewtts/frontend;
+        <span class="pr">index</span> index.html;
+        <span class="pr">try_files</span> $uri $uri/ /index.html;
+    }
+
+    <span class="cm"># Proxy API → FastAPI</span>
+    <span class="pr">location</span> /api/ {
+        <span class="cm"># Debe EXCEDER (no igualar) MAX_AUDIO_SIZE de la app:</span>
+        <span class="cm"># lo que llega es el cuerpo multipart, no el fichero,</span>
+        <span class="cm"># así que un fichero de 5 MB dentro del envelope es</span>
+        <span class="cm"># un cuerpo MAYOR que 5 MB. 6m deja 1 MiB de holgura.</span>
+        client_max_body_size <span class="nm">6m</span>;
+
+        <span class="pr">proxy_pass</span> http://127.0.0.1:<span class="nm">8000</span>;
+        <span class="pr">proxy_set_header</span> Host $host;
+        <span class="pr">proxy_set_header</span> X-Real-IP $remote_addr;
+        <span class="pr">proxy_set_header</span> X-Forwarded-For $proxy_add_x_forwarded_for;
+        <span class="pr">proxy_set_header</span> X-Forwarded-Proto $scheme;
+
+        <span class="cm"># Debe seguir a SSE_KEEPALIVE_INTERVAL_SECONDS. nginx</span>
+        <span class="cm"># aplica 60s si falta la directiva, y /message/stream no</span>
+        <span class="cm"># envía su primer byte hasta que Whisper termina.</span>
+        proxy_read_timeout <span class="nm">300s</span>;
+
+        proxy_buffering off;   <span class="cm"># crítico para SSE</span>
+        proxy_cache off;
+    }
+
+    <span class="cm"># Audio generado, servido directo con caché corta</span>
+    <span class="pr">location</span> /audio/ {
+        <span class="pr">alias</span> /opt/interviewtts/audio/;
+        <span class="pr">expires</span> <span class="nm">1h</span>;
+        add_header Cache-Control <span class="st">"public, immutable"</span>;
+
+        <span class="cm"># nginx NO hereda las add_header del padre en un bloque</span>
+        <span class="cm"># que declara las suyas, así que aquí se repiten.</span>
+        <span class="cm"># HSTS en particular debe llegar a toda respuesta.</span>
+        add_header Strict-Transport-Security <span class="st">"max-age=31536000"</span> always;
+        add_header X-Frame-Options <span class="st">"SAMEORIGIN"</span> always;
+        add_header X-Content-Type-Options <span class="st">"nosniff"</span> always;
+        add_header X-XSS-Protection <span class="st">"1; mode=block"</span> always;
+    }
+
+    <span class="cm"># Cabeceras de seguridad a nivel de server + gzip</span>
+    add_header X-Frame-Options <span class="st">"SAMEORIGIN"</span> always;
+    add_header X-Content-Type-Options <span class="st">"nosniff"</span> always;
+    add_header X-XSS-Protection <span class="st">"1; mode=block"</span> always;
+    add_header Strict-Transport-Security <span class="st">"max-age=31536000"</span> always;
+
+    <span class="pr">gzip</span> on;
+}</div>
+      <p>Cuatro detalles que importan:</p>
+      <ul>
+        <li><strong><code class="code-inline">proxy_buffering off</code></strong>: sin esto, Nginx acumula las respuestas en búfer y el streaming SSE se rompe (los eventos llegan a chorros tardíos).</li>
+        <li><strong><code class="code-inline">client_max_body_size 6m</code></strong>: nginx pone 1 MB por defecto si la directiva falta, y la aplicación acepta 5. Esas dos capas no se negocian: la exterior corre primero y gana, así que una grabación de 1 a 5 MB la rechaza nginx con un 413 pelado antes de que FastAPI la vea. Y <em>igualar</em> tampoco basta, por el envelope multipart descrito en el propio conf. Un test parsea este fichero y lo compara con la constante de la aplicación, así que las dos capas no pueden divergir sin que se note.</li>
+        <li><strong><code class="code-inline">proxy_read_timeout 300s</code></strong>: acota el hueco entre dos lecturas del upstream, no el tiempo total de respuesta. Con el modelo pequeño sobre CPU, una transcripción lenta pasa un rato largo en cero bytes. 300 s es cinco veces el techo de 60 s de <span class="code-inline">MAX_AUDIO_DURATION</span>, y un test falla si los dos se encuentran. Esto es el techo, no el arreglo: el keepalive de 15 s es lo que sostiene la conexión, y 300 s holga para veinte intervalos.</li>
+        <li><strong>/audio/ repite las cabeceras a propósito:</strong> nginx no hereda las <span class="code-inline">add_header</span> del padre en un bloque que declara las suyas, así que sin repetirlas el bloque 443 las perdería ahí —HSTS en particular debe llegar a toda respuesta para valer algo—.</li>
+      </ul>
+    </section>
+
+    <section class="reveal">
+      <h2>Systemd: la unidad real, con hardening</h2>
+      <div class="code-block" data-lang="ini"><span class="cm"># deployment/interviewtts.service (espejo fiel)</span>
+[Service]
+Type=simple
+User=interviewtts
+WorkingDirectory=/opt/interviewtts
+
+<span class="cm"># --host 127.0.0.1: el backend solo es alcanzable desde el proxy</span>
+<span class="cm"># local. Con 0.0.0.0 la API quedaba expuesta, saltándose nginx</span>
+<span class="cm"># y con él cada control de TLS, headers y rate-limit configurado ahí.</span>
+<span class="cm"># --forwarded-allow-ips DEBE seguir limitado a 127.0.0.1: es la lista</span>
+<span class="cm"># de pares cuya X-Forwarded-For se cree. Ampliarlo (p. ej. a "*")</span>
+<span class="cm"># dejaría que CUALQUIER cliente falsifique su propia dirección.</span>
+ExecStart=/opt/interviewtts/venv/bin/uvicorn backend.main:app --host 127.0.0.1 --port 8000 --proxy-headers --forwarded-allow-ips 127.0.0.1
+Restart=always
+RestartSec=5
+
+<span class="cm"># El primer arranque descarga ~1 GB de modelos. El default de 90 s</span>
+<span class="cm"># mata esa descarga en un enlace lento y, con Restart=always</span>
+<span class="cm"># arriba, reinicia en bucle cada 5 s hasta llenar la caché.</span>
+TimeoutStartSec=10min
+
+Environment=PYTHONUNBUFFERED=1
+Environment=HOME=/opt/interviewtts
+EnvironmentFile=/opt/interviewtts/.env
+
+<span class="cm"># Hardening</span>
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/interviewtts/audio /opt/interviewtts/data /opt/interviewtts/reports /opt/interviewtts/backend/.rag_cache -/opt/interviewtts/.cache/huggingface
+PrivateTmp=true</div>
+      <p>Dos decisiones que no son óbvias:</p>
+      <ul>
+        <li><strong><code class="code-inline">HOME</code> se declara, no se hereda.</strong> La caché del modelo de embeddings vive bajo él. El usuario se crea con <span class="code-inline">--home-dir /opt/interviewtts</span> y systemd lo poblaría solo desde esa entrada de passwd —pero "lo haría" es exactamente el problema: la entrada de <span class="code-inline">ReadWritePaths</span> de arriba es una ruta absoluta que dice dónde tiene que acabar esa resolución, y si algún día se moviera, las dos discreparían en silencio y el modelo se volvería a descargar a un directorio de solo lectura en cada arranque. Declarado aquí, un test los contrasta.</li>
+        <li><strong><code class="code-inline">ProtectHome=true</code> no pelea con esto</strong>: vuelve de solo lectura <span class="code-inline">/home</span>, <span class="code-inline">/root</span> y <span class="code-inline">/run/user</span>, y el home de este usuario es <span class="code-inline">/opt/interviewtts</span>, fuera de las tres. Es <span class="code-inline">ProtectSystem=strict</span> quien vuelve de solo lectura también <span class="code-inline">/opt/interviewtts</span>, y eso es lo que estas rutas vuelven a abrir.</li>
+      </ul>
+      <p><strong>El gotcha de <code class="code-inline">ProtectSystem=strict</code>:</strong> deja TODO el sistema de archivos en solo lectura salvo lo listado en <code class="code-inline">ReadWritePaths</code>. Son <strong>cinco entradas, no tres</strong>, y las dos últimas llevan el prefijo <code class="code-inline">-</code> de "ignorar si falta" por razones distintas. El capítulo <a href="persistencia.html">06 — Persistencia y memoria</a> explica cada una.</p>
+    </section>
+
+    <section class="reveal">
+      <h2>Docker: la segunda vía de despliegue</h2>
+      <p>El despliegue no es solo systemd. El repositorio trae <strong><code class="code-inline">Dockerfile</code> y <code class="code-inline">docker-compose.yml</code></strong> para despliegue local, y el Dockerfile se escribió <strong>como espejo de la unidad</strong>: mismo punto de entrada, misma postura sin root, mismo conjunto de rutas de escritura —expresado como contenedor en lugar de unidad systemd.</p>
+      <ul>
+        <li><strong>Una sola arquitectura.</strong> No hay buildx, ni <span class="code-inline">--platform</span>, ni manifest list: la imagen es de arquitectura única. No es un descuido pendiente de resolver; es que nunca hizo falta en este despliegue, que corre en Docker Desktop sobre Windows. La consecuencia práctica es que la imagen <strong>no es multi-arch</strong> y no debe asumirse que lo sea.</li>
+        <li><strong>Base <code class="code-inline">python:3.10-slim</code></strong>, no 3.11. slim para reducir tamaño; ffmpeg y ca-certificates como dependencias de <strong>runtime</strong>, no de build: faster-whisper le pasa la grabación a ffmpeg para decodificar, y sin CA el TLS de edge-tts y de httpx hacia OpenRouter no funciona.</li>
+        <li><strong>Torch desde el índice de CPU</strong>, instalado y fijado en su propia capa <em>antes</em> del proyecto, vía <span class="code-inline">--extra-index-url</span> y no <span class="code-inline">--index-url</span>. Con PyPI solo, la resolución trae la build CUDA y arrastra el stack <span class="code-inline">nvidia-*</span>: varios GB de descarga, todos peso muerto para un servicio configurado con <span class="code-inline">WHISPER_DEVICE=cpu</span>. Como índice <em>extra</em>, PyPI sigue sirviendo el resto y la ordenación de versiones local de PEP 420 hace que gane la rueda CPU sin necesidad de fijar nada.</li>
+        <li><strong>El <code class="code-inline">COPY</code> es explícito</strong>, no <span class="code-inline">COPY . .</span>: <span class="code-inline">.dockerignore</span> ya excluye secretos y PII, y un COPY amplio haría que ese fichero fuera lo único entre la <span class="code-inline">OPENROUTER_API_KEY</span> y una capa publicada. Dos rutas fijas que faltan fallan ruidosamente; <span class="code-inline">COPY . .</span> falla en silencio cuando alguien olvida una.</li>
+        <li><strong>Los volúmenes con nombre nacen de la imagen.</strong> Un volumen con nombre montado sobre una ruta que no existe se crea como root y un servicio sin root no puede escribir — así es como la caché de HuggingFace se convierte en una redescarga de 457 MB en cada <span class="code-inline">up</span>. Los directorios se crean y se cambian de dueño en la imagen, y Docker siembra el volumen desde ella preservando el propietario.</li>
+        <li><strong><code class="code-inline">--host 0.0.0.0</code> dentro del contenedor</strong>, sustituyendo el <span class="code-inline">127.0.0.1</span> de la unidad: el loopback de un contenedor es su propio espacio de nombres, así que atarlo lo haría inalcanzable desde fuera del contenedor diga lo que diga el <span class="code-inline">publish</span>. El aislamiento que daba el loopback lo hace la publicación en su lado de host.</li>
+      </ul>
+      <p>El <span class="code-inline">HEALTHCHECK</span> tiene un <span class="code-inline">start-period</span> de 900 s y es portante: el primer arranque no es lento porque la app lo sea, sino porque HuggingFace tiene que descargar los modelos <em>entonces</em>. Docker mata un contenedor que falla su healthcheck, así que un periodo calibrado sobre una caché caliente convierte el primer arranque en frío en un bucle de reinicios. Y lo que afirma es <strong>alcanzabilidad, no corrección</strong>: <span class="code-inline">/api/health</span> devuelve 200 incluso con <span class="code-inline">status: "degraded"</span> en el cuerpo, y eso es correcto, porque reporta <span class="code-inline">rag_mode</span> y <span class="code-inline">problems</span> precisamente para que un pipeline que cayó a TF-IDF sea visible mientras el proceso sigue sirviendo.</p>
+    </section>
+
+    <section class="reveal">
+      <h2>El script de despliegue y su vuelta atrás</h2>
+      <p><code class="code-inline">scripts/deploy.sh</code> (168 líneas) encadena el ciclo completo —<strong>validar → compilar → rsync → reiniciar</strong>— y aborta al primer fallo con <span class="code-inline">set -euo pipefail</span>. La secuencia tiene una pieza poco evidente: el <span class="code-inline">mv</span> servidor previo al rsync <strong>crea</strong> el directorio, no lo transfiere, y preserva el árbol vivo actual como la única copia de rollback en <span class="code-inline">candidate.prev/</span>.</p>
+      <p>Ese orden protege contra un fallo concreto: si el destino se creara <em>dentro</em> del rsync, el <span class="code-inline">--delete</span> borraría la única copia de rollback antes de que el propio rsync que la va a sustituir haya corrido. Y hay un subcomando <span class="code-inline">rollback</span> explícito, que restaura <span class="code-inline">candidate.prev/</span> sobre el árbol vivo.</p>
+      <div class="callout roadmap">
+        <div class="callout-title">La ambigüedad de wiki/ en el arranque</div>
+        <p>El cargador de perfil decide su fuente con una sola comprobación: <strong>si el directorio <span class="code-inline">wiki/</span> existe, lo lee; si no, cae a los Markdown de <span class="code-inline">candidate/</span></strong>. No hay bandera, ni aviso, ni forma de que el llamador diga cuál quería. En el despliegue eso significa que el contenido real de la entrevista depende de si ese directorio llegó por el rsync, y un fallo silencioso del despliegue se manifestaría como un gemelo que responde con otro corpus —no como un error.</p></div>
+      <div class="callout roadmap">
+        <div class="callout-title">Aviso sobre las instrucciones del README</div>
+        <p>Los dos comandos de clonado del README <strong>clonan el repositorio original</strong>, no la rama de trabajo con estas mejoras: apuntan a la URL del proyecto upstream. Quien siga esos pasos al pie de la letra despliega el código anterior. La diferencia no es un matiz de documentación: el despliegue tiene que fijar la rama de forma explícita para poder publicar este proyecto.</p></div>
+    </section>
+
+    <section class="reveal">
+      <h2>Copia de seguridad</h2>
+      <p>Todo el estado durable cabe en dos rutas: <strong><code class="code-inline">data/interviewtts.db</code> (la base WAL) y <code class="code-inline">reports/</code> (transcripciones Markdown)</strong>. Copiar ambas con el servicio detenido — o usando <code class="code-inline">BACKUP</code> de SQLite — captura conversaciones, turnos e informes completos. El audio y la caché de embeddings son regenerables y no merecen espacio de backup.</p>
+    </section>
+
+    <section class="reveal">
+      <h2>Tradeoffs documentados</h2>
+      <div class="table-wrapper">
+        <table>
+          <caption>Decisiones de despliegue y su alternativa descartada</caption>
+          <thead><tr><th scope="col">Decisión</th><th scope="col">Alternativa</th><th scope="col">Por qué</th></tr></thead>
+          <tbody>
+            <tr><td>Edge TTS (voz gratuita)</td><td>ElevenLabs / clonación local</td><td>ElevenLabs requiere plan de pago; los modelos de clonación exigen GPU. Voz es-ES-AlvaroNeural sin coste.</td></tr>
+            <tr><td>Whisper small + int8 (CPU)</td><td>medium / large</td><td>Cargan en 24 GB de RAM, pero su latencia en CPU no compensa; small es el punto dulce documentado.</td></tr>
+            <tr><td>SSE</td><td>WebSockets</td><td>SSE es unidireccional, simple, y funciona con proxies HTTP estándar.</td></tr>
+            <tr><td>FastAPI async</td><td>Flask sync</td><td>FastAPI maneja concurrencia nativamente con async/await.</td></tr>
+            <tr><td>SQLite (WAL)</td><td>Postgres / Redis</td><td>Una sola conversación activa: stdlib, cero ops, suficiente.</td></tr>
+            <tr><td>systemd como vía principal</td><td>Solo Docker</td><td>El servicio también existe como <span class="code-inline">Dockerfile</span> + <span class="code-inline">docker-compose.yml</span> para despliegue local. La unidad da hardening de espacio de nombres y reinicio gestionado; el contenedor da reproducibilidad. Ninguno cubre al otro</td></tr>
+            <tr><td>TLS obligatorio</td><td>HTTP plano</td><td>No es una preferencia: <span class="code-inline">getUserMedia</span> solo se sirve en contexto seguro, así que sin certificado no hay micrófono</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout roadmap">
+        <div class="callout-title">Hoja de ruta de voz</div>
+        <p>Pocket TTS y Piper (clonación de voz local, offline) figuran como exploración futura del proyecto. No forman parte del stack desplegado: hoy la voz en producción es Edge TTS.</p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="footer-inner">
+      <div class="footer-col">
+        <p><strong>InterviewTTS</strong> — Proyecto de aprendizaje</p>
+        <p>Construido por <strong>Mikel</strong> como proyecto de portafolio en IA/ML.</p>
+      </div>
+      <div class="footer-col">
+        <p><a href="https://github.com/mikelrh-dev/liveInterviewRAG" target="_blank" rel="noopener">Ver repositorio en GitHub &rarr;</a></p>
+        <p>Stack: Python, FastAPI, Whisper, RAG, Edge TTS</p>
+      </div>
+    </div>
+    <p class="footer-copy">Documento técnico construido para fines educativos. 2025.</p>
+  </footer>
+
+  <script src="script.js"></script>
+</body>
+</html>

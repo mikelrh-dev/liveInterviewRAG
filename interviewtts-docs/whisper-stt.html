@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>02 — Speech-to-Text con Whisper — InterviewTTS</title>
+  <meta name="description" content="Faster-Whisper en InterviewTTS: por qué small + int8 es la configuración en producción, la lección del float16 en CPU sin FP16, y el papel de language=es, vad_filter y beam_size=1.">
+  <meta property="og:title" content="02 — Speech-to-Text con Whisper — InterviewTTS">
+  <meta property="og:description" content="Decisiones reales de STT: modelo small cuantizado a int8 y lo que enseñó el intento fallido de float16 en CPU.">
+  <meta property="og:type" content="website">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230f1214'/%3E%3Crect x='12' y='5' width='8' height='14' rx='4' fill='%2300d4ff'/%3E%3Cpath d='M8 14a8 8 0 0 0 16 0' fill='none' stroke='%2300d4ff' stroke-width='2' stroke-linecap='round'/%3E%3Cpath d='M16 22v4' stroke='%2300d4ff' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;0,6..72,700;1,6..72,400&family=Source+Sans+3:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <nav class="nav" role="navigation" aria-label="Navegación principal">
+    <div class="nav-inner">
+      <a href="index.html" class="nav-logo">InterviewTTS</a>
+      <ul class="nav-links">
+        <li><a href="index.html">00 Inicio</a></li>
+        <li><a href="arquitectura.html">01 Arquitectura</a></li>
+        <li><a href="whisper-stt.html" class="active">02 Whisper</a></li>
+        <li><a href="rag.html">03 RAG</a></li>
+        <li><a href="llm-prompting.html">04 LLM</a></li>
+        <li><a href="cache-latencia.html">05 Caché</a></li>
+        <li><a href="persistencia.html">06 Persistencia</a></li>
+        <li><a href="despliegue.html">07 Despliegue</a></li>
+        <li><a href="aprendizajes.html">08 Aprendizajes</a></li>
+      </ul>
+    </div>
+  </nav>
+
+  <main class="main">
+    <header class="chapter-header">
+      <span class="chapter-num">Capítulo 02</span>
+      <h1 class="chapter-title">Speech-to-Text con Whisper</h1>
+      <p class="chapter-subtitle">Deep dive en faster-whisper y CTranslate2: por qué small + int8 es la configuración que va a producción, y qué enseñó el float16 que no arrancaba en CPU.</p>
+    </header>
+
+    <section class="reveal">
+      <h2>Qué es Whisper</h2>
+      <p>Whisper es un modelo de reconocimiento de voz entrenado por OpenAI con <strong>680.000 horas</strong> de audio multilingüe (según su publicación original). Es uno de los modelos STT más precisos disponibles y, además, es open source.</p>
+      <p><strong>Faster-Whisper</strong> es una reimplementación optimizada que usa <strong>CTranslate2</strong> como backend de inferencia. CTranslate2 es un motor para modelos transformer con soporte nativo de cuantización, que permite ejecutar Whisper considerablemente más rápido que la implementación original de PyTorch.</p>
+      <img src="assets/stitch-person-speaking.png" alt="Persona hablando a un micrófono de estudio, representando el proceso de captura de voz para STT" class="img-full" width="860" height="486" loading="lazy" decoding="async">
+      <p class="img-label">Captura de voz: el proceso comienza con el micrófono del navegador</p>
+      <div class="callout">
+        <div class="callout-title">CTranslate2</div>
+        <p>CTranslate2 es a PyTorch lo que un motor compilado de C es a un intérprete de Python: reimplementa las operaciones críticas de transformer en C++ con soporte nativo de cuantización int8 y float16. Los speedups publicados rondan órdenes de magnitud de 2x–4x (valor orientativo de su documentación, no medido en este proyecto).</p>
+      </div>
+    </section>
+
+    <section class="reveal">
+      <h2>La decisión enviada a producción: small + int8</h2>
+      <p><strong>Los valores small / cpu / int8 no son literales en el servicio</strong>: son el valor por defecto de los atributos del constructor de <code class="code-inline">STTService</code>, y el llamador real —<span class="code-inline">main.py</span>— se los pasa leídos del entorno. Lo que decide el despliegue es el valor de la variable, no el default:</p>
+      <div class="table-wrapper">
+        <table>
+          <caption>Configuración real de STT: atributo, variable de entorno y default</caption>
+          <thead>
+            <tr><th scope="col">Atributo</th><th scope="col">Variable</th><th scope="col">Default</th><th scope="col">Nota</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><span class="code-inline">model_name</span></td><td><span class="code-inline">WHISPER_MODEL</span></td><td><span class="code-inline">small</span></td><td>Default del atributo; el despliegue lo fija por entorno</td></tr>
+            <tr><td><span class="code-inline">device</span></td><td><span class="code-inline">WHISPER_DEVICE</span></td><td><span class="code-inline">cpu</span></td><td>Ídem</td></tr>
+            <tr><td><span class="code-inline">compute_type</span></td><td><span class="code-inline">WHISPER_COMPUTE_TYPE</span></td><td><span class="code-inline">int8</span></td><td>Ídem</td></tr>
+            <tr><td><span class="code-inline">num_workers</span></td><td><span class="code-inline">WHISPER_NUM_WORKERS</span></td><td><strong>4</strong></td><td>El default del atributo es 1; el del despliegue es 4</td></tr>
+            <tr><td><span class="code-inline">max_duration_seconds</span></td><td><span class="code-inline">MAX_AUDIO_DURATION</span></td><td><strong>60 s</strong></td><td>Techo único de duración; se publica y se mide, no se infiere</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>¿Por qué small? El README del repositorio lo resume: <em>«small es el punto dulce de precisión en español sobre CPU. tiny es más rápido pero se equivoca con palabras técnicas. medium es demasiado lento.»</em> En una entrevista técnica, una palabra mal transcrita ("Kubernetes" entendido como otra cosa) rompe toda la respuesta posterior.</p>
+      <div class="callout"><div class="callout-title">num_workers: paralelismo, no copias</div><p>Se pasa directo a <span class="code-inline">inter_threads</span> de CTranslate2, y lo que hace es lo que faster-whisper describe con sus propias palabras: cuando <span class="code-inline">transcribe()</span> se llama desde varios hilos de Python, tener varios workers permite paralelismo real entre llamadas concurrentes al modelo, a cambio de más memoria. Hay <strong>un solo objeto de modelo</strong>, construido una vez en el <span class="code-inline">__init__</span> de <span class="code-inline">WhisperModel</span> sea cual sea el valor; el paralelismo está dentro de CTranslate2, y lo que esa biblioteca gasta en memoria no son N copias de los pesos.</p>
+      <p>El constructor además <strong>rechaza</strong> valores menores que 1 con un <span class="code-inline">ValueError</span> explícito, en lugar de dejar que CTranslate2 interprete un 0 o un negativo.</p></div>
+      <div class="callout"><div class="callout-title">MAX_AUDIO_DURATION: por qué 60 y no 30</div><p>Este valor estaba asignado y <strong>lo leía nadie</strong>: su única aparición en el código era esa asignación, y el único techo que disparaba de verdad era <span class="code-inline">MAX_AUDIO_SIZE</span>, que es un recuento de bytes. Así que la página inventaba su propio número, y los dos eran libres de discrepar.</p>
+      <p>Hoy se publica en <span class="code-inline">GET /api/config</span> y lo corta la propia página, que es quien tiene que hacerlo: la duración no se conoce sin decodificar el contenedor, y una petición que ya llega a 5 MiB está demasiado tarde para recibir consejo. Y 60, no 30: treinta no se contrastó nunca con nada, y el techo de bytes sobre el que se apoyaba permite 5,4 minutos al <span class="code-inline">audioBitsPerSecond</span> del grabador —era arbitrariamente estricto en lugar de deliberadamente estricto—. Es además una red de seguridad y no el mecanismo: el VAD encuentra el final de un turno normal, y esto solo captura el turno que no puede encontrar, una sala demasiado ruidosa para que ningún silencio registre. Cortar una respuesta a los 30 s tiraría la mayor parte de lo que dijo el candidato para evitar un fallo que el suelo ya gestiona.</p></div>
+    </section>
+
+    <section class="reveal">
+      <h2>La lección: float16 vs portabilidad de hardware</h2>
+      <p>Versión temprana de este dossier afirmaba que el proyecto usaba float16 «porque hay 24 GB de RAM». Era falso, y la razón por la que es falso es instructiva:</p>
+      <div class="callout roadmap">
+        <div class="callout-title">Lo que pasó de verdad</div>
+        <p>Pedirle a CTranslate2 <code class="code-inline">compute_type="float16"</code> en una CPU <strong>sin soporte eficiente de FP16</strong> termina en <code class="code-inline">ValueError</code>: el runtime rechaza la configuración porque emularía el formato sin aceleración, perdiendo justo lo que se buscaba. La memoria RAM nunca fue la restricción; el silicio sí.</p>
+      </div>
+      <ul>
+        <li><strong>Especificación de papel ≠ hardware real:</strong> float16 solo acelera donde existe soporte FP16 eficiente (ciertas GPU y CPUs recientes). En el resto, ni arranca o ni siquiera conviene.</li>
+        <li><strong>Portabilidad gana:</strong> int8 funciona en prácticamente cualquier CPU moderna, mantiene buena precisión y reduce memoria. Por eso es el valor por defecto.</li>
+        <li><strong>Sobre medium:</strong> con 24 GB de RAM habría memoria de sobra para cargar modelos más grandes; la restricción real en este VPS es tiempo de cómputo CPU, no memoria.</li>
+      </ul>
+      <p class="see-also"><strong>Ver también:</strong> esta lección está recogida junto al resto en el capítulo <a href="aprendizajes.html">08 — Aprendizajes</a>.</p>
+    </section>
+
+    <section class="reveal">
+      <h2>Cuantización: conceptos y órdenes de magnitud</h2>
+      <p>La cuantización es el proceso de reducir la precisión numérica de los pesos del modelo. En lugar de float32 (32 bits por número), se usan int8 (8 bits) o float16 (16 bits). Menos bits significan menos memoria y menos cómputo por operación, a costa de una pérdida pequeña de precisión.</p>
+      <div class="table-wrapper">
+        <table>
+          <caption>Órdenes de magnitud orientativos de la literatura — NO medidos en este proyecto</caption>
+          <thead>
+            <tr><th scope="col">Formato</th><th scope="col">Tamaño relativo</th><th scope="col">Precisión</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><span class="code-inline">float32</span></td><td>Referencia (1x)</td><td>Máxima</td></tr>
+            <tr><td><span class="code-inline">float16</span></td><td>~½ del original</td><td>Casi igual a float32 (donde hay soporte)</td></tr>
+            <tr><td><span class="code-inline">int8</span></td><td>~¼ del original</td><td>Ligeramente inferior, imperceptible en uso conversacional</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>Estos valores son un <strong>orden de magnitud orientativo</strong> para fijar intuiciones: las cifras exactas dependen del modelo, la arquitectura y la versión de CTranslate2.</p>
+    </section>
+
+    <section class="reveal">
+      <h2>Configuración de inferencia</h2>
+      <p>Tres parámetros se configuran explícitamente en cada transcripción:</p>
+      <h3>language="es"</h3>
+      <p>Forzar el idioma evita que el modelo dedique cómputo a detectarlo en cada turno. Es también una decisión de producto: este gemelo entrevista en español, siempre.</p>
+      <h3>vad_filter=True</h3>
+      <p><strong>Voice Activity Detection</strong> recorta las porciones del audio sin voz (silencios, ruido de fondo) antes del reconocimiento, reduciendo el material que Whisper procesa.</p>
+      <div class="callout">
+        <div class="callout-title">Tradeoff del VAD</div>
+        <p>Si el VAD fuera demasiado agresivo podría cortar inicios o finales de frase. El filtro por defecto (silero-vad) funciona bien, pero es un punto que conviene vigilar.</p>
+      </div>
+      <h3>beam_size=1</h3>
+      <p>En lugar del valor por defecto (5), Whisper solo considera la secuencia más probable en cada paso, sin explorar alternativas: menos cómputo por turno. Para voz conversacional clara, la diferencia de calidad es marginal frente a la ganancia de latencia.</p>
+
+      <p>El siguiente fragmento refleja <strong>exactamente</strong> lo que hace <code class="code-inline">backend/services/stt.py</code>. Nótese que el llamador real no es <span class="code-inline">transcribe()</span> sino <span class="code-inline">transcribe_measured()</span>, que devuelve una dataclass <span class="code-inline">Transcription</span> con el texto <strong>y la duración</strong>, registra la duración frente al techo y avisa si se pasa:</p>
+      <div class="code-block" data-lang="python"><span class="cm"># backend/services/stt.py (espejo fiel del llamador real)</span>
+<span class="kw">from</span> faster_whisper <span class="kw">import</span> WhisperModel
+
+model = WhisperModel(
+    model_name,          <span class="cm"># desde WHISPER_MODEL</span>
+    device=device,        <span class="cm"># desde WHISPER_DEVICE</span>
+    compute_type=compute_type,   <span class="cm"># desde WHISPER_COMPUTE_TYPE</span>
+    num_workers=num_workers,     <span class="cm"># desde WHISPER_NUM_WORKERS</span>
+)
+
+segments, info = model.transcribe(
+    audio_path,
+    beam_size=<span class="nm">1</span>,
+    language=<span class="st">"es"</span>,
+    vad_filter=<span class="kw">True</span>,
+)
+
+text = <span class="st">" "</span>.join(segment.text.strip() <span class="kw">for</span> segment <span class="kw">in</span> segments)
+
+<span class="cm"># La duración no se mide aquí: se lee del TranscriptionInfo</span>
+<span class="cm"># que la llamada anterior ya devolvió. Cuesta cero y no</span>
+<span class="cm"># introduce una segunda decodificación del mismo fichero.</span>
+<span class="kw">if</span> self.max_duration_seconds <span class="kw">and</span> duration <span class="gt">&gt;</span> self.max_duration_seconds:
+    self._report_over_limit(duration)
+
+<span class="kw">return</span> Transcription(text=text, duration_seconds=duration)</div>
+      <p>Los atributos del constructor se llenan desde variables de entorno, así que cambiar de modelo es tocar el entorno, no el código. Y la duración importa por una razón concreta: es <strong>la única medición que la ruta de subida no puede hacer</strong>. El staging de la subida ve bytes —no ha parseado el contenedor y no conoce el bitrate que el navegador eligió—, así que cualquier afirmación que pueda hacer sobre la longitud de una grabación es una inferencia. El único componente que sabe cuánto dura de verdad, gratis, es el que acaba de decodificarla. <span class="code-inline">transcribe()</span> existe como envoltorio delgado para los llamadores que solo quieren el texto.</p>
+    </section>
+
+    <section class="reveal">
+      <h2>Latencia por turno</h2>
+      <p>Para audios de 5-10 segundos, el STT toma <strong>del orden de 1,5-2,5 segundos</strong> en CPU (estimado observado en desarrollo; no existe una medición formal publicada). El método de medición honesto son los logs del pipeline, y <strong>su forma depende de la ruta</strong>:</p>
+      <ul>
+        <li><strong>Ruta de bloqueo:</strong> <code class="code-inline">Pipeline: STT=…s RAG=…s LLM=…s TTS=…s TOTAL=…s</code> — desglose completo por fase.</li>
+        <li><strong>Ruta SSE:</strong> <code class="code-inline">Stream STT: …s</code> y, más adelante, un total combinado <code class="code-inline">Stream LLM + TTS interleaved: …s total, N frases</code>. <strong>No hay desglose RAG/TTS/TOTAL</strong>, y no es una omisión: LLM y TTS corren intercalados, así que un desglose por fase mediría una intercalación que no existe.</li>
+      </ul>
+      <p>El capítulo <a href="cache-latencia.html">05 — Caché y latencia</a> analiza esas cifras.</p>
+      <p>Sin GPU, esa latencia no desaparece: se gestiona. Parte del desafío del proyecto es demostrar que un sistema así es útil bajo restricciones reales, y el caché del capítulo 05 existe precisamente para no pagar el pipeline completo cuando la pregunta ya tiene respuesta.</p>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="footer-inner">
+      <div class="footer-col">
+        <p><strong>InterviewTTS</strong> — Proyecto de aprendizaje</p>
+        <p>Construido por <strong>Mikel</strong> como proyecto de portafolio en IA/ML.</p>
+      </div>
+      <div class="footer-col">
+        <p><a href="https://github.com/mikelrh-dev/liveInterviewRAG" target="_blank" rel="noopener">Ver repositorio en GitHub &rarr;</a></p>
+        <p>Stack: Python, FastAPI, Whisper, RAG, Edge TTS</p>
+      </div>
+    </div>
+    <p class="footer-copy">Documento técnico construido para fines educativos. 2025.</p>
+  </footer>
+
+  <script src="script.js"></script>
+</body>
+</html>
