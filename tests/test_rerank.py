@@ -14,13 +14,22 @@ poblaciones que este checkout puede resolver:
 
     población   recall@1   promotions   demotions   neto
     full        36 -> 40       7            3        +4
-    reduced     31 -> 33       7            5        +2
+    reduced     37 -> 40       8            5        +3
 
-Y ``recall@3`` NO SE MUEVE en ninguna de las dos -- 44/49 y 38/41 -- porque un
-rerank es una permutación de los MISMOS slots y una permutación no cambia el
-conjunto. Eso no es una buena noticia afortunada: es la razón por la que este
-stage puede existir sin poner en riesgo ninguna afirmación sobre conjuntos que el
-repositorio ya publica.
+Y ``recall@3`` NO SE MUEVE en ninguna de las dos -- 45/49 en los dos, medido el
+2026-10-04 -- porque un rerank es una permutación de los MISMOS slots y una
+permutación no cambia el conjunto. Eso no es una buena noticia afortunada: es la
+razón por la que este stage puede existir sin poner en riesgo ninguna afirmación
+sobre conjuntos que el repositorio ya publica.
+
+La fila ``reduced`` se re-midió el 2026-10-04 y pasó de 31 -> 33 sobre 41
+preguntas a 37 -> 40 sobre 49, porque ``efda998`` commiteó las cuatro páginas FAQ
+que definían aquella población: hoy son 37 páginas y 49 preguntas, el mismo
+número de las que tiene el working tree, y lo que las distingue es el TEXTO
+(``tests/real_wiki.py::CORPUS_DIGESTS``). Lo que este archivo mide de verdad es
+la fila ``full``, porque su fixture sólo carga el working tree; la fila
+``reduced`` está medida y no está ejercitada por ningún guard de este archivo, que
+es un límite conocido y no una garantía.
 
 POR QUÉ EL NETO Y NO EL ``recall@1``
 -----------------------------------
@@ -65,7 +74,7 @@ import pytest
 
 from backend.services.rag import CHUNK_FILTER_VERSION, RAGPipeline, embedding_text
 from backend.services.rerank import RERANK_VERSION, Reranker
-from tests.real_wiki import load_documents, resolved_cases
+from tests.real_wiki import corpus_for, load_documents, resolved_cases
 from tests.retrieval_measurements import (
     SHIPPED_TOP_K,
     best_rank,
@@ -127,16 +136,17 @@ RERANK_FULL = RerankFigures(
 
 RERANK_REDUCED = RerankFigures(
     population="reduced",
-    questions=41,
-    at_1_before=31,
-    at_1_after=33,
+    questions=49,
+    at_1_before=37,
+    at_1_after=40,
     promotions=frozenset({
         "prefieres backend o frontend",
         "para que sirven los tests hoy en dia con ia",
+        "puedes empezar a trabajar ya estas disponible",
         "que opinas de la ia en el desarrollo de software",
         "que es interviewtts",
         "que resultados dio el proyecto de la pagina web de velneo",
-        "en que consistian tus practicas en ceesa",
+        "en que consistian tus practicas en ceea",
         "que sabes de backend y java",
     }),
     demotions=frozenset({
@@ -146,22 +156,25 @@ RERANK_REDUCED = RerankFigures(
         "con que stack hiciste el detector de fraude",
         "como testias tu codigo",
     }),
-    corpus="git show HEAD: -- 33 paginas, 116 chunks",
+    corpus="git show HEAD: -- 37 paginas, 124 chunks",
 )
 
 RERANK_FIGURES: Tuple[RerankFigures, ...] = (RERANK_FULL, RERANK_REDUCED)
 
 
 def rerank_for(documents: Dict[str, str]) -> Optional[RerankFigures]:
-    """La fila calibrada para EXACTAMENTE esta población, o ``None``.
+    """La fila calibrada para EXACTAMENTE este corpus, o ``None``.
 
     ``None`` es un rechazo y no un respaldo, por el mismo motivo que
     ``tests/real_wiki.py::measurement_for``: puntuar una población sin calibrar
-    contra una fila existente es el error que ese módulo existe para detener.
+    contra una fila existente es el error que ese módulo existe para detener. El
+    criterio es el digest del corpus servido y no cuántas etiquetas resuelve,
+    porque desde ``efda998`` las dos poblaciones resuelven las 49 y un contador
+    devolvería la fila ``full`` para el corpus commiteado sin avisar.
     """
-    resolved = len(resolved_cases(documents))
+    population = corpus_for(documents)
     for figures in RERANK_FIGURES:
-        if figures.questions == resolved:
+        if figures.population == population:
             return figures
     return None
 

@@ -78,8 +78,13 @@ async def run_turn(conversation_id: str, temp_audio: Path) -> dict:
         conversation_context = build_conversation_context(
             conversation_id, recent_count=3
         )
+        # The career timeline rides OUTSIDE the RAG path: retrieval can lose an
+        # employer (measured, `tests/work_history_cases.py`), and this cannot.
+        # Read through the container on every call so a test can rebind it.
         system_prompt = build_system_prompt(
-            context, conversation_context=conversation_context
+            context,
+            conversation_context=conversation_context,
+            work_history=container.candidate_profile().get_work_history_block(),
         )
         try:
             response_text = await asyncio.to_thread(

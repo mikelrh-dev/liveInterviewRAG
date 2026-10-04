@@ -80,13 +80,24 @@ techo elegido sobre una ejecución afortunada es un techo que se dispara solo.
 
 LAS DOS POBLACIONES, Y POR QUÉ CADA FIGURA SE MIDE EN SU CORPUS
 --------------------------------------------------------------
-Igual que en ``tests/real_wiki.py``: ``full`` ES el working tree del autor (37
-páginas, 49 preguntas, 124 chunks) y ``reduced`` es lo que produce
-``actions/checkout`` (33 páginas, 41 preguntas, 116 chunks). La fila ``reduced``
-se lee SIEMPRE de ``git show HEAD:`` y por tanto es medible en cualquier
-checkout, porque es lo que le llega a cualquiera que clonee. La fila ``full``
-sólo se mide cuando este checkout resuelve las 49 preguntas, porque si no no es
-la población que nombra. Un ``None`` aquí es un RECHAZO y no un respaldo: ver
+Igual que en ``tests/real_wiki.py``: ``full`` ES el working tree tal como está
+(37 páginas, 49 preguntas, 124 chunks) y ``reduced`` es lo que produce
+``git show HEAD:``, o sea lo que le llega a cualquiera que clonee. Desde el
+commit ``efda998`` las dos tienen las MISMAS 37 páginas, las mismas 49 preguntas
+y los mismos 124 chunks, y siguen siendo dos corpus distintos porque quince
+``wiki/*.md`` están modificados en el working tree y sin commitear: el texto no
+es el mismo, y por tanto el ranking tampoco. Lo medido sobre los dos, mismo día
+y mismo arnés: la fila ``reduced`` da 46 slots relevantes en el top-3 donde la
+``full`` da 45, entierra 5 preguntas donde la otra entierra 4, y el rescate
+léxico no le cuesta ninguna pregunta donde le cuesta una.
+
+La fila ``reduced`` se lee SIEMPRE de ``git show HEAD:`` y por tanto es medible
+en cualquier checkout. La fila ``full`` sólo se mide cuando ESTE checkout es el
+working tree que la midió, y eso ya no se deduce de cuántas etiquetas resuelve:
+``precision_for`` y ``latency_for`` la buscan por el DIGEST del corpus servido
+(``tests/real_wiki.py::CORPUS_DIGESTS``), porque con las dos poblaciones en 49
+preguntas un contador no las distingue y devolvía ``full`` para el corpus
+commiteado sin decir nada. Un ``None`` aquí es un RECHAZO y no un respaldo: ver
 ``documents_for``, ``precision_for`` y ``latency_for``.
 
 QUÉ SE FIJA Y QUÉ NO
@@ -137,6 +148,7 @@ from tests.real_wiki import (
     LABELLED_CASES,
     REPO_ROOT,
     Case,
+    corpus_for,
     load_documents,
     resolved_cases,
 )
@@ -309,13 +321,15 @@ def write_committed_wiki(root: Path) -> Path:
     Dos comandos, y la diferencia entre ellos es el punto:
 
     ``git ls-files -- wiki``
-        El ÍNDICE. Las cuatro páginas FAQ que están en el disco del autor y no
-        están commiteadas no aparecen, y eso no es una comodidad: es la
-        definición de la población ``reduced``.
+        El ÍNDICE. Las cincuenta páginas del wiki salen todas, incluidas las
+        cuatro FAQ que antes eran la definición de la población ``reduced`` y que
+        ``efda998`` commiteó; hoy el índice ya no es lo que distingue un corpus
+        del otro.
     ``git show HEAD:<path>``
         El blob COMMITEADO. Los 15 ``wiki/*.md`` modificados sin commitear se leen
         aquí en su contenido commiteado, para que un rewrite local del corpus no
-        pueda mover una cifra publicada.
+        pueda mover una cifra publicada. ESTE comando es el que sigue definiendo
+        la población ``reduced``: mismo conjunto de páginas, otro texto.
 
     Mismo mecanismo y mismo motivo que ``tests/test_committed_corpus_figures.py``,
     reimplementado aquí en vez de importado porque un fixture de otro módulo de
@@ -352,16 +366,19 @@ def _load_with_production_loader(root: Path) -> Dict[str, str]:
 def documents_for(population: str, root: Path) -> Optional[Dict[str, str]]:
     """El corpus que la población ``population`` NOMBRA, o ``None`` si no está aquí.
 
-    ``None`` es un rechazo. ``full`` sólo existe donde las cuatro páginas FAQ sin
-    commitear existen en disco; medirlo con 41 preguntas sería darle el nombre de
-    una población a la medición de otra, que es el defecto que
-    ``tests/real_wiki.py`` existe para impedir.
+    ``None`` es un rechazo, y el criterio del rechazo es el DIGEST del corpus
+    servido, no su número de etiquetas. Se usó el número hasta que ``efda998``
+    dejó las dos poblaciones en 49 preguntas, y a partir de ahí cualquier fila
+    ``full`` habría podido medirse sobre el corpus commiteado sin que nada lo
+    dijera: el nombre de una población puesto a la medición de la otra, que es
+    el defecto que ``tests/real_wiki.py`` existe para impedir.
     """
     if population == "full":
         documents = load_documents()
-        return documents if len(resolved_cases(documents)) == 49 else None
+        return documents if corpus_for(documents) == "full" else None
     if population == "reduced":
-        return _load_with_production_loader(write_committed_wiki(root))
+        documents = _load_with_production_loader(write_committed_wiki(root))
+        return documents if corpus_for(documents) == "reduced" else None
     raise AssertionError(
         f"población desconocida {population!r}. Las calibradas están en "
         "PRECISION_FIGURES y LATENCY_FIGURES; una tercera exige volver a medirla "
@@ -604,23 +621,26 @@ PRECISION_FULL = PrecisionFigures(
 
 PRECISION_REDUCED = PrecisionFigures(
     population="reduced",
-    pages=33,
-    chunks=116,
-    questions=41,
-    # 31 -> 33 with the cross-encoder, and `relevant_slots_at_3` stays at 39.
-    # The net here is +2 against +4 on the full population: the same seven
-    # promotions and five demotions rather than three, because the reduced corpus
-    # is the COMMITTED one and the re-ranker is a different model on different
-    # text. Two populations measured separately is the reason this module exists;
-    # copying the full row's numbers here would be inventing the reduced one.
-    relevant_at_1=33,
-    relevant_slots_at_3=39,
-    relevant_slots_at_3_dense=36,
-    possible_slots=42,
+    pages=37,
+    chunks=124,
+    questions=49,
+    # 37 -> 40 with the cross-encoder, and `relevant_slots_at_3` stays at 46.
+    # The net here is +3 against +4 on the full population, over eight promotions
+    # and five demotions instead of seven and three: the committed corpus ranks
+    # the same 124 chunks differently because fifteen of the pages are not the
+    # fifteen the author has modified. Two populations measured separately is the
+    # reason this module exists; copying the full row's numbers here would be
+    # inventing the reduced one.
+    relevant_at_1=40,
+    relevant_slots_at_3=46,
+    relevant_slots_at_3_dense=41,
+    possible_slots=50,
     buried=frozenset({
-        # Five, down from seven, and NOT the full population's four: the
-        # committed corpus promotes and demotes a different set. That is why a
-        # named set cannot be copied between populations.
+        # Five, and NOT the full population's four. Same page count, same chunk
+        # count, same question count, one more buried question -- which is the
+        # whole argument for keying these rows on a corpus digest and not on how
+        # many labels resolve. A named set cannot be copied between populations
+        # and it cannot be derived from the other population's either.
         "como testias tu codigo",
         "con que stack hiciste el detector de fraude",
         "cuentame tu perfil profesional",
@@ -628,11 +648,16 @@ PRECISION_REDUCED = PrecisionFigures(
         "empezaste como frutero en mercadona no",
     }),
     absent=frozenset({
-        "que planes tienes para los proximos años",
+        # Four, one fewer than ``full``, and the difference is
+        # ``para que sirven los tests hoy en dia con ia``: its page reaches the
+        # top-3 from the committed text. A set of four against a set of five, on
+        # the same 49 questions, is the difference a count cannot see.
+        "cuando podrias incorporarte al puesto",
         "que estabas haciendo en mercadona los ultimos años",
+        "que planes tienes para los proximos años",
         "que hiciste con fastapi docker y asincronia en dam",
     }),
-    corpus="git show HEAD: -- 33 páginas, 116 chunks",
+    corpus="git show HEAD: -- 37 páginas, 124 chunks",
 )
 
 PRECISION_FIGURES: Tuple[PrecisionFigures, ...] = (PRECISION_FULL, PRECISION_REDUCED)
@@ -705,12 +730,12 @@ LATENCY_FULL = LatencyFigures(
 
 LATENCY_REDUCED = LatencyFigures(
     population="reduced",
-    chunks=116,
-    questions=41,
-    median_ms=195.78,
-    p95_ms=355.99,
-    max_ms=487.17,
-    corpus="git show HEAD: -- 116 chunks, embedder real, cross-encoder, CPU",
+    chunks=124,
+    questions=49,
+    median_ms=174.75,
+    p95_ms=351.37,
+    max_ms=484.38,
+    corpus="git show HEAD: -- 124 chunks, embedder real, cross-encoder, CPU",
 )
 
 LATENCY_FIGURES: Tuple[LatencyFigures, ...] = (LATENCY_FULL, LATENCY_REDUCED)
@@ -720,25 +745,30 @@ LATENCY_FIGURES: Tuple[LatencyFigures, ...] = (LATENCY_FULL, LATENCY_REDUCED)
 
 
 def precision_for(documents: Dict[str, str]) -> Optional[PrecisionFigures]:
-    """La fila de precisión calibrada para EXACTAMENTE esta población, o ``None``.
+    """La fila de precisión calibrada para EXACTAMENTE este corpus, o ``None``.
 
     ``None`` es un rechazo y no un respaldo, por el mismo motivo que
-    ``tests/real_wiki.py::measurement_for``: un corpus que resuelve un tercer
-    número de etiquetas se ha editado de una forma que cambia la población, y
-    puntuarlo contra cualquiera de las dos filas existentes sería el error que ese
-    módulo existe para detener, con otro disfraz.
+    ``tests/real_wiki.py::measurement_for``. Lo que decide es el digest del
+    corpus servido y no cuántas etiquetas resuelve: con las dos poblaciones en 49
+    preguntas, el contador devolvía la fila ``full`` para el corpus commiteado
+    sin avisar, y los tests de ese parámetro pasaban porque el techo de latencia
+    tenía holgura, no porque la fila fuera la correcta.
     """
-    resolved = len(resolved_cases(documents))
+    population = corpus_for(documents)
     for figures in PRECISION_FIGURES:
-        if figures.questions == resolved:
+        if figures.population == population:
             return figures
     return None
 
 
 def latency_for(documents: Dict[str, str]) -> Optional[LatencyFigures]:
-    """La fila de latencia de esta población, o ``None``. Rechazo, no respaldo."""
-    resolved = len(resolved_cases(documents))
+    """La fila de latencia de este corpus, o ``None``. Rechazo, no respaldo.
+
+    Mismo criterio que ``precision_for``, y por el mismo motivo: la cifra es una
+    afirmación sobre un corpus, no sobre un número de preguntas.
+    """
+    population = corpus_for(documents)
     for figures in LATENCY_FIGURES:
-        if figures.questions == resolved:
+        if figures.population == population:
             return figures
     return None

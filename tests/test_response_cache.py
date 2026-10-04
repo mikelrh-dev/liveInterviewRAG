@@ -10,7 +10,9 @@ import pytest
 
 from tests.real_wiki import (
     COMMENT_FIGURES,
+    CORPUS_DIGESTS,
     comment_figures_for,
+    corpus_digest,
     resolved_cases,
 )
 
@@ -1738,48 +1740,54 @@ def test_the_corpus_attributed_databases_are_the_ones_it_lists():
 #: deliberate change to what the cache may claim, rather than a silent widening.
 #:
 #: Measured, not chosen -- and measured PER POPULATION, because this constant was
-#: frozen on the author's 37 loaded pages and a clean clone serves 33. The two
+#: frozen on the author's 37 loaded pages while a clean clone served 33. The two
 #: rows live in ``tests/real_wiki.py::COMMENT_FIGURES`` as
 #: ``CommentFigures.attributed_traits``, the same record
 #: ``tests/test_recall_claims.py`` resolves for the figures the two RAG comments
 #: publish; ``_self_disclosure_attributed`` resolves this checkout's row and
-#: refuses an unknown population rather than scanning against a foreign one.
+#: refuses an unknown corpus rather than scanning against a foreign one.
 #:
-#: The reduced row is two terms SHORTER, and that is the scan working rather than
-#: the scan weakening: ``curioso`` is grounded only by
-#: ``faq/por-que-contratarte.md`` and ``trabajador`` only by that same page as a
-#: whole word -- the one page that still has it in ``stories/huelga-camiones-
-#: mercadona.md`` has it pluralised, and ``_normalised_tokens`` does not stem. On
-#: a clone, neither term is attributed, so a cached answer naming one of them is
-#: a claim the clone's corpus does not support.
+#: THE TWO ROWS ARE NOW IDENTICAL, and that is a change rather than a
+#: coincidence. The reduced row used to be two terms SHORTER, because
+#: ``curioso`` is grounded only by ``faq/por-que-contratarte.md`` and
+#: ``trabajador`` only by that same page as a whole word -- the one page that
+#: still has it in ``stories/huelga-camiones-mercadona.md`` has it pluralised,
+#: and ``_normalised_tokens`` does not stem -- and that page used to be one of
+#: four a clone did not have. Commit ``efda998`` committed it, so the union scan
+#: attributes the same seven terms on both corpora and there is no longer a cached
+#: answer that names a trait a clone's corpus cannot support.
 #:
-#: Two of the terms that ARE in both rows are grounded only incidentally, and
-#: that is the point of writing them down: ``desordenado`` is the one trait the
-#: candidate actually discloses
+#: That does not make the per-population record pointless: the two rows are still
+#: selected by a digest of the served corpus, and a future commit that drops the
+#: grounding page again would move one row and not the other. It removes the
+#: reason the row was there, not the reason it is.
+#:
+#: Two of the terms are grounded only incidentally, and that is the point of
+#: writing them down: ``desordenado`` is the one trait the candidate actually
+#: discloses
 #: (wiki/faq/fortalezas-y-debilidades.md:21, in full, with its mitigation), and
 #: ``perfeccionista`` is grounded by a page that names it in order to WARN
 #: against claiming it (same file, line 24) -- so a union scan accepts it even
 #: though the corpus never attributes it as a trait. That is the limit this
 #: scanner has, exercised in a control rather than described in a comment.
 def _self_disclosure_attributed(documents: dict[str, str]) -> frozenset[str]:
-    """The attributed trait set for the population ``documents`` IS.
+    """The attributed trait set for the corpus ``documents`` IS.
 
     Not a constant, and deliberately: a constant here was a figure from one
     checkout compared against a live measurement of another, which is the defect
     this function exists to end. ``_require_wiki_corpus`` has already refused a
-    substituted corpus, and ``comment_figures_for`` refuses a third population,
+    substituted corpus, and ``comment_figures_for`` refuses an uncalibrated one,
     so the two guards together make "which corpus am I scanning" a checked
     question rather than an assumption.
     """
     figures = comment_figures_for(documents)
     assert figures is not None, (
-        f"this checkout resolves {len(resolved_cases(documents))} labelled "
-        "questions, a population this guard has no attributed-trait set for. "
-        "They live in tests/real_wiki.py::CommentFigures.attributed_traits, "
-        f"calibrated for {[f.questions for f in COMMENT_FIGURES]}. Re-measure "
-        "on the population that remains and add a row -- do not point this "
-        "checkout at another population's vocabulary, and do not widen the "
-        "vocabulary to make a control pass."
+        f"the served corpus digests to {corpus_digest(documents)[:12]}, which has "
+        "no recorded attributed-trait set. They live in "
+        "tests/real_wiki.py::CommentFigures.attributed_traits, calibrated for "
+        f"{sorted(CORPUS_DIGESTS)}. Re-measure on the corpus that remains and add "
+        "its row -- do not point this checkout at another corpus's vocabulary, and "
+        "do not widen the vocabulary to make a control pass."
     )
     assert figures.pages == len(documents), (
         f"the row resolved for {figures.population} names {figures.pages} pages "
@@ -1814,13 +1822,15 @@ _CLAIM_VOCABULARIES: dict[str, frozenset[str]] = {
 }
 
 
-#: The two corpus populations this guard is calibrated for, matching the ones
-#: ``tests/real_wiki.py`` records for the retrieval floor: 37 pages on the
-#: author's tree, and 33 on a clean clone, where the four FAQ pages that exist
-#: on disk but are not in the index (``_UNTRACKED_FAQ_PAGES``) are absent.
+#: The two corpora this guard is calibrated for, matching the ones
+#: ``tests/real_wiki.py`` records for the retrieval floor: ``wiki/`` as it stands
+#: in the checkout running the suite, and ``git show HEAD:``. Both are 37 loaded
+#: pages since commit ``efda998`` committed the four FAQ pages a clone used to be
+#: missing, so the page count no longer tells them apart and a count is not what
+#: this check is.
 #:
 #: Derived from ``COMMENT_FIGURES`` rather than written out, so there is one
-#: record of what a population is and not two that can drift apart -- the same
+#: record of what a corpus is and not two that can drift apart -- the same
 #: reason ``_self_disclosure_attributed`` reads the trait set from there too.
 #:
 #: This is not a count for tidiness. It closes the SUBSTITUTE-CORPUS hole, and
@@ -1830,8 +1840,12 @@ _CLAIM_VOCABULARIES: dict[str, frozenset[str]] = {
 #: cheerfully scan the substitute and report the real cache as clean. Measuring
 #: the wrong corpus while appearing to pass is the exact outcome the header of
 #: this file calls "strictly worse than not running" -- so an unrecognised
-#: population is a failure, in the same spirit as ``measurement_for`` returning
-#: ``None`` rather than scoring a third population against a foreign floor.
+#: corpus is a failure, in the same spirit as ``measurement_for`` returning
+#: ``None`` rather than scoring one corpus against a foreign floor. Since
+#: 2026-10-04 the identity is a DIGEST of the served corpus
+#: (``tests/real_wiki.py::CORPUS_DIGESTS``), which closes the same hole with no
+#: tolerance at all: a substituted corpus has to be byte-identical to a
+#: calibrated one to get through.
 _CALIBRATED_CORPUS_POPULATIONS = frozenset(f.pages for f in COMMENT_FIGURES)
 
 
@@ -1849,7 +1863,7 @@ def _require_wiki_corpus() -> dict[str, str]:
     except Exception as exc:  # noqa: BLE001  -- any loader failure is the same event
         raise AssertionError(
             f"the candidate's wiki/ is absent or unloadable at {WIKI_DIR} "
-            f"({type(exc).__name__}: {exc}). These 46 files are tracked in "
+            f"({type(exc).__name__}: {exc}). These 50 files are tracked in "
             "origin/main and actions/checkout brings them to every run, so an "
             "absent corpus means the corpus was REMOVED. Failing here on "
             "purpose: with the corpus gone, every truthfulness check in this "
@@ -1864,8 +1878,9 @@ def _require_wiki_corpus() -> dict[str, str]:
     assert len(documents) in _CALIBRATED_CORPUS_POPULATIONS, (
         f"the corpus loaded {len(documents)} documents, which is not a "
         f"population this guard is calibrated for "
-        f"({sorted(_CALIBRATED_CORPUS_POPULATIONS)}: 37 on the author's tree, "
-        "33 on a clean clone where the four untracked FAQ pages are absent). "
+        f"({sorted(_CALIBRATED_CORPUS_POPULATIONS)}: 37 pages on either corpus, "
+        "and the two differ only in text -- this is a fast pre-check, and "
+        f"`_self_disclosure_attributed` then resolves the row by digest). "
         "Either wiki/ was replaced with something else that still loads, or it "
         "was edited. This is a failure on purpose: a substituted corpus would "
         "let this scan report the real cache as clean while measuring a "

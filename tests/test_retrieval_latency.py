@@ -24,8 +24,16 @@ Una pasada por las preguntas del set etiquetado, con la producción encendida
 
     full    (37 páginas, 124 chunks, 49 preguntas)
             mediana 23.89 ms   p95 33.84 ms   max 59.81 ms
-    reduced (33 páginas, 116 chunks, 41 preguntas)
+    reduced (37 páginas, 124 chunks, 49 preguntas)
             mediana 23.36 ms   p95 28.60 ms   max 39.31 ms
+
+(esas dos filas son la medición ANTERIOR al cross-encoder; las que viven en
+``LATENCY_FIGURES`` son las de la era reranker y están medidas sobre 124 chunks
+en las dos poblaciones. Lo que se conserva aquí es el POR QUÉ de cada decisión,
+que no cambió con el corpus: sigue habiendo dos poblaciones porque ``wiki/`` tiene
+dos estados, y desde ``efda998`` tienen las mismas 37 páginas y los mismos 124
+chunks, así que lo único que las separa es el texto commiteado frente al texto
+modificado sin commitear.)
 
 Cuatro decisiones, y las cuatro son mediciones y no preferencias:
 
@@ -53,8 +61,8 @@ Cuatro decisiones, y las cuatro son mediciones y no preferencias:
 POR QUÉ ESTE ES EL GUARD MÁS LENTO DE LA SUITE
 ----------------------------------------------
 Porque carga el embedder real dos veces: una por población, porque cada fila se
-mide en SU corpus (la ``full`` es el working tree del autor y la ``reduced`` se
-lee de ``git show HEAD:``). El ingest son 9-17 s por población.
+mide en SU corpus (la ``full`` es ``wiki/`` tal como está en este checkout y la
+``reduced`` se lee de ``git show HEAD:``). El ingest son 9-17 s por población.
 
 Y por qué NO usa el caché de embeddings, siendo lo más caro que hace:
 ``tests/real_wiki.py:150-161`` decidió que este harness no sea un segundo
@@ -89,7 +97,15 @@ from typing import Dict, List, Sequence
 import pytest
 
 from backend.services.rag import RAGPipeline
-from tests.real_wiki import Case, load_documents, resolved_cases, wiki_is_present
+from tests.real_wiki import (
+    CORPUS_DIGESTS,
+    Case,
+    corpus_digest,
+    corpus_for,
+    load_documents,
+    resolved_cases,
+    wiki_is_present,
+)
 from tests.retrieval_measurements import (
     LATENCY_FIGURES,
     MEDIAN_HEADROOM,
@@ -105,6 +121,11 @@ from tests.retrieval_measurements import (
 
 _WIKI_PRESENT = wiki_is_present()
 _CHECKOUT_QUESTIONS = len(resolved_cases(load_documents())) if _WIKI_PRESENT else 0
+#: La fila ``full`` ES el working tree con sus quince ``wiki/*.md`` modificados sin
+#: commitear. Desde ``efda998`` las dos poblaciones resuelven las 49 etiquetas y
+#: cargan las mismas 37 páginas, así que el número de etiquetas ya no puede decir
+#: si este checkout ES esa población: lo dice el digest del corpus servido.
+_CHECKOUT_CORPUS = corpus_for(load_documents()) if _WIKI_PRESENT else None
 
 #: Cuánto más lento puede ser el ``max`` de una pasada sin que la cifra publicada
 #: esté contando otra cosa. Amplo a propósito: el máximo es ruido (172.7 ms
@@ -116,9 +137,10 @@ POPULATIONS = (
     pytest.param(
         "full",
         marks=pytest.mark.skipif(
-            _CHECKOUT_QUESTIONS != 49,
-            reason="sin las 4 páginas FAQ sin commitear: la fila 'full' ES el "
-            "working tree del autor",
+            _CHECKOUT_CORPUS != "full",
+            reason="este checkout no sirve el working tree que la fila 'full' "
+            "nombra (digest "
+            f"{CORPUS_DIGESTS['full'][:12]}): su corpus es {_CHECKOUT_CORPUS!r}",
         ),
     ),
     pytest.param(
@@ -151,10 +173,11 @@ def timed(request, tmp_path_factory) -> TimedCorpus:
     corpus cuesta 9-17 s con el modelo real, y una mediana de 49 llamadas no se
     hace más sólida repitiéndola dentro del mismo proceso.
 
-    La fila se resuelve con ``latency_for``, que RECHAZA una población no
-    calibrada en lugar de devolver otra: un corpus que resuelve un tercer número
-    de etiquetas es una población nueva, y una cifra de latencia es una
-    afirmación sobre un corpus, no sobre un número de preguntas.
+    La fila se resuelve con ``latency_for``, que RECHAZA un corpus no
+    calibrado en lugar de devolver otro, y lo decide por su digest: un corpus
+    distinto es una población nueva aunque resuelva las mismas 49 etiquetas, y
+    una cifra de latencia es una afirmación sobre un corpus, no sobre un número
+    de preguntas.
     """
     population = request.param
     root = tmp_path_factory.mktemp(f"latency_{population}")
@@ -166,9 +189,10 @@ def timed(request, tmp_path_factory) -> TimedCorpus:
 
     row = latency_for(documents)
     assert row is not None, (
-        f"el corpus de la población {population!r} resuelve "
-        f"{len(resolved_cases(documents))} etiquetas y no hay fila de latencia "
-        "para ese número. Vuelve a medir sobre la población que queda y añade la "
+        f"el corpus de la población {population!r} digiere a "
+        f"{corpus_digest(documents)[:12]} y no hay fila de latencia para él "
+        f"({sorted(CORPUS_DIGESTS)}). Vuelve a medir sobre el corpus que queda y "
+        "añade la "
         "suya en tests/retrieval_measurements.py."
     )
 
@@ -387,16 +411,37 @@ class TestTheStatisticsAreWhatTheyClaimToBe:
 
 
 def test_both_populations_are_published():
-    """Las dos filas existen, con chunks distintos, y ninguna es la otra.
+    """Las dos filas existen, sobre corpus DISTINTOS, y ninguna es la otra.
 
     Trivial a propósito, y por eso está: una sola fila es una cifra que en el
     otro checkout nadie puede comprobar, que es exactamente lo que pasó con el
     recall cuando sólo se publicaba la del working tree.
+
+    Y la segunda aserción cambió de instrumento el 2026-10-04, y el motivo es
+    instructivo. Afirmaba que las dos filas tienen distinto número de chunks, y
+    eso era un SUBSTITUTO de "son dos corpus": 124 contra 116. Desde que
+    ``efda998`` commiteó las cuatro páginas FAQ las dos filas tienen 124 chunks,
+    37 páginas y 49 preguntas, así que el sustituto se cumple por casualidad y
+    ya no prueba nada -- de hecho, si esta aserción hubiera seguido en pie, un
+    corpus clonado con el texto antiguo habría pasado sin ser el corpus que la
+    fila describe. Lo que separa las dos poblaciones es el digest del corpus
+    servido (``tests/real_wiki.py::CORPUS_DIGESTS``), y eso es lo que se
+    comprueba: dos digests distintos para dos filas distintas.
     """
     assert [figures.population for figures in LATENCY_FIGURES] == ["full", "reduced"]
-    assert len({figures.chunks for figures in LATENCY_FIGURES}) == 2, (
-        "las dos filas declaran el mismo número de chunks, así que o son la "
-        "misma población con dos nombres o una se copió de la otra."
+    assert len(set(CORPUS_DIGESTS)) == len(CORPUS_DIGESTS) == len(LATENCY_FIGURES), (
+        "las dos filas de latencia se publican por población y las poblaciones se "
+        f"distinguen por el digest del corpus servido, así que hay "
+        f"{len(LATENCY_FIGURES)} digests distintos y hay "
+        f"{len(set(CORPUS_DIGESTS))}."
+    )
+    assert len({figures.chunks for figures in LATENCY_FIGURES}) == 1, (
+        "las dos filas declaran el mismo número de chunks ("
+        f"{sorted({f.chunks for f in LATENCY_FIGURES})}). Eso ya no distingue nada "
+        "y no distingue porque ya no hay nada que distinguir por ahí: desde "
+        "``efda998`` los dos corpus tienen las mismas páginas y los mismos chunks. "
+        "Si este día vuelve a ser verdad, no reescribas el número de una fila: "
+        "mide otra vez y comprueba que lo que las distingue sigue siendo el texto."
     )
     for figures in LATENCY_FIGURES:
         assert figures.median_ceiling_ms > figures.median_ms, (

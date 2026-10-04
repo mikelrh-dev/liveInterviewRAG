@@ -133,15 +133,17 @@ class TestGeneratedIndexIsNotACandidateDocument:
     pool on the real wiki.
 
     CORPUS: the two end-to-end tests below run against the real ``wiki/``,
-    which is 46 tracked files and therefore present on a clean clone and in CI.
+    which is 50 tracked files and therefore present on a clean clone and in CI.
     They used to run against an invented stand-in on the stated ground that
     the real wiki was private and untracked, which was false.
 
-    The page count they assert is DERIVED from the checkout rather than pinned:
-    four FAQ pages are on disk but untracked, so a clean clone serves 33 and
-    this checkout serves 37. The loader behaviour being pinned — index, README
-    and CONVENCIONES skipped, templates skipped, everything else loaded — is
-    the part that is not a property of one machine.
+    The page count they assert is DERIVED from the checkout rather than pinned.
+    It used to have to be, because four FAQ pages were on disk without being
+    tracked and a clone served 33 where this checkout served 37; commit
+    ``efda998`` committed them, so both sides serve 37 and the derivation is now
+    belt-and-braces rather than a necessity. The loader behaviour being pinned —
+    index, README and CONVENCIONES skipped, templates skipped, everything else
+    loaded — is the part that is not a property of one machine.
     """
 
     def _wiki_with_index(self, tmp_path):
@@ -215,8 +217,10 @@ class TestGeneratedIndexIsNotACandidateDocument:
         )
         # DERIVED, not pinned: a hard-coded page count would be a property of
         # one machine's checkout, which is the mistake this test class used to
-        # make. Four FAQ pages here are on disk but untracked, so a clean clone
-        # loads 33 and this checkout loads 37. What must hold on every machine
+        # make. Four FAQ pages used to be on disk here without being tracked, so
+        # a clean clone loaded 33 and this checkout loaded 37; they are committed
+        # now and both load 37, which is exactly why a hard-coded 33 or 37 is
+        # still the wrong thing to write. What must hold on every machine
         # is that the loader serves exactly the Markdown that is neither a
         # README/CONVENCIONES/index nor a template form.
         on_disk = {

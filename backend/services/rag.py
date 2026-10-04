@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import time
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -87,7 +88,18 @@ QUERY_EXPANSIONS: Dict[str, List[str]] = {
 # is computed over the raw wiki and cannot see it. Without this bump a version
 # "4" cache keeps serving a bodyless heading as the top-1 context for 3 of the
 # 49 labelled questions.
-CHUNK_FILTER_VERSION = "5"
+#
+# "6": the text embedded per chunk gained a fourth identity part, the section's
+# INTENT (see ``section_intent``). Like "4" this changes NO chunk and NO document
+# text: the corpus still loads 37 pages and chunks to 124, and the document hash
+# is byte-identical. But it changes the embedded text of the 10 of 124 chunks that
+# are a career section, so a version "5" cache would be restored and those
+# chunks' VECTORS would be cosine distances against a sentence that never
+# mentioned what the section is FOR -- while ``_lexical_index`` and the reranker,
+# both of which read ``embedding_text``, would read the new sentence. A cache is
+# not allowed to be half-updated: it would serve a dense order computed from one
+# text and a lexical/cross-encoder order computed from another.
+CHUNK_FILTER_VERSION = "6"
 
 #: Which lexical-rescue behaviour produced a given set of results. NOT part of
 #: the embedding cache's identity, and that is a decision rather than an
@@ -95,8 +107,9 @@ CHUNK_FILTER_VERSION = "5"
 #:
 #: The cache stores VECTORS, and the rescue stores nothing: it is fitted at
 #: query time from ``embedding_text(chunk)`` over whatever chunks the run
-#: already holds. Those four fields -- ``content``, ``h1``, ``summary`` and
-#: ``section`` -- are exactly what ``_save_embeddings_cache`` persists, so a run
+#: already holds. Those five fields -- ``content``, ``h1``, ``summary``,
+#: ``section`` and ``intent`` -- are exactly what ``_save_embeddings_cache``
+#: persists, so a run
 #: restored from cache and a run that recomputed hold byte-identical text and
 #: therefore produce byte-identical BM25 scores. Bumping ``CHUNK_FILTER_VERSION``
 #: for this would invalidate a cache whose vectors are perfectly correct and cost
@@ -202,6 +215,198 @@ def split_sections(content: str) -> List[str]:
     if len(parts) < 2 or not _H1_ONLY_RE.match(parts[0].strip()):
         return parts
     return [f"{parts[0].rstrip()}\n\n{parts[1].lstrip()}", *parts[2:]]
+
+
+# ── Section intent: what KIND of question a section is able to answer ───────
+#
+# WHY THIS EXISTS, MEASURED
+# -------------------------
+# Five pages in this corpus talk about Mercadona and only ONE of them answers
+# "¿cuándo empezaste?". The gold was not missing and not below threshold -- it
+# ranked 4th, one slot outside a top-3 that spends one slot per page
+# (``_one_chunk_per_page``). And the reason it was 4th is the thing this
+# function fixes: on ``experience/gerente-mercadona-2019-2025.md`` the chunk
+# that LITERALLY STATES THE PERIOD -- "**Period:** 2019 to November 2025", inside
+# ``## Context`` -- was the 11th-ranked chunk of the whole corpus for that
+# question, while the page's ``## Measurable achievements`` chunk ranked 6th.
+# ``np.dot`` was working; the ranking was working; the answer-bearing chunk was
+# simply not the chunk that won.
+#
+# Why it lost is a missing signal, and it is missing from the OTHER three chunks
+# too. ``embedding_text`` already gives every chunk of a page the same identity --
+# H1, ``summary_1line``, section -- so all four chunks of the Mercadona page say
+# "Gerente B (Encargado), Mercadona, 2019-Nov 2025" equally loudly and none of
+# them says WHICH QUESTION it answers. The dates live in ``## Context``; the
+# accomplishments live in ``## Measurable achievements``; the embedder is given
+# no reason to prefer one, and it prefers the one whose prose is closest to a
+# generic question about work.
+#
+# So the identity is not the missing half. The INTENT is.
+#
+# WHY A TAXONOMY AND NOT A MODEL
+# ------------------------------
+# The label is a pure function of the heading text and the body, read out of the
+# page's own Markdown. No LLM is called, nothing is inferred, and the same input
+# always yields the same label -- which is what makes the whole thing auditable
+# and what lets the retrieval numbers be re-derived rather than re-argued.
+#
+# Every key below is a heading that appears in ``wiki/templates/*.md``: the wiki
+# defines its own section vocabulary, so the vocabulary is read off the contract
+# rather than fitted to a question set. ``experience-template.md`` supplies
+# ``Context`` / ``Responsibilities`` / ``What this role taught you`` and
+# ``profile-template.md`` supplies the career timeline, and those are exactly the
+# sections a "¿en qué empresas has trabajado?" / "¿qué puesto tenías?" / "¿cuándo
+# empezaste?" question is answered by.
+#
+# THE NARROWING IS MEASURED, AND IT COST SOMETHING
+# -------------------------------------------------
+# A first version of this table also labelled ``## Measurable achievements``,
+# ``## Outcomes``, ``## Task``/``## Action``/``## Result``, ``## Stack`` and the
+# FAQ pages' own question headings, and applied to every page type. That version
+# labelled 56 of 124 chunks and cost the 49 labelled questions ONE of their 44:
+# ``"puedes empezar a trabajar ya estas disponible"`` stopped returning
+# ``faq/disponibilidad.md``. The work-history set liked it (2/6 strict) but a
+# recall floor over 49 questions is the harder constraint and it lost.
+#
+# Two reasons it lost, and both are about the label being REDUNDANT rather than
+# wrong. On a FAQ page the H1 already IS the interview question -- that is what
+# ``tests/real_wiki.py`` says the FAQ group is -- so "this section answers
+# '¿cuál es tu disponibilidad?'" adds nothing the chunk does not already carry,
+# and it spends tokens in a prefix the cross-encoder also reads. On a ``project``
+# or ``story`` page the section heading is already self-describing (``Why``,
+# ``Stack``, ``Outcomes``, ``Task``, ``Action``, ``Result``), and there is no
+# biography question competing for the slot.
+#
+# The competition this exists to fix is specific: several SECTIONS OF ONE PAGE
+# all claiming the same top-3 slot for a question only one of them can answer.
+# ``experience/*.md`` and ``profile/mikel.md`` have that shape and nothing else in
+# the corpus does. So the table below is scoped to the career vocabulary and
+# ``_CAREER_TYPES`` scopes it to the pages that use it: 10 of 124 chunks change,
+# and the other 114 stay byte-identical.
+#
+# WHAT THE NARROWING BOUGHT, ON THE SAME CORPUS AND THE SAME 49 QUESTIONS
+# -----------------------------------------------------------------------
+#                                 work-history strict / relevant   recall@3
+#   no intent (before)                     1/6 · 2/6              44/49
+#   broad table, every type                2/6 · 3/6              43/49   REGRESSION
+#   this table, career types only          3/6 · 4/6              44/49
+#
+# Two more of the six recovered, one of them the question this was written for:
+# "¿qué puesto tenías en mercadona" went from not-in-the-top-3 to rank 1. And the
+# accent pair stopped diverging -- "donde has trabajado" and "dónde has trabajado"
+# now return the same rank (2), where before they returned 1 and nothing.
+
+#: ``(heading token, intent)``, matched as a SUBSTRING of the accent-stripped,
+#: lowercased heading. Substring rather than equality because the same section is
+#: spelled several ways across the corpus ("Career timeline (corrected)",
+#: "Contexto", "Context") and an exact-match table would have to carry every
+#: variant. Order matters only where one token contains another; the pairs that do
+#: are written so the longer, more specific one is tested first.
+_SECTION_INTENT_RULES: Tuple[Tuple[str, str], ...] = (
+    ("responsibilit", "que hacia en el puesto: tareas y responsabilidades concretas"),
+    ("timeline", "cronologia laboral: empresas y fechas de cada puesto"),
+    ("career", "cronologia laboral: empresas y fechas de cada puesto"),
+    ("historial", "cronologia laboral: empresas y fechas de cada puesto"),
+    ("context", "empresa, sector, equipo y fechas de inicio y fin del puesto"),
+    ("taught", "que aprendio, habilidades y lecciones del puesto"),
+)
+
+#: The frontmatter ``type`` values the career vocabulary above applies to. Not a
+#: whitelist of pages (a page's own path would be a second, redundant signal --
+#: ``CONVENCIONES.md`` already requires type to match the folder): it is the set
+#: of types whose template describes a PIECE OF A CAREER, which is the only thing
+#: these headings are about.
+_CAREER_TYPES = frozenset({"experience", "profile"})
+
+#: Appended to an intent when the section's own body carries a period. This is the
+#: deterministic date signal the biography questions need and it is read from the
+#: page, not inferred: a year, or a month name in either language, anywhere in the
+#: section body. It is a SECOND signal, not the first -- ``## Context`` says
+#: "**Period:** 2019 to November 2025" and this is what tells the vector that the
+#: dates in it are the answer rather than scenery.
+_PERIOD_IN_BODY_RE = re.compile(
+    r"\b(19|20)\d{2}\b"
+    r"|\b(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|"
+    r"noviembre|diciembre|january|february|march|april|may|june|july|august|"
+    r"september|october|november|december)\b",
+    re.IGNORECASE,
+)
+_PERIOD_INTENT = "incluye el periodo y los anos de inicio y fin"
+
+#: Every heading in a section, deepest last, as ``(level, title)``. Level 1 is
+#: separated from the rest because it means something different (see
+#: ``section_intent``).
+_SECTION_HEADING_RE = re.compile(r"^(#{1,6})[ \t]+(.+?)[ \t]*$", re.MULTILINE)
+
+
+def _fold_heading(text: str) -> str:
+    """Lowercase, accent-stripped, punctuation-to-space form of a heading.
+
+    Accent stripping is not cosmetic here. The corpus is bilingual and the
+    questions arrive from a microphone that drops tildes ("donde has trabajado"),
+    so a token table keyed on accented text would simply not match
+    "## Contexto" against the same heading written "## Context". Keys are
+    written unaccented and this is what makes them match both.
+    """
+    decomposed = unicodedata.normalize("NFKD", text)
+    plain = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+    return f" {re.sub(r'[^a-z0-9]+', ' ', plain.lower()).strip()} "
+
+
+def section_intent(section: str, doc_type: str = "") -> str:
+    """What kind of question this section can answer, or ``""`` if unclear.
+
+    Reads the section's own HEADING and, for the period signal, its own body.
+
+    ``doc_type`` is the page's frontmatter ``type``, and it gates the whole
+    function: only ``_CAREER_TYPES`` gets an intent. The reasoning, and the
+    measurement that forced it, is at the top of this section -- the short
+    version is that a label has to add information the identity prefix does not
+    already carry, and on a FAQ page the H1 already is the question.
+
+    The heading it uses is the first H2-or-deeper one, never the H1, and that
+    distinction is the whole reason this function is not a one-liner over
+    ``chunk.section``. ``split_sections`` re-attaches the page's own H1 to the
+    first real section, so ``_chunk_document`` records ``section`` for that
+    chunk as the H1 -- "Gerente B (Encargado) - Mercadona (2019-Nov 2025)" --
+    and the H2 that actually names what the section is about ("Context") is
+    nowhere in that field. It is in the text, which is why this takes the
+    section body rather than a metadata field: the H1 is the page's identity and
+    already reaches the vector through ``chunk.h1``, so reading it here would
+    return the page's name for every one of its sections and say nothing at all.
+
+    ``""`` is the common answer -- 114 of the real corpus's 124 chunks -- and it
+    means either "no such heading" or "not a career section". An unmatched chunk
+    is left byte-identical rather than given a generic label: a label that
+    describes every section describes none, and it would spend embedder capacity
+    on all 124 chunks to move none of them.
+    """
+    if doc_type not in _CAREER_TYPES:
+        return ""
+
+    heading = ""
+    for level, title in _SECTION_HEADING_RE.findall(section):
+        if len(level) > 1:
+            heading = title
+            break
+    if not heading:
+        return ""
+
+    key = _fold_heading(heading)
+    intent = ""
+    for token, label in _SECTION_INTENT_RULES:
+        if token in key:
+            intent = label
+            break
+    if not intent:
+        return ""
+    if _PERIOD_IN_BODY_RE.search(section):
+        intent = f"{intent}, {_PERIOD_INTENT}"
+    # Capitalised because ``embedding_text`` joins the identity parts with ". ",
+    # and every other part (H1, summary_1line, section heading) arrives
+    # capitalised. A label that breaks the sentence reads as a fragment of a
+    # different one, and the embedder is being handed prose.
+    return intent[:1].upper() + intent[1:]
 
 
 # Headings the wiki uses for a section that is nothing but links to other
@@ -418,6 +623,12 @@ class Chunk:
     #: The page's own H1 (``document_h1``). Carried on every chunk of the page
     #: because ``content`` only contains it on the first one.
     h1: str = ""
+    #: What KIND of question this section can answer (``section_intent``), or
+    #: ``""``. The fourth identity part, and the only one that differs between
+    #: chunks of the SAME page -- which is the point: without it, every chunk of
+    #: a page carries the same identity and nothing tells the embedder which one
+    #: to prefer for a given question.
+    intent: str = ""
     embedding: Optional[np.ndarray] = field(default=None, repr=False)
 
 
@@ -450,10 +661,20 @@ def embedding_text(chunk: Chunk) -> str:
     title repeated in the same sentence is noise the embedder has to spend
     capacity on. Empty parts are dropped for the same reason, and a chunk with
     no identity at all embeds its bare content exactly as before.
+
+    ``intent`` is LAST, after the three identity parts, for two reasons that
+    were both measured rather than arranged for looks. First, order: the identity
+    leads because it is what separates sibling pages, and the intent describes
+    this chunk rather than the document, so it cannot be doing that job.
+    Second, position: appending leaves the measured prefix order ``h1, summary,
+    section`` readable as a prefix of the string, which is what
+    ``tests/test_rag.py::TestTheEmbeddedTextCarriesThePageIdentity`` and
+    ``tests/test_rerank.py::TestThePassageIsTheEmbeddedText`` assert. Putting it
+    first would have made both of them describe a different design.
     """
     parts: List[str] = []
     seen: set = set()
-    for candidate in (chunk.h1, chunk.summary, chunk.section):
+    for candidate in (chunk.h1, chunk.summary, chunk.section, chunk.intent):
         value = candidate.strip()
         if not value or value in seen:
             continue
@@ -777,12 +998,16 @@ class RAGPipeline:
         # floor.
         #
         # `wiki/` has TWO states, so the corpus-shape figures below come in
-        # two. Four FAQ pages are on disk and not in the index, so a clean
-        # clone loads 33 pages and chunks to 116 at 400/50, not 37 and 124.
-        # Both are measured; `tests/real_wiki.py::CommentFigures` owns them and
-        # `tests/test_recall_claims.py` binds the row matching the checkout.
+        # two. The four FAQ pages that used to make the states differ in SHAPE are
+        # committed as of commit `efda998`, so both sides now load 37 pages and
+        # chunk to 124 at 400/50; what still differs is the TEXT, because 15
+        # `wiki/*.md` files are modified in the working tree and uncommitted. Both
+        # are measured; `tests/real_wiki.py::CommentFigures` owns them and the row
+        # is chosen by a digest of the served corpus
+        # (`tests/real_wiki.py::CORPUS_DIGESTS`), never by a question count,
+        # because both rows are 49 questions wide and a count cannot separate them.
         #     full (37 pages, 49 questions) 124 chunks, 49 x 124 (question, chunk)
-        #     reduced (33 pages, 41 questions) 116 chunks, 41 x 116 (question, chunk)
+        #     reduced (37 pages, 49 questions) 124 chunks, 49 x 124 (question, chunk)
         #
         # It is not inert. Over that (question, chunk) matrix this default
         # discards most of the candidate pool, and because the filter runs
@@ -815,8 +1040,12 @@ class RAGPipeline:
         #
         # WHAT THE FILTER COSTS, in one unit. At ``top_k`` = twice the chunk
         # count, the labelled questions return these counts of RESULTS:
-        #     full (37 pages, 49 questions) discards 959 of the 1813 results (52.9%) -- 854 results with the filter and 1813 without
-        #     reduced (33 pages, 41 questions) discards 722 of the 1353 results (53.4%) -- 631 results with the filter and 1353 without
+#     full (37 pages, 49 questions) discards 952 of the 1813 results (52.5%) -- 861 results with the filter and 1813 without
+#     reduced (37 pages, 49 questions) discards 949 of the 1813 results (52.3%) -- 864 results with the filter and 1813 without
+        # The two rows now share every COUNT on this block -- 37 pages, 49
+        # questions, 124 chunks, 1813 unfiltered results -- and differ by three
+        # survivors of the filter, because the fifteen uncommitted pages are not
+        # the fifteen a clone is served.
         # and at the shipped top_k=3 it costs the caller one slot in three, which
         # is the fact the two numbers together say: a wide filter that is
         # invisible until a question runs thin.
@@ -1028,6 +1257,7 @@ class RAGPipeline:
             types = np.array([c.type for c in chunks], dtype=object)
             summaries = np.array([c.summary for c in chunks], dtype=object)
             h1s = np.array([c.h1 for c in chunks], dtype=object)
+            intents = np.array([c.intent for c in chunks], dtype=object)
             # Tags are variable-length; store as JSON strings
             tags_json = np.array([json.dumps(c.tags) for c in chunks], dtype=object)
             embeddings = np.stack([c.embedding for c in chunks]) if chunks else np.empty((0, 0), dtype=np.float32)
@@ -1037,6 +1267,7 @@ class RAGPipeline:
                 npz_path,
                 ids=ids, contents=contents, sources=sources,
                 sections=sections, types=types, summaries=summaries, h1s=h1s,
+                intents=intents,
                 tags_json=tags_json, embeddings=embeddings,
             )
 
@@ -1145,6 +1376,15 @@ class RAGPipeline:
             tags_json = data["tags_json"]
             embeddings = data["embeddings"]
 
+            # ``intent`` is part of ``embedding_text``, so a cache that does not
+            # carry it cannot produce the passages the run would have computed.
+            # Recompute rather than serve a half-restored chunk set: the same
+            # policy as every other unclaimed field above.
+            if "intents" not in data.files:
+                logger.info("Cache predates the intent field — recomputing")
+                return None
+            intents = data["intents"]
+
             if len(ids) != meta.get("chunk_count"):
                 logger.info("Cache chunk count mismatch — recomputing")
                 return None
@@ -1161,6 +1401,7 @@ class RAGPipeline:
                     tags=json.loads(str(tags_json[i])),
                     summary=str(summaries[i]),
                     h1=str(h1s[i]),
+                    intent=str(intents[i]),
                     embedding=embeddings[i],
                 ))
 
@@ -1340,6 +1581,14 @@ class RAGPipeline:
             heading_match = re.match(r'^#{1,3}\s+(.+)', section)
             section_name = heading_match.group(1) if heading_match else filename
 
+            # What question type this section answers, read off its own heading
+            # and body (``section_intent``). Computed ONCE per section and stamped
+            # on every sub-chunk below, deliberately: when a section is long
+            # enough to split, all of its pieces are the same KIND of answer, and
+            # a per-piece label would be a function of where the word count
+            # happened to fall, which is not a property of the content.
+            intent = section_intent(section, doc_type)
+
             # If section fits in one chunk, keep it whole
             if len(section.split()) <= self.chunk_size:
                 chunks.append(Chunk(
@@ -1351,6 +1600,7 @@ class RAGPipeline:
                     tags=tags,
                     summary=summary,
                     h1=h1,
+                    intent=intent,
                 ))
                 chunk_id += 1
             else:
@@ -1369,6 +1619,7 @@ class RAGPipeline:
                         tags=tags,
                         summary=summary,
                         h1=h1,
+                        intent=intent,
                     ))
                     chunk_id += 1
                     start += self.chunk_size - self.chunk_overlap
@@ -1492,7 +1743,8 @@ The filter was removed rather than repaired because a substring match
         therefore untouchable at this stage by construction rather than by a
         favourable measurement. What moves is the ORDER, and with it ``recall@1``:
         measured on the 49 labelled questions, 36 -> 40, net +4 (7 promotions,
-        3 demotions); on the reduced population 31 -> 33, net +2.
+        3 demotions); on the reduced population, the same 49 questions over the
+        committed text, 37 -> 40, net +3 (8 promotions, 5 demotions).
 
         Two costs are real and are not hidden by that guarantee. It adds ~90 ms of
         CPU per query to a ~24 ms retrieval, and it cannot recover a page the

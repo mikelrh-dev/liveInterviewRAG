@@ -11,15 +11,66 @@ Reglas:
 - Preguntas tipo "¿sabes X?", "¿has usado X?" → 1 frase.
 - Sé honesto: si no tienes experiencia con algo, dilo con naturalidad.
 - NO inventes credenciales.
-- Responde SOLO con información del contexto proporcionado. Si te preguntan un dato concreto (dónde trabajaste, fechas, nombres, cifras) y no está en el contexto, dilo con naturalidad ("ese detalle no lo tengo a mano") en vez de rellenar con algo plausible. Inventar un empleador o un puesto es el peor error posible en una entrevista.
 - NO uses Markdown ni emojis. Solo texto plano.
 - Tono profesional pero cercano.
+
+Abstención por niveles:
+- IDENTIDAD (tu nombre, tus empleadores, tus puestos, las fechas de cada empleo, dónde estudiaste): estos datos no se adivinan nunca. Si más abajo aparece un bloque de trayectoria, responde siempre desde él. Si la pregunta es de identidad y el bloque no la cubre, di qué parte sí sabes y cuál no: no te disculpes por no saberlo, pero tampoco lo rellenes.
+- PERIFÉRICOS (métricas, cifras de negocio, fechas que no sean de empleo, personas concretas con las que trabajaste, opiniones sobre terceros): no los tienes a mano. Dilo con naturalidad, en una frase, y no rellenes con algo plausible. Inventar un empleador o un puesto es el peor error posible en una entrevista.
 
 {context}
 """
 
+#: El encabezado del bloque de trayectoria. Dice explícitamente que los datos NO
+#: vienen del buscador, porque la alternativa es que el modelo los trate como una
+#: de las tres páginas que puede descartar: es exactamente el fallo que
+#: `tests/work_history_cases.py` mide, y un bloque etiquetado como "recuperado"
+#: competiría con el contexto RAG en lugar de fundarlo.
+WORK_HISTORY_HEADER = (
+    "Bloque de trayectoria profesional — DATOS FIJOS, no recuperados por búsqueda:"
+)
 
-def build_system_prompt(retrieved_context: str = "", conversation_context: str = None) -> str:
+#: La regla de identidad, en la forma en que se le da al modelo cuando el bloque
+#: está presente. Va PEGADA al bloque y no en el prompt base a propósito: una
+#: prohibición incondicional de abstenerse ("nunca te excuses por no saber tu
+#: empleador") escrita en el prompt base sería una MENTIRA en el modo degradado,
+#: donde ese bloque no existe y la única forma de cumplirla sería inventar. Por
+#: eso la línea de IDENTIDAD del prompt base está redactada en condicional ("si
+#: más abajo aparece un bloque") y la prohibición fuerte vive aquí, que es donde
+#: está la garantía de la que depende. Los dos modos no pueden compartir la
+#: frase porque no pueden compartir la verdad.
+IDENTITY_RULE = (
+    "Estos datos son la base de tu identidad profesional. Responde siempre desde "
+    "ellos cuando te pregunten por un empleador, un puesto o las fechas de un "
+    "empleo, y NUNCA digas que no tienes ese dato a mano."
+)
+
+#: El modo degradado REAL: `CandidateProfile.get_work_history_block()` devolvió
+#: cadena vacía. Antes de esto, la regla única cubría este caso con un "no lo
+#: tengo a mano" genérico que es la PEOR respuesta posible a "¿dónde has
+#: trabajado?" -- una pregunta que casi siempre tiene respuesta en el contexto y
+#: que el modelo no sabe localizar porque le dicen que no la tiene.
+#:
+#: Lo que se pide aquí es un desvío EXPLÍCITO: no se inventan datos, pero en vez
+#: de cerrarse en seco se ofrece un camino que sí se puede recorrer. "Prefiero que
+#: me preguntes por un proyecto" es honesto y útil; "no lo tengo a mano" es
+#: honesto y es un callejón sin salida para quien está en una entrevista. La
+#: razón del problema es que el modelo no sabe dónde mirar por esos datos: sin
+#: esta frase se abstainía sin haber leído las páginas que sí los tenían.
+DEGRADED_WORK_HISTORY_NOTICE = (
+    "AVISO: en esta sesión NO hay bloque de trayectoria disponible. Si te preguntan "
+    "por un empleador, un puesto o las fechas de un empleo y esos datos no están "
+    "en el contexto de arriba, no respondas con un \"no lo tengo a mano\" genérico: "
+    "diles que ahora mismo no tienes ese dato delante y ofréceles que te pregunten "
+    "por un proyecto concreto, que sí puedes detallar. No inventes nada."
+)
+
+
+def build_system_prompt(
+    retrieved_context: str = "",
+    conversation_context: str = None,
+    work_history: str = "",
+) -> str:
     """Build the system prompt with optional RAG context and conversation memory.
 
     Args:
@@ -28,11 +79,25 @@ def build_system_prompt(retrieved_context: str = "", conversation_context: str =
             (built by build_conversation_context in main.py). Injected as the second
             section of the "context" placeholder so the LLM can refer back to earlier
             turns in the same interview.
+        work_history: The compiled career timeline, from
+            ``CandidateProfile.get_work_history_block()``. OUTSIDE the RAG path on
+            purpose: it is not retrieved, it is always present, and that is the
+            whole point. Injected FIRST so the model reads it as ground truth and
+            the retrieved pages as supporting material.
 
     Returns:
         Formatted system prompt.
     """
     context_sections = []
+    if work_history:
+        context_sections.append(f"""
+{WORK_HISTORY_HEADER}
+---
+{work_history}
+---
+{IDENTITY_RULE}""")
+    else:
+        context_sections.append(DEGRADED_WORK_HISTORY_NOTICE)
     if retrieved_context:
         context_sections.append(f"""
 Aquí hay información relevante de tu perfil:

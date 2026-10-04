@@ -147,3 +147,88 @@ class CandidateProfile:
             parts.append(f"\n--- {filename} ---\n{content}")
 
         return "\n".join(parts)
+
+    # ── The work-history block ─────────────────────────────────────────────────
+    #
+    #: One timeline line. The separator is an em dash and not a hyphen because the
+    #: periods themselves contain dashes ("2019–Nov 2025"), and a hyphen between
+    #: the period and the role reads as part of the date at reading speed.
+    _TIMELINE_LINE = "{period} — {role}{company}"
+
+    def get_work_history_block(self) -> str:
+        """The compiled career timeline as employer/role/period lines, or ``""``.
+
+        WHAT THIS EXISTS FOR, AND WHY ``get_context_string`` CANNOT DO IT
+        -----------------------------------------------------------------
+        ``get_context_string`` appends the FULL TEXT of every wiki document
+        (``candidate.py:146-147``). On this corpus that is 37 pages, so passing
+        its output to ``build_system_prompt`` would put thousands of tokens of
+        Markdown in front of the model on every turn, almost none of it about
+        the question being asked. That is also why nothing in production calls
+        it: it is a debugging dump, not a prompt input, and the honest reading
+        of its name is what makes that expensive.
+
+        What a prompt needs instead is the one part of the profile a model can
+        neither infer nor safely guess: WHICH employer, WHICH role, WHICH
+        dates. Measured on the six work-history questions
+        (``tests/work_history_cases.py``), five of the six fail retrieval as
+        ranking misses -- every gold page clears the 0.25 cosine threshold with
+        room to spare, so no threshold change reaches them, and five query-side
+        variants all cost questions from the official 49. Identity facts are not
+        a retrieval problem; they are a plumbing problem, and this is the pipe.
+
+        WHY IT IS BUILT FROM profile.json AND NOT RE-PARSED FROM THE WIKI
+        ---------------------------------------------------------------------
+        ``scripts/wiki/compile.py::_parse_experience`` reads the
+        ``## Career timeline (corrected)`` section of ``wiki/profile/mikel.md``,
+        and that section already carries all three employments
+        (``wiki/profile/mikel.md:26-32``). So the facts are COMPILED, and this
+        method renders what the build produced instead of parsing Markdown a
+        second time: two parsers for one set of facts is two sources of truth,
+        and the disagreement between them would be invisible until an interview.
+
+        THE DELIMITER, AND WHY IT IS NOT A BUG
+        --------------------------------------
+        ``_parse_experience`` splits ``PERIOD: Role, Company`` on the FIRST
+        comma (``compile.py:96-98``), so the study line
+        "2024–2026: FP Superior DAM at Tartanga (Erandio, presencial), started
+        while working at Mercadona" compiles to company="started while working
+        at Mercadona". This method prints that unchanged rather than
+        second-guessing it: filtering it would mean classifying entries
+        semantically, which is exactly the second opinion just ruled out. The
+        heading the caller uses says "trayectoria", not "empleos", so nothing
+        asserts that a degree is an employer, and the fragment is a true one.
+
+        LIMITS
+        ------
+        * Returns ``""`` -- never a partial block -- when there is no
+          ``profile.json``, no ``experience`` key, or no entry with both a
+          period and a role. The caller reads ``""`` as "no guarantee
+          available" and switches the prompt to its degraded wording, so a
+          half-populated timeline must not be able to pass for a whole one.
+        * Reads ``profile_data`` only, never ``self.documents``: the block is
+          structured data or it is nothing.
+        * ``highlights`` are dropped on purpose. They are prose, and the budget
+          is roughly 200 tokens of employer/role/dates; on the real profile the
+          six compiled entries render at about 110 tokens.
+        * An entry that is not a dict is skipped rather than raising, because a
+          hand-edited ``profile.json`` should cost one line and not a turn.
+        """
+        if not self.profile_data:
+            return ""
+
+        lines: List[str] = []
+        for entry in self.profile_data.get("experience") or []:
+            if not isinstance(entry, dict):
+                continue
+            period = str(entry.get("period") or "").strip()
+            role = str(entry.get("role") or "").strip()
+            company = str(entry.get("company") or "").strip()
+            if not period or not role:
+                continue
+            suffix = f", {company}" if company else ""
+            lines.append(
+                self._TIMELINE_LINE.format(period=period, role=role, company=suffix)
+            )
+
+        return "\n".join(lines)

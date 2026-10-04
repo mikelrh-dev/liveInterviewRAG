@@ -34,23 +34,28 @@ clone every assertion below was true about a corpus the reader did not have:
     the comment says median 54; measured 53.5
 
 Four FAQ pages (``nivel-ingles``, ``disponibilidad``, ``hobbies-intereses``,
-``por-que-contratarte``) exist on disk and are not in the index, so a clone
-loads 33 pages and chunks to 116. Same method, same 400/50, different corpus.
-The comment now publishes BOTH populations on rows named by their population,
-and every assertion below binds this checkout's row to a live measurement of
-this checkout's corpus -- same assertions, same strength, in either
-population. The rows live in ``tests/real_wiki.py::COMMENT_FIGURES``, the same
-record ``tests/test_recall_claims.py`` uses.
+``por-que-contratarte``) used to exist on disk without being in the index, so a
+clone loaded 33 pages and chunked to 116. Commit ``efda998`` committed them: both
+corpora are 37 pages and 124 chunks now, and what still separates them is that
+15 ``wiki/*.md`` files are modified in the working tree and uncommitted. Same
+method, same 400/50, different text -- and the chunk count no longer moves, which
+is worse for a reader who trusts it, not better. The comment publishes BOTH
+populations on rows named by their population, and every assertion below binds
+this checkout's row to a live measurement of this checkout's corpus -- same
+assertions, same strength, in either population. The rows live in
+``tests/real_wiki.py::COMMENT_FIGURES``, the same record
+``tests/test_recall_claims.py`` uses, and the row is selected by a digest of the
+served corpus rather than by a question count, because both rows are 49 wide.
 
 The median is worth calling out because it looked like a rounding artefact and
 is not: ``statistics.median`` over an EVEN number of chunks returns the mean of
-the two middle values, and 116 is even, so 53.5 is what the corpus really
-measures. An assertion that could only compare integers would have forced one
-of the two populations to publish a number the measurement does not produce.
+the two middle values, and 124 is even, so 54.0 and 53.0 are what those corpora
+really measure. An assertion that could only compare integers would have forced
+one of the two populations to publish a number the measurement does not produce.
 
 The measurement runs against ``wiki/``. This comment used to describe that
 directory as "gitignored, private, and absent from a clean clone" and to skip
-here on that basis. All three were wrong: ``git ls-files wiki`` returns 46
+here on that basis. All three were wrong: ``git ls-files wiki`` returns 50
 files, they are in ``origin/main``, and ``actions/checkout`` brings them to
 every CI run. So the measurement runs everywhere, and the skip below is the
 narrow one it should have been all along -- this test is skipped only if the
@@ -155,7 +160,7 @@ def _stated_float(pattern: str, comment: str) -> float:
 @pytest.mark.skipif(
     not WIKI_DIR.is_dir(),
     reason=(
-        "wiki/ is absent from this checkout. It is 46 TRACKED files, so this "
+        "wiki/ is absent from this checkout. It is 50 TRACKED files, so this "
         "only happens where the corpus was removed -- and there "
         "TestTheRetrievalGuardActuallyRan in tests/test_rag.py is failing, "
         "which is the signal. Do not read this skip as a pass."
@@ -250,11 +255,11 @@ class TestTheChunkSizeCommentIsTrue:
     def test_the_median_is_stated_correctly(self, figures, measured):
         """A float, because that is what an even-length chunk set measures.
 
-        124 chunks and 116 chunks are both even, so ``statistics.median`` returns
-        a mean of the two middle values and the reduced population's median is
-        genuinely 53.5. Parsed as a float and compared for EQUALITY -- the shape
-        of the corpus has not changed enough for a tolerance to be the right
-        instrument, and a tolerance here would hide exactly the drift this file
+        Both corpora chunk to 124, which is even, so ``statistics.median``
+        returns a mean of the two middle values: 54.0 on the working tree and
+        53.0 on the committed corpus. Parsed as a float and compared for
+        EQUALITY -- one word of median is the whole distance between the two
+        populations, so a tolerance here would hide exactly the drift this file
         exists to catch.
         """
         row = _population_row(_comment_under_test(), figures)

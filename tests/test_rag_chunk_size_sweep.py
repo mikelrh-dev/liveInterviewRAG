@@ -49,10 +49,13 @@ introduced.
 WHAT IS MEASURED
 ----------------
 For every (chunk_size, chunk_overlap) cell, over the labelled questions whose
-gold page this corpus actually serves (``_scored_cases`` -- 49 of them on the
-author's machine, 41 on a clean clone, because four FAQ pages are on disk and
-not in the index). Scoring all 49 on a clean clone would count 8 labels as
-misses purely because their gold page does not exist.
+gold page this corpus actually serves (``_scored_cases``). That was 49 on the
+author's machine and 41 on a clean clone, because four FAQ pages were on disk
+without being committed and their 8 labels were unanswerable against a corpus
+that did not contain them; commit ``efda998`` committed those four pages and both
+sides now serve all 49. The filter is kept because the loader can still be made
+to drop a page, and a label whose gold page is missing has to stop being a miss
+rather than become one.
 
   * ``recall@1 / @3 / @5`` — fraction of questions whose PRIMARY gold document
     appears in the top k. "Primary" means the page whose whole purpose is that
@@ -108,10 +111,15 @@ population -- with real ``all-MiniLM-L6-v2`` embeddings:
     600/120    125   0.551  0.653  0.714  0.611  0.632  0.667        36w  0.918  0.000
 
 On a CLEAN CLONE -- 33 pages, the 41-question population, which is what CI
-measures -- the same grid puts 400/50 at recall@3 0.659 (27/41) and every cell
-at or above 200 ties it exactly, 120/24 included. The conclusion is the same in
-both populations and the two floors are within 0.003 of each other, which is the
-sanity check that neither population is a weaker instrument.
+measured while four FAQ pages were uncommitted -- the same grid put 400/50 at
+recall@3 0.659 (27/41) and every cell at or above 200 tied it exactly, 120/24
+included. That grid is a HISTORICAL record and is not re-run: commit
+``efda998`` committed those four pages, so the 41-question population does not
+exist anywhere any more, and the ``reduced`` row is now measured over 49
+questions at the shipped 400/50 instead. What the old grid established, and what
+still holds, is that the conclusion is the same in both populations -- nothing
+beats 400/50, and every cell at or above 200 ties it -- so the population is not
+what picks the chunker.
 
 Nothing beats the shipped value. No section in the corpus exceeds 266 words, so
 every cell at or above 300 emits BYTE-IDENTICAL chunk sets: three of the six
@@ -156,8 +164,8 @@ from backend.services.rag import RAGPipeline
 
 # The corpus and the labelled set live in ``tests/real_wiki.py`` so the
 # retrieval tests and this sweep measure the same thing.
-# CORPUS: the real ``wiki/`` — 37 loaded pages, 125 chunks at 400/50 — which is
-# 46 TRACKED files, present on a clean clone and checked out by CI. This file
+# CORPUS: the real ``wiki/`` — 37 loaded pages, 124 chunks at 400/50 — which is
+# 50 TRACKED files, present on a clean clone and checked out by CI. This file
 # used to measure ``tests/fixtures/retrieval_corpus/`` instead, on the stated
 # ground that the real wiki "is gitignored, private, and absent from a clean
 # clone". All three were false, and the stand-in was a structural clone of the
@@ -673,11 +681,15 @@ def test_current_config_meets_its_measured_floor(sweep):
     # answer, not a restatement of the interviewer's own question. On the real
     # corpus this is 0.918, not the 0.980 the stand-in read -- the invented
     # pages were more findable than the real ones, which is exactly why the
-    # stand-in was the wrong instrument.
+    # stand-in was the wrong instrument. It used to quote a second figure for the
+    # reduced population; that one was measured on a 41-question corpus that
+    # stopped existing when ``efda998`` committed the four FAQ pages, and no
+    # re-measurement of this rate on the committed corpus has been run, so it is
+    # not quoted rather than quoted stale.
     assert current.substance_ok_rate >= 0.88, (
         f"only {current.substance_ok_rate:.1%} of top-1 chunks carry a body of "
         f">= {SUBSTANCE_WORD_THRESHOLD} words — the LLM is getting titles back. "
-        f"Measured on the real corpus: 0.918 (full), 0.890 (reduced)."
+        f"Measured on the real corpus: 0.918 (full)."
     )
     assert current.thin_top1_rate == 0.0, (
         f"{current.thin_top1_rate:.1%} of top-1 chunks are a title or a title "
@@ -899,16 +911,18 @@ def test_duplicated_top_k_slots_are_now_impossible_and_that_is_worth_a_question(
         restores the repetition fails here instead of being argued about.
 
     AND THAT COUNT IS PER POPULATION, which is what this guard used to get wrong.
-    It was pinned to the literal 1, a figure taken on the author's working tree.
-    On the committed corpus -- 33 pages, 41 questions -- the cut rescues TWO:
-    the question above plus "que estabas haciendo en mercadona los ultimos años",
-    whose gold page a clone reaches for through a different neighbourhood of
-    pages. One question is 1/41 = 0.024 of recall on the reduced population, so
-    a floor carried across populations unchanged is not a floor. The count is now
+    It was pinned to the literal 1, a figure taken on the author's working tree,
+    and on the committed corpus -- 33 pages, 41 questions, back when the four FAQ
+    pages were untracked -- the cut rescued TWO, so a floor carried across
+    populations unchanged was not a floor. Re-measured 2026-10-04 on the committed
+    corpus as it is now (37 pages, 49 questions, 124 chunks), the cut rescues ONE
+    again: same corpus, same page count as the working tree, one fewer rescued
+    question, and no count anywhere in this repository to say so. The count is
     read from ``tests/real_wiki.py::COMMENT_FIGURES`` by population name, exactly
     as ``tests/test_recall_claims.py`` does for the figures the two RAG comments
-    publish, and ``comment_figures_for`` refuses a third population rather than
-    scoring it against a foreign count.
+    publish; since 2026-10-04 the row is selected by a digest of the served corpus
+    rather than by a question count, and ``comment_figures_for`` refuses an
+    uncalibrated corpus rather than scoring it against a foreign count.
 
     The un-deduplicated cut is obtained by neutralising
     ``_one_chunk_per_page`` for the duration of the comparison rather than by

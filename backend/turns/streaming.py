@@ -502,7 +502,12 @@ def build_stream(
                 conversation_id, recent_count=3
             )
             system_prompt = build_system_prompt(
-                context, conversation_context=conversation_context
+                context,
+                conversation_context=conversation_context,
+                # Outside the RAG path on purpose: retrieval can lose an employer
+                # (measured, `tests/work_history_cases.py`), this cannot. Read
+                # through the container so the test suite can rebind it.
+                work_history=container.candidate_profile().get_work_history_block(),
             )
             loop = asyncio.get_running_loop()
             sentence_buf = SentenceBuffer()

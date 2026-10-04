@@ -24,7 +24,7 @@ from backend.services.rag import (
 # This file used to measure `tests/fixtures/retrieval_corpus/`, an "entirely
 # invented" stand-in, on the stated ground that the real wiki "is gitignored
 # and private". That ground was false and is now contradicted in the repository
-# itself: `git ls-files wiki` returns 46 files, they are in `origin/main`, and
+# itself: `git ls-files wiki` returns 50 files, they are in `origin/main`, and
 # `.github/workflows/tests.yml` checks them out on every run. A clean clone has
 # the corpus. The guard could always have measured it.
 #
@@ -50,6 +50,7 @@ from backend.services.rag import (
 from tests.real_wiki import (
     CHUNK_OVERLAP,
     CHUNK_SIZE,
+    CORPUS_DIGESTS,
     FLOOR_CHUNKER,
     FLOOR_EMBEDDER,
     FLOOR_SET_BY,
@@ -58,8 +59,8 @@ from tests.real_wiki import (
     MEASUREMENTS,
     TOLERATED_QUESTIONS,
     WIKI_ROOT,
-    _UNTRACKED_FAQ_PAGES,
     build_pipeline,
+    corpus_digest,
     guard_blocker,
     load_documents,
     measurement_for,
@@ -780,7 +781,7 @@ Contenido real del proyecto.
 class TestWikiCorpusHasNoPlaceholders:
     """The real corpus must reach the LLM free of [TODO placeholders.
 
-    CORPUS: the real ``wiki/`` -- tracked, 46 files, present on a clean clone
+    CORPUS: the real ``wiki/`` -- tracked, 50 files, present on a clean clone
     and in CI. It is not a machine-local artefact, so this is an ordinary test
     and not a conditional one. The filter it guards is a read-time transform
     and the corpus still carries real ``[TODO`` markers in the sections a
@@ -1157,7 +1158,7 @@ class TestWikilinkReferenceSectionsAreNotIndexed:
     document's own content. See ``test_dropping_reference_links_loses_no_
     answer_content`` for the measured proof.
 
-    CORPUS: the real ``wiki/`` -- tracked, 46 files, checked out by CI. These
+    CORPUS: the real ``wiki/`` -- tracked, 50 files, checked out by CI. These
     assertions used to run against an invented stand-in whose stated purpose
     was to avoid reading a corpus that was in the index all along.
     """
@@ -1271,11 +1272,12 @@ Un gemelo digital de voz para entrevistas de trabajo.
 
         # ``sources`` is justified by the FAQ TEMPLATE, not by a live page, and
         # is checked separately below. The other four are claimed to occur in
-        # live content -- and on the reduced population one of them does not,
-        # because the only page spelling it with the accent is one of the four
-        # untracked FAQ pages. So the assertion is "nothing new appeared, and
-        # what is missing is missing for a stated reason", not equality with
-        # the full checkout's set.
+        # live content, and one of them -- ``ver también`` -- used to occur on the
+        # reduced population only, because the page spelling it with the accent
+        # was one of the four untracked FAQ pages; those are committed now, so the
+        # two corpora agree on this. The assertion is still "nothing new appeared,
+        # and what is missing is missing for a stated reason", not equality with a
+        # hard-coded set: a corpus edit may legitimately lose a heading.
         known_unexercised = {"ver también"}
         unexpected = (used - REFERENCE_HEADINGS) | (REFERENCE_HEADINGS - used - known_unexercised - {"sources"})
         assert not unexpected, (
@@ -1397,7 +1399,7 @@ def real_wiki_pipeline(real_wiki_documents):
     test that can catch a chunking "cleanup" that quietly degrades answers:
     a count assertion proves nothing about what the LLM actually receives.
 
-    CORPUS: ``wiki/`` -- 46 files, tracked, present on a clean clone and
+    CORPUS: ``wiki/`` -- 50 files, tracked, present on a clean clone and
     checked out by CI. It is named ``real_wiki_pipeline`` because that is what
     it is, which is the whole point.
 
@@ -1492,14 +1494,20 @@ class TestRetrievalRegressionGuard:
 
         Two populations, two floors, and the run says which one it used:
 
-          * ``full``    49 questions -- the author's working tree, where four
-            FAQ pages exist on disk. Measured 40/49 = 0.8163, floor 0.7755.
-          * ``reduced`` 41 questions -- what ``actions/checkout`` produces, since
-            those four pages are not in the index. Measured 35/41 = 0.8537,
-            floor 0.8049, on the COMMITTED corpus rather than on a working tree
+          * ``full``    the working tree of the checkout running this guard.
+            Measured 40/49 = 0.8163, floor 0.7755.
+          * ``reduced`` ``git show HEAD:`` -- what ``git clone`` serves, and the
+            only population anybody else ever reads. Measured 40/49 = 0.8163,
+            floor 0.7755 on the COMMITTED corpus rather than on a working tree
             (see ``tests/test_committed_corpus_figures.py``).
 
-        A third population is a refusal, not a fallback: see ``measurement_for``.
+        Both are 49 questions and 37 pages since commit ``efda998`` committed
+        the four FAQ pages that used to make ``reduced`` a 41-question
+        population. They are told apart by a digest of the served corpus, not by a
+        count, and the floor they share -- 0.8163 both -- is the coincidence that
+        makes looking necessary.
+
+        A third corpus is a refusal, not a fallback: see ``measurement_for``.
         The report below prints the corpus, the chunker, the embedder, the
         population, the measurement, the floor and every miss -- on every run,
         pass or fail.
@@ -1582,14 +1590,24 @@ class TestRetrievalRegressionGuard:
                 f"the stated tolerance: {measurement.floor} vs "
                 f"{measurement.recall3 - TOLERATED_QUESTIONS / measurement.questions}"
             )
-        assert {m.questions for m in MEASUREMENTS} == {
-            len(LABELLED_CASES), 41,
-        }, (
-            "the calibrated populations are "
-            f"{sorted(m.questions for m in MEASUREMENTS)}; the labelled set has "
-            f"{len(LABELLED_CASES)} questions and the reduced population is 41 "
-            f"(49 minus the 8 whose gold page is not in the index). A third "
-            f"number here means a corpus edit changed the population."
+        assert {m.questions for m in MEASUREMENTS} == {len(LABELLED_CASES)}, (
+            "every calibrated population serves the whole labelled set now: "
+            f"{sorted(m.questions for m in MEASUREMENTS)} against "
+            f"{len(LABELLED_CASES)}. Commit `efda998` committed the four FAQ pages "
+            "the 41-question population was defined by excluding, so a number "
+            "other than 49 here means somebody reintroduced a missing gold page."
+        )
+        assert len({CORPUS_DIGESTS[m.name] for m in MEASUREMENTS}) == len(MEASUREMENTS), (
+            "the calibrated populations are distinguished by a digest of the served "
+            f"corpus, and two of them share one: "
+            f"{[CORPUS_DIGESTS[m.name] for m in MEASUREMENTS]}. Identical digests "
+            "mean `full` and `reduced` are one corpus under two names, which makes "
+            "one of the two rows a figure nobody can check."
+        )
+        assert {m.name for m in MEASUREMENTS} == set(CORPUS_DIGESTS), (
+            "every recorded corpus digest has a Measurement and vice versa: "
+            f"{sorted(m.name for m in MEASUREMENTS)} against "
+            f"{sorted(CORPUS_DIGESTS)}."
         )
 
     def test_no_labelled_question_retrieves_nothing_at_all(
@@ -1873,7 +1891,7 @@ class TestTheRetrievalGuardActuallyRan:
     The guard this file used to ship measured an invented stand-in corpus, and
     a test file, a CI workflow and a helper module all asserted that the real
     ``wiki/`` "is private, is not in this repository, and is not this test's
-    concern". That was false: 46 files, in the index, in ``origin/main``,
+    concern". That was false: 50 files, in the index, in ``origin/main``,
     checked out by CI. So a retrieval guard had been reading the wrong corpus
     and calling it a pass -- and the wrong corpus was a structural clone of
     the right one, with gold pages 6x further from their nearest distractor,
@@ -1891,7 +1909,7 @@ class TestTheRetrievalGuardActuallyRan:
 
     The two failure states are distinguished on purpose:
 
-      * ``wiki/`` absent -- the corpus was removed. The 46 files are tracked
+      * ``wiki/`` absent -- the corpus was removed. The 50 files are tracked
         today; the owner's decision to keep a personal dossier on a public
         remote is a known open issue they have deferred, so this can happen.
       * ``wiki/`` present but a labelled gold page missing -- 4 FAQ pages
@@ -1920,37 +1938,37 @@ class TestTheRetrievalGuardActuallyRan:
         )
 
     def test_the_population_this_corpus_produces_is_a_calibrated_one(self, real_wiki_documents):
-        """Names WHICH state this is, rather than asserting every page is served.
+        """Names WHICH corpus this is, by content, rather than by label count.
 
-        A clean clone legitimately resolves 41 of the 49 labels: four FAQ pages
-        are on disk and not in the index. That is a calibrated population with
-        its own measured floor (35/41), not a broken checkout. What must never
-        be allowed is a THIRD population -- 45, 43, anything -- scored against
-        somebody else's floor.
+        Both calibrated populations now resolve 49 of the 49 labels and load 37
+        pages, so the count can no longer say which one this is -- and a third
+        corpus is now possible WITHOUT changing any count at all, which is the
+        dangerous version: editing one ``wiki/*.md`` used to move nothing a guard
+        could see. The test is therefore the digest, and the assertion below it is
+        that a resolved population serves every gold page.
         """
         population = len(resolved_cases(real_wiki_documents))
         measurement = measurement_for(real_wiki_documents)
         missing = unresolved_gold_pages(real_wiki_documents)
 
         assert measurement is not None, (
-            f"the corpus resolves {population} of {len(LABELLED_CASES)} labelled "
-            f"questions -- a population this guard has no floor for. Unresolved: "
-            f"{missing}. On disk but not tracked: "
-            f"{[p for p in missing if (WIKI_ROOT / p).exists()]}. Re-measure and "
-            f"add a Measurement to tests/real_wiki.py, or restore the pages."
+            f"the served corpus digests to {corpus_digest(real_wiki_documents)[:12]}, "
+            f"which is neither calibrated population "
+            f"({', '.join(f'{name} {digest[:12]}' for name, digest in sorted(CORPUS_DIGESTS.items()))}). "
+            f"It resolves {population} of {len(LABELLED_CASES)} labelled questions "
+            f"and leaves these gold pages unserved: {missing}. Either commit or "
+            f"revert the wiki edit that moved the corpus -- and re-measure the row "
+            f"you moved off -- or add a Measurement for this corpus. Scoring it "
+            f"against a floor derived from another corpus is the mistake this "
+            f"module exists to prevent."
         )
-        assert measurement is not None
-        if population == len(LABELLED_CASES):
-            assert not missing, (
-                f"the full population is claimed but {missing} are unresolved"
-            )
-        else:
-            assert sorted(missing) == sorted(_UNTRACKED_FAQ_PAGES), (
-                f"the reduced population is claimed but the unresolved pages are "
-                f"{sorted(missing)}, not the four untracked FAQ pages "
-                f"{sorted(_UNTRACKED_FAQ_PAGES)}. A different set means the "
-                f"corpus changed in a way the floors were not derived from."
-            )
+        assert not missing, (
+            f"the {measurement.name!r} population is claimed but {missing} are "
+            f"unresolved by the loader. That is a corpus problem, not a population "
+            f"problem: every calibrated population serves all "
+            f"{len(LABELLED_CASES)} gold pages, and the pages above are not among "
+            f"the differences that define one."
+        )
 
 class TestChunkFilterVersionGuardsTheStaleCache:
     """A cache written before this change must not be served after it.
@@ -2079,7 +2097,7 @@ class TestRetrievalThresholdIsHonest:
     ---------------------------------------------------
     These assertions used to run against ``tests/fixtures/retrieval_corpus/``,
     an invented stand-in, on the stated ground that the real wiki was private
-    and untracked. It is neither: 46 files, in the index, checked out by CI.
+    and untracked. It is neither: 50 files, in the index, checked out by CI.
 
     Re-measured 2026-09-29 under ``paraphrase-multilingual-MiniLM-L12-v2`` with
     the identity-prefixed chunk text (124 chunks after the bodyless-heading

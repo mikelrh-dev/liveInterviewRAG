@@ -98,9 +98,9 @@ class Config:
         # replaced, all-MiniLM-L6-v2, is an ENGLISH model, so every Spanish
         # paraphrase paid for the language gap.
         #
-        # CURRENT — the full row measured 2026-09-29 on the working tree, the
-        # reduced row re-measured 2026-10-01 on the COMMITTED corpus. Both
-        # through the production path (real loader, real 400/50 chunker, real
+        # CURRENT — the full row measured on the working tree, the reduced row
+        # re-measured 2026-10-04 on the COMMITTED corpus. Both through the
+        # production path (real loader, real 400/50 chunker, real
         # `expand_query`, strict primary-gold-page match at top_k=3, one chunk
         # per page), on the labelled questions in `tests/real_wiki.py`.
         #
@@ -108,23 +108,29 @@ class Config:
         # to, and the reduced row was previously calibrated on the wrong one.
         # `full` IS the working tree, so its row belongs there. `reduced` is what
         # `git clone` produces, so its row has to be measured on what is
-        # COMMITTED: 15 uncommitted `wiki/*.md` files gave the same 33 pages and
-        # the same 116 chunks with none of the same text, and therefore a
+        # COMMITTED: 15 uncommitted `wiki/*.md` files give the same 37 pages and
+        # the same 124 chunks with none of the same text, and therefore a
         # different ranking. A count that stays right while the text behind it
         # changes is the worst kind of corroboration -- it makes a wrong row
         # look checked. `tests/test_committed_corpus_figures.py` rebuilds that
         # corpus from `git show HEAD:` and holds this row to it.
         #
-        # TWO POPULATIONS, because `wiki/` has two states. Four FAQ pages
+        # TWO POPULATIONS, because `wiki/` has two states, and since commit
+        # `efda998` THE TWO STATES DIFFER ONLY IN TEXT. Four FAQ pages
         # (`nivel-ingles`, `disponibilidad`, `hobbies-intereses`,
-        # `por-que-contratarte`) exist on disk and are NOT in the index, so a
-        # clean clone scores 41 of the 49 labelled questions, not 49. Publishing
-        # only the 49-question figures made this comment describe a corpus a
-        # clone does not have:
+        # `por-que-contratarte`) used to exist on disk without being committed,
+        # so a clone scored 41 of the 49 labelled questions. They are committed
+        # now, so both populations are 37 pages and 49 questions and the only
+        # thing that tells them apart is which fifteen pages are still
+        # uncommitted. Publishing a figure without saying which tree it came from
+        # therefore no longer describes a corpus somebody is missing -- it
+        # describes a corpus somebody is reading with different text:
         #     full (37 pages, 49 questions) recall@1 0.7347 · recall@3 0.8163 · MRR@5 0.7803
-        #     reduced (33 pages, 41 questions) recall@1 0.7561 · recall@3 0.8537 · MRR@5 0.8118
-        # On the full population 40 of 49 gold pages are served, 2 of 49
-        # absent from the ranking entirely.
+        #     reduced (37 pages, 49 questions) recall@1 0.7347 · recall@3 0.8163 · MRR@5 0.7803
+        # `recall@3` is 0.8163 on both, which is the coincidence that hides the
+        # rest: the two rows are selected by a digest of the served corpus
+        # (`tests/real_wiki.py::CORPUS_DIGESTS`), never by a question count.
+        # On both populations 40 of 49 gold pages are served.
         #
         # AT THE SHIPPED top_k=3, WHICH IS A DIFFERENT MEASUREMENT
         # ---------------------------------------------------------
@@ -146,13 +152,19 @@ class Config:
         # row -- because a clone's figure here is not derivable from the
         # author's machine.
         #     top_k=3, full (49 questions)     recall@3 0.8980   (44 of 49)
-        #     top_k=3, reduced (41 questions)  recall@3 0.9268   (38 of 41)
+        #     top_k=3, reduced (49 questions)  recall@3 0.8980   (44 of 49)
         # Both include the BM25 rescue in
         # `backend/services/rag.py::RAGPipeline._lexical_rescue`, which spends one
         # slot in three on a lexical rank over the same chunk text. It is not
-        # lossless: it gains five questions and costs one on the full population,
-        # four and one on the reduced one, and every question on both sides is
-        # recorded by name in `tests/lexical_rescue_losses.py` and held to by
+        # lossless: it gains questions and costs one on each population. The two
+        # rows USED to differ here -- reduced served 45 of 49 and full 44 --
+        # and the difference was published here as evidence that the rescue
+        # trades differently per population. `section_intent` closed that
+        # one-question gap (its label reaches the rescue's chunk text, so a
+        # question the cosine side now ranks correctly no longer needs the
+        # lexical slot), and both rows are 44 again. Every question on both
+        # sides is recorded by name in
+        # `tests/lexical_rescue_losses.py` and held to by
         # `tests/test_lexical_rescue.py`. The wide rows above are unchanged by it
         # -- the rescue only fires when the per-page cut bound, which cannot
         # happen at a top_k wider than the corpus -- which is the reason both

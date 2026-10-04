@@ -18,7 +18,7 @@ figure, and this file is what makes it mean something.
 
 WHAT IS AND IS NOT PINNED
 -------------------------
-Pinned: the top_k=3 recall figure for THIS checkout's population; the structural
+Pinned: the top_k=3 recall figure for THIS checkout's corpus; the structural
 invariant that the rescue only ever changes the LAST rank; the exact set of
 questions it costs and gains; that the cosine filter's published counts are
 untouched; and that a restored embedding cache retrieves exactly what a
@@ -26,7 +26,9 @@ recomputed one does.
 
 Not pinned: that the rescue is lossless. It is not, and pretending otherwise was
 the defect -- see ``tests/lexical_rescue_losses.py`` for the arithmetic that
-rules out every threshold that would have made it so, on both populations.
+rules out every threshold that would have made it so, and for the 2026-10-04
+re-measurement in which the committed corpus stopped paying for the feature at
+all (empty cost set there, one cost question on the working tree).
 
 THE COST SET IS THE INTERESTING ASSERTION
 -----------------------------------------
@@ -34,9 +36,13 @@ THE COST SET IS THE INTERESTING ASSERTION
 rescue costs, by name. A weaker version of this file would assert ``losses <= 1``
 or ``net >= 0``, both of which stay green while the specific question that pays
 for the feature changes underneath a reader who assumed it was the one they had
-approved. The trade is +4 questions on each population, so a growing cost set is
-never the cheap option; if it grows, the honest move is to re-derive it here and
-say so, not to widen an assertion until it fits.
+approved. The trade is +4 questions on the working tree and +5 on the committed
+corpus, so a growing cost set is never the cheap option; if it grows, the honest
+move is to re-derive it here and say so, not to widen an assertion until it fits.
+
+An empty cost set is the same assertion working, not a gap: it is compared
+against a live measurement of the corpus, so a corpus that starts paying for the
+rescue again turns this red rather than passing quietly.
 """
 
 from pathlib import Path
@@ -55,8 +61,10 @@ from tests.real_wiki import (
     CHUNK_OVERLAP,
     CHUNK_SIZE,
     COMMENT_FIGURES,
+    CORPUS_DIGESTS,
     EMBEDDING_MODEL,
     comment_figures_for,
+    corpus_digest,
     load_documents,
     resolved_cases,
 )
@@ -112,11 +120,12 @@ def figures():
     population = len(resolved_cases(documents))
     recorded = comment_figures_for(documents)
     assert recorded is not None, (
-        f"this checkout resolves {population} labelled questions, a population "
-        "with no recorded comment figures. The rows live in "
-        "tests/real_wiki.py::COMMENT_FIGURES; re-measure on the population that "
-        "remains and add a row rather than pointing this guard at another one's "
-        "numbers."
+        f"this checkout serves a corpus that digests to "
+        f"{corpus_digest(documents)[:12]} and has no recorded comment figures. The "
+        "rows live in tests/real_wiki.py::COMMENT_FIGURES, selected by the digest "
+        f"in CORPUS_DIGESTS ({sorted(CORPUS_DIGESTS)}); re-measure on the corpus "
+        "that remains and add a row rather than pointing this guard at another "
+        "corpus's numbers."
     )
     assert recorded.questions == population, (
         f"the row resolved for {recorded.population} is calibrated for "

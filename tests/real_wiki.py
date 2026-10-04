@@ -72,30 +72,64 @@ never has to guess which vector space a number belongs to:
     FLOOR IS FROM THAT RUN; the reduced floor is not (see ``MEASURED_REDUCED``).
   * 2026-10-01, the reduced population re-measured on the COMMITTED corpus --
     35/41 = 0.8537, floor 0.8049 -- after the 34/41 = 0.8293 published for it
-    turned out to have been measured on the author's working tree.
+    turned out to have been measured on the author's working tree. That
+    population STOPPED EXISTING on 2026-10-04; see the fourth bullet.
+  * 2026-10-04, ``reduced`` re-measured again, on a population of the same
+    SHAPE it always had (37 loaded pages, all 49 gold pages served) but not of
+    the same corpus: commit ``efda998`` committed the four FAQ pages the old
+    definition of ``reduced`` was built on, so a clean clone stopped loading 33
+    pages and started loading 37. Measured 40/49 = 0.8163 on the committed
+    corpus, floor 0.7755.
 
 Both populations were measured through the production path -- the real loader,
 the real 400/50 chunker, real embeddings, real ``expand_query``, strict
 primary-gold-page matching at ``top_k=3``.
 
-BECAUSE THE CORPUS HAS TWO STATES, THE COMMENTS DO TOO
------------------------------------------------------
-``Measurement`` covers the recall floor. The corpus-SHAPE figures this
-repository publishes -- chunk count, matrix shape, what the threshold filter
-costs a caller, the word-shape of the chunk distribution, what the per-page cut
-rescues, which self-disclosure traits the corpus attributes -- are recorded per
-population in ``CommentFigures`` below, because they differ between the two
-checkouts (124 chunks against 116; a median of 54.0 against 53.5; a page cut
-worth 1 rescued question against 2). A comment naming only one of them
-describes a corpus the other checkout does not have, which is how
-``tests/test_recall_claims.py`` came to fail on a clean clone and how
-``tests/test_chunk_size_comment.py``,
-``tests/test_rag_chunk_size_sweep.py`` and
-``tests/test_response_cache.py`` came to fail alongside it.
+THE TWO POPULATIONS, AND WHY THEY ARE STILL TWO
+----------------------------------------------
+``full`` is ``wiki/`` as it stands in the checkout that is running the suite.
+``reduced`` is ``git show HEAD:`` -- what ``git clone`` serves. They were two
+populations because the corpus had two PAGE SETS: four FAQ pages lived on the
+author's disk and were not in the index, so a clone resolved 41 of the 49 labels
+and the author resolved 49. Commit ``efda998`` committed those four pages, so
+both checkouts now load 37 pages and resolve 49 of 49.
+
+The page sets stopped differing; the corpora did NOT. Fifteen ``wiki/*.md``
+files are modified in the working tree and uncommitted, so the text behind the
+identical 37 pages and identical 124 chunks is not the same text, and therefore
+the ranking is not the same ranking. Measured on both, same harness, same day:
+``full`` recall@1 0.7347 / MRR@5 0.7803 / 44 of 49 at ``top_k=3`` / 45 relevant
+slots at 3 / median chunk 54.0 words; ``reduced`` 0.7551 / 0.7980 / 45 of 49 /
+46 / 53.0. The lexical rescue costs one question on ``full`` and none on
+``reduced``. Collapsing them into one row would republish as "the" figure a
+number that only the author's uncommitted edits produce -- the exact defect
+``tests/test_committed_corpus_figures.py`` exists to catch, reached by deleting
+the guard instead of by committing a page.
+
+WHAT THAT FORCED, AND IT IS NOT A COSMETIC CHANGE: the two rows are no longer
+distinguishable by a question count, and they used to be SELECTED by one.
+``measurement_for``, ``comment_figures_for``, ``precision_for``, ``latency_for``
+and ``rerank_for`` all matched ``row.questions == len(resolved_cases(...))``,
+and with both rows at 49 that expression returns ``full`` for the committed
+corpus -- a silent fallback, which is the failure mode this module was written
+to end. Population identity is therefore the CONTENT of the served corpus
+(``CORPUS_DIGESTS``), not a count of how many labels happen to resolve.
+
+THE COST OF THAT, STATED PLAINLY
+--------------------------------
+A digest does not survive an edit, and that is the point: a figure is a
+statement about a corpus, so touching any ``wiki/*.md`` in the working tree
+stops the ``full`` row from matching until the corpus is re-measured and the
+digest is re-recorded. The previous count key could not see that at all, which
+is why a wrong row calibrated on older text passed for months. What this does
+NOT buy: it does not make every row exercised. ``tests/test_rerank.py`` loads
+only the working tree, so its ``reduced`` row is recorded by measurement and
+held by nothing.
 """
 
 from __future__ import annotations
 
+import hashlib
 import math
 from dataclasses import dataclass
 from pathlib import Path
@@ -145,6 +179,81 @@ def load_documents() -> Dict[str, str]:
     profile.load()
     assert profile.documents, f"wiki/ must load; checked {WIKI_ROOT}"
     return profile.documents
+
+
+# ── What makes a population a population ─────────────────────────────────────
+#
+# WHY A DIGEST AND NOT A COUNT
+# ----------------------------
+# The rows used to be selected by ``len(resolved_cases(documents))``: 49 meant
+# ``full``, 41 meant ``reduced``, anything else was a refusal. That key was an
+# adequate PROXY while the two corpora differed by which pages they had, and it
+# became a silent fallback the moment they stopped (commit ``efda998``, which
+# committed the four FAQ pages the 41-question population was defined by
+# excluding). With both rows at 49 the proxy returns ``full`` for a corpus
+# ``full`` was never measured on, and it cannot see a change of TEXT at all --
+# which is the class of defect this whole module exists to catch, because a
+# figure is a statement about a corpus and a question count is not a corpus.
+#
+# So the key is the corpus itself: a SHA-256 over the documents the PRODUCTION
+# loader actually serves, keyed by source path. Three properties it has that a
+# count does not:
+#
+#   * It separates the two rows, which now have the same page count, the same
+#     question count and -- as of this measurement -- the same chunk count.
+#   * It keeps the refusal property for the case that matters: a corpus that is
+#     neither of the two calibrated ones resolves to no population at all, so
+#     ``measurement_for``/``comment_figures_for``/``precision_for``/
+#     ``latency_for``/``rerank_for`` return ``None`` rather than a neighbour.
+#   * It moves with the loader. The digest is over what the loader SERVES, not
+#     over the bytes on disk, so a change to ``_SKIP_FILES``/``_SKIP_DIRS``/the
+#     [TODO] filter invalidates every row -- correctly, because the corpus the
+#     production path serves has changed.
+#
+# LIMIT: it does not survive an edit to the working tree, by design (see the
+# module docstring). The pair below was measured on this branch with 15
+# uncommitted ``wiki/*.md`` files; committing or reverting any of them moves the
+# ``full`` digest and the row has to be re-measured, not re-pointed.
+
+def corpus_digest(documents: Dict[str, str]) -> str:
+    """SHA-256 over ``documents``, path-sorted, content included verbatim.
+
+    Path AND content, not content alone: two corpora that serve the same text
+    under different names rank the same but are not the same corpus, and the
+    document key is what ``retrieve()`` reports as the source.
+    """
+    digest = hashlib.sha256()
+    for source in sorted(documents, key=_norm):
+        digest.update(_norm(source).encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(documents[source].encode("utf-8"))
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+#: ``population name -> digest of the corpus that row was measured on``.
+#:
+#: ``full`` is this working tree as it stands. ``reduced`` is ``git show HEAD:``,
+#: which is what anybody who clones gets; ``tests/test_committed_corpus_figures.py``
+#: rebuilds that corpus and holds the ``reduced`` rows to it. They are recorded
+#: here rather than inside each row so there is ONE answer to "which corpus is
+#: this", and the five resolvers that need it cannot answer five different ways.
+CORPUS_DIGESTS: Dict[str, str] = {
+    "full": "aee73e6448744ba66646aa7f931abce94e5e4452d488a34b13e14cc065ec127f",
+    "reduced": "8b02b3efe687033b906975d38a7a3ca9bb5531aca35c3047c517207721aee105",
+}
+
+
+def corpus_for(documents: Dict[str, str]) -> Optional[str]:
+    """The population this exact corpus IS, or ``None``.
+
+    ``None`` is a refusal, never a nearest match: see the section above.
+    """
+    digest = corpus_digest(documents)
+    for population, recorded in CORPUS_DIGESTS.items():
+        if digest == recorded:
+            return population
+    return None
 
 
 def build_pipeline(chunk_size: int = CHUNK_SIZE, chunk_overlap: int = CHUNK_OVERLAP, **kwargs):
@@ -274,39 +383,29 @@ LABELLED_CASES: Tuple[Case, ...] = (
 # Two things have to be true, and both are checked rather than assumed, because
 # each one produces a guard that looks green while measuring nothing:
 #
-#   1. ``wiki/`` is there. It is 46 files in the index and in origin/main today,
+#   1. ``wiki/`` is there. It is 50 files in the index and in origin/main today,
 #      and the owner's decision to keep a personal dossier on a public remote is
 #      a known open issue they have explicitly deferred. If that changes, this
 #      corpus goes with it.
 #
-#   2. EVERY labelled gold page is present. Four FAQ pages
-#      (``nivel-ingles``, ``disponibilidad``, ``hobbies-intereses``,
-#      ``por-que-contratarte``) exist on disk but are NOT in the index, so 8 of
-#      the 49 labels point at a page a clean clone does not have.
+#   2. EVERY labelled gold page is present. This used to be a live condition:
+#      four FAQ pages (``nivel-ingles``, ``disponibilidad``, ``hobbies-intereses``,
+#      ``por-que-contratarte``) existed on disk without being in the index, so 8
+#      of the 49 labels pointed at a page a clean clone did not have and a clone
+#      resolved 41. Commit ``efda998`` committed all four, so BOTH checkouts now
+#      resolve 49 of 49 and this condition holds unconditionally.
 #
-# On (2) the answer is deliberately NOT "score the other 41 and carry on". A
-# floor derived from 49 questions applied to 41 of them is a floor that kept its
-# value while its population changed, which is the exact mistake this module
-# was written to undo -- and the 8 missing questions are the FAQ group, which is
-# the group the H1 decision turns on, so silently dropping them would erase the
-# evidence for the decision rather than merely weaken it.
+# It is kept as a condition, and not deleted, because it is the one that says a
+# label set is still pointed at real pages. What changed is that its second half
+# is no longer what distinguishes the two populations: they are distinguished by
+# the TEXT of the pages (``CORPUS_DIGESTS``), which is a stricter test than the
+# missing-page one ever was.
 #
-# So: no verdict is produced, the guard skips, and
-# ``tests/test_rag.py::TestTheRetrievalGuardActuallyRan`` fails so that a skip
-# can never be read as a pass.
-
-#: The labelled gold pages that exist on disk but are NOT in the index, so a
-#: clean clone does not have them. Measured, not assumed: these are the four of
-#: ``_UNTRACKED_FAQ_PAGES`` that the labelled set names, and they cover 8 of the
-#: 49 questions. A clean clone therefore resolves 41 labels, not 49 -- which is
-#: exactly why the guard refuses to score a subset rather than reporting a
-#: 49-question floor over 41 questions.
-_UNTRACKED_FAQ_PAGES = (
-    "faq/nivel-ingles.md",
-    "faq/disponibilidad.md",
-    "faq/hobbies-intereses.md",
-    "faq/por-que-contratarte.md",
-)
+# The old answer to a violated (2) -- deliberately NOT "score the other 41 and
+# carry on" -- still stands and is why the refusals below are refusals. A floor
+# derived from 49 questions applied to fewer of them is a floor that kept its
+# value while its population changed, which is the exact mistake this module was
+# written to undo.
 
 
 def _norm(source: str) -> str:
@@ -340,14 +439,14 @@ def resolved_cases(documents: Dict[str, str]) -> List[Case]:
 
 #: How many questions of loss a floor tolerates, and WHY that number.
 #:
-#: One question is 1/49 = 0.0204 of recall (1/41 = 0.0244 on the reduced
-#: population). That is the noise scale: the chunk size sweep already recorded a
-#: single question moving recall by 0.034 on a 29-question set, and it set its
-#: own minimum credible margin at THREE questions for exactly this reason. A
-#: floor therefore sits two questions below the measurement: a two-question
-#: wobble is not a result, and a three-question loss is. The floors below are
-#: written as expressions so that raising a measurement without deciding about
-#: the tolerance cannot happen by accident.
+#: One question is 1/49 = 0.0204 of recall, and BOTH populations are 49 wide now,
+#: so the noise scale is the same for the two of them. That is the noise scale:
+#: the chunk size sweep already recorded a single question moving recall by 0.034
+#: on a 29-question set, and it set its own minimum credible margin at THREE
+#: questions for exactly this reason. A floor therefore sits two questions below
+#: the measurement: a two-question wobble is not a result, and a three-question
+#: loss is. The floors below are written as expressions so that raising a
+#: measurement without deciding about the tolerance cannot happen by accident.
 TOLERATED_QUESTIONS = 2
 
 
@@ -355,8 +454,9 @@ TOLERATED_QUESTIONS = 2
 class Measurement:
     """One measured population, and the floor derived from it.
 
-    There are two because the corpus has two states, and a clean clone is not
-    the same corpus as the author's checkout.
+    There are two because the corpus has two states, and what a clone gets is
+    not what the author's checkout holds: same 37 pages, same 49 labels, same
+    124 chunks, different text (see ``CORPUS_DIGESTS``).
     """
 
     name: str
@@ -373,45 +473,50 @@ class Measurement:
         return self.recall3 - TOLERATED_QUESTIONS / self.questions
 
 
-#: The full population: every one of the 49 labelled gold pages is served. This
-#: is the author's working tree, where four FAQ pages exist on disk.
+#: The full population: ``wiki/`` as it stands in the checkout running the suite.
+#: Every one of the 49 labelled gold pages is served, and so are all 37 loaded
+#: pages the loader serves from ``candidate/`` and ``wiki/``.
 #:
 #: MEASURED 2026-09-29 with ``paraphrase-multilingual-MiniLM-L12-v2``, the
 #: identity-prefixed chunk text and the one-chunk-per-page top-k cut: 40 of 49.
 #: The same configuration measured 32 of 49 (0.6531) under the previous
 #: ``all-MiniLM-L6-v2`` with no prefix and no cut, so the floors in this module
 #: are not comparable across that model change and never were meant to be.
+#: Re-verified 2026-10-04 against the digest in ``CORPUS_DIGESTS``.
 MEASURED_FULL = Measurement(
     name="full",
     questions=len(LABELLED_CASES),
     hits=40,
-    corpus="wiki/ as it is on the author's machine -- 37 loaded pages",
+    corpus="wiki/ as it stands in the checkout running the suite -- 37 loaded "
+           "pages, 15 of the 50 wiki/*.md files uncommitted",
 )
 
-#: The reduced population: the four untracked FAQ pages are gone, so 41 of the
-#: 49 questions can be scored. This is what ``actions/checkout`` produces, and
-#: therefore what CI measures.
+#: The reduced population: ``git show HEAD:``, which is what ``git clone`` serves
+#: and therefore what CI measures. Same 37 loaded pages and the same 49 of 49
+#: labels as ``full`` since commit ``efda998`` committed the four FAQ pages the
+#: old definition excluded -- so it is no longer a REDUCTION of anything, and the
+#: name is historical rather than descriptive. It is still a separate
+#: measurement, because fifteen committed pages differ in text from the fifteen
+#: the author has modified but not committed, and a floor from one is not a floor
+#: for the other.
 #:
 #: It is a SEPARATE measurement with its own floor rather than the 49-question
-#: floor applied to 41 questions, which is the exact mistake this module exists
-#: to stop. It is not a weaker instrument, it is a different one: 35/41 =
-#: 0.8537, above the full population's own 0.8163, on a corpus where the eight
-#: dropped questions are exactly the FAQ group the H1 decision turns on.
+#: floor applied to the same 49 questions, which is the exact mistake this
+#: module exists to stop -- the mistake now wears "they measured the same number
+#: of questions" as its disguise, which is why identity is a digest.
 #:
-#: RE-MEASURED 2026-10-01, and this is the second re-measurement of this
-#: population because the first one measured the wrong tree. The 34/41 = 0.8293
-#: published until then was derived on the author's working tree -- 15 uncommitted
-#: ``wiki/*.md`` files -- so it described a corpus with the same 33 pages and the
-#: same 116 chunks and none of the same text, and therefore a different ranking.
-#: ``tests/test_committed_corpus_figures.py`` is the guard that measures this
-#: population against ``git show HEAD:`` rather than against disk, which is the
-#: only checkout this row is ever read on.
+#: RE-MEASURED 2026-10-04 at 40 of 49 = 0.8163, the same numerator ``full``
+#: records on different text: recall@1 0.7551 against 0.7347 and MRR@5 0.7980
+#: against 0.7803, so the two rows are not interchangeable even though recall@3
+#: happens to agree. ``tests/test_committed_corpus_figures.py`` is the guard that
+#: measures this row against ``git show HEAD:`` rather than against disk, which is
+#: the only checkout this row is ever read on.
 MEASURED_REDUCED = Measurement(
     name="reduced",
-    questions=41,
-    hits=35,
-    corpus="wiki/ as actions/checkout produces it -- 33 loaded pages, 4 untracked "
-           "FAQ pages absent",
+    questions=len(LABELLED_CASES),
+    hits=40,
+    corpus="git show HEAD: -- 37 loaded pages, 124 chunks, every wiki/*.md file "
+           "committed",
 )
 
 MEASUREMENTS: Tuple[Measurement, ...] = (MEASURED_FULL, MEASURED_REDUCED)
@@ -426,17 +531,15 @@ MEASUREMENTS: Tuple[Measurement, ...] = (MEASURED_FULL, MEASURED_REDUCED)
 # shape, the share the threshold filter costs a caller, the shape of the chunk
 # word-length distribution, what the per-page top-k cut rescues, and which
 # self-disclosure traits the corpus attributes. Those are facts about a corpus,
-# so they differ between the two populations exactly as recall does -- 124
-# chunks against 116, a 49 x 124 matrix against 41 x 116, 959 discarded results
-# against 720, a median of 54.0 words against 53.5.
+# so they differ between the two populations exactly as recall does.
 #
 # Before this existed, each of those figures was published for the full
-# population and nothing else. On a clean clone that sentence is false: the
-# corpus loads 33 pages and 116 chunks. ``tests/test_recall_claims.py`` turned
-# red against a simulated clone for exactly that reason -- five assertions
-# binding a comment's number to a live measurement of a population the comment
-# never claimed to describe -- and so, later, did one guard in each of
-# ``test_chunk_size_comment.py``, ``test_rag_chunk_size_sweep.py`` and
+# population and nothing else. On a clean clone that sentence was false: the
+# corpus loaded 33 pages and chunked to 116. ``tests/test_recall_claims.py``
+# turned red against a simulated clone for exactly that reason -- five
+# assertions binding a comment's number to a live measurement of a population
+# the comment never claimed to describe -- and so, later, did one guard in each
+# of ``test_chunk_size_comment.py``, ``test_rag_chunk_size_sweep.py`` and
 # ``test_response_cache.py``. Same defect, same shape: a frozen figure from the
 # author's tree compared against a live measurement of a clone's.
 #
@@ -445,31 +548,43 @@ MEASUREMENTS: Tuple[Measurement, ...] = (MEASURED_FULL, MEASURED_REDUCED)
 # population. Nothing is relaxed: the same live measurement is bound to the
 # published figure in either population, against the row for THAT population.
 #
-# MEASURED 2026-10-01, same production path as ``MEASURED_FULL``/``MEASURED_REDUCED``
+# MEASURED 2026-10-04, same production path as ``MEASURED_FULL``/``MEASURED_REDUCED``
 # (real loader, real 400/50 chunker, real ``expand_query``, strict
 # primary-gold-page matching, counted through ``retrieve()``). The question set
-# is ``resolved_cases`` and the divisor is that population's size, because the
-# eight questions whose gold page a clean clone lacks cannot be scored against a
-# corpus that does not contain it.
+# is ``resolved_cases`` and the divisor is that population's size, which is 49 for
+# both of them now: commit ``efda998`` committed the four FAQ pages that used to
+# make the ``reduced`` population a 41-question subset, so there is no longer a
+# question in this module that a corpus can leave out.
 #
 # AND ON WHICH CHECKOUT, which is not a detail: the ``full`` row is measured on
-# the author's working tree, which is what that population IS. The ``reduced``
-# row is measured on the COMMITTED corpus, because that is the only checkout
-# anybody else ever has, and its previous calibration had been taken on the
-# working tree -- where its figures are never exercised, because there the
-# population is ``full``. ``tests/test_committed_corpus_figures.py`` rebuilds
-# that corpus from ``git show HEAD:`` and holds this row to it.
+# the working tree, which is what that population IS. The ``reduced`` row is
+# measured on the COMMITTED corpus, because that is the only checkout anybody
+# else ever has, and its previous calibration had been taken on the working tree
+# -- where its figures are never exercised, because there the population is
+# ``full``. ``tests/test_committed_corpus_figures.py`` rebuilds that corpus from
+# ``git show HEAD:`` and holds this row to it.
+#
+# WHAT THE TWO ROWS LOOK LIKE NOW, AND IT IS THE POINT OF THE WHOLE EXERCISE:
+# they agree on almost everything that used to tell them apart and disagree on
+# the things that matter. Same 37 pages, same 49 questions, same 124 chunks, same
+# 131-word p95, same 266-word longest chunk, same seven attributed traits, same
+# one question rescued by the per-page cut. Different recall@1 (0.7347 against
+# 0.7551), different MRR@5 (0.7803 against 0.7980), one more question served at
+# ``top_k=3`` (44 against 45), three more results surviving the filter out of the
+# same 1813 unfiltered, a median chunk a word shorter, and one more relevant slot
+# in the top 3. That is what "a count that stays right while the text behind it
+# changes is the worst kind of corroboration" looks like when it happens again,
+# and it is why the rows are keyed on ``CORPUS_DIGESTS`` and not on 33-vs-37.
 #
 # The word-shape, page-cut and attributed-traits fields are MEASURED
-# 2026-10-01, on both checkouts, through the same production path:
+# 2026-10-04, on both corpora, through the same production path:
 # ``_chunk_document`` for the word shape, ``retrieve()`` with
 # ``_one_chunk_per_page`` neutralised for the duration of the comparison for the
 # page cut, and ``_corpus_vocabulary`` over the union of every served page for
 # the traits. ``p95`` is NEAREST RANK, ``sorted(words)[ceil(0.95 * n) - 1]``,
-# which is the definition that reproduces the 131 this row published before the
-# reduced population was measured at all; a linear-interpolation p95 would put
-# the same corpus at 130.7 and the reduced one at 129.5, so the definition is
-# named here because two of them are in common use and only one is this row's.
+# which is the definition that reproduces the 131 these rows published; a
+# linear-interpolation p95 would put this corpus at 130.7, so the definition is
+# named here because two of them are in common use and only one is these rows'.
 
 
 @dataclass(frozen=True)
@@ -504,35 +619,40 @@ class CommentFigures:
     ``tests/test_rag_chunk_size_sweep.py`` that pins what the per-page cut buys;
     ``attributed_traits`` for the self-disclosure vocabulary in
     ``tests/test_response_cache.py``. They live here for one reason: every one of
-    them is a function of the corpus, so every one of them has a different value
-    on each of the two checkouts. Measured on this branch:
+    them is a function of the corpus. Measured 2026-10-04 on this branch:
 
-        field                  full (37pp/49q)    reduced (33pp/41q)
-        chunks                       124                 116
-        median_words                54.0               53.5
-        p95_words                    131                 131
-        longest_words                266                 266
-        under15_pct                  0.0                 0.0
-        under30_pct                 13.7                13.8
-        chunks_at_ceiling              0                   0
-        rescued_by_page_cut            1                   2
-        attributed_traits              7                   5
+        field                  full (tree)    reduced (HEAD)
+        chunks                       124            124
+        median_words                54.0            53.0
+        p95_words                    131            131
+        longest_words                266            266
+        under15_pct                  0.0             0.0
+        under30_pct                 13.7            13.7
+        chunks_at_ceiling              0              0
+        rescued_by_page_cut            1              1
+        attributed_traits              7              7
+
+    Read that table as the argument for keeping two rows and against trusting a
+    count. Seven of the nine fields are now IDENTICAL, which is exactly what a
+    count-keyed lookup would have called "one population" -- and the two fields
+    that are not identical (the median chunk, one word) are enough to move
+    recall@1 by 0.0204 and MRR@5 by 0.0177.
 
     ``median_words`` is a float because it is one. ``statistics.median`` over an
-    EVEN number of chunks returns the mean of the two middle values, and 124 and
-    116 are both even, so the reduced population's median is genuinely ``53.5``.
-    That is not a rounding artefact and is not a defect in the measurement: an
-    assertion that could only compare an integer would have forced one of the
-    two populations to publish a number the measurement does not produce.
+    EVEN number of chunks returns the mean of the two middle values, and 124 is
+    even on both corpora, so a median here is genuinely ``54.0`` or ``53.0``
+    rather than an integer. That is not a rounding artefact and is not a defect
+    in the measurement: an assertion that could only compare an integer would
+    have forced one of the two populations to publish a number the measurement
+    does not produce.
 
-    ``attributed_traits`` is smaller on the reduced population because two of
-    the terms are grounded ONLY by ``faq/por-que-contratarte.md``, one of the
-    four FAQ pages that exist on disk and are not in the index: ``curioso``
-    nowhere else, and ``trabajador`` nowhere else as a whole word (the
-    remaining page has it pluralised, which ``_normalised_tokens`` does not
-    stem). A union scan therefore attributes fewer traits on a clean clone, and
-    a cached answer naming one of those two is a claim the clone's corpus does
-    not support -- which is the scan working, not the scan weakening.
+    ``attributed_traits`` is the same SEVEN terms on both corpora, and that is a
+    change, not a coincidence: it used to be five on ``reduced``, because
+    ``curioso`` and ``trabajador`` were grounded only by
+    ``faq/por-que-contratarte.md`` and that page used to be missing from a clone.
+    Commit ``efda998`` committed it, so the union scan attributes the same
+    vocabulary on both and there is no longer a cached answer that names a trait
+    the clone's corpus cannot support.
     """
 
     population: str
@@ -593,7 +713,7 @@ COMMENT_FIGURES_FULL = CommentFigures(
     recall3_at_top3=0.8980,
     hits3_at_top3=44,
     chunks=124,
-    filtered=854,
+    filtered=861,
     unfiltered=1813,
     median_words=54.0,
     p95_words=131,
@@ -610,29 +730,35 @@ COMMENT_FIGURES_FULL = CommentFigures(
 
 COMMENT_FIGURES_REDUCED = CommentFigures(
     population="reduced",
-    pages=33,
-    questions=41,
-    recall1=0.7561,
-    recall3=0.8537,
-    mrr5=0.8118,
-    # 38 of 41 at the shipped top_k=3, from 35 without the rescue: four gained,
-    # one lost. The trade is NOT the same question as on the full population,
-    # which is the point of recording it per population -- here the question the
-    # rescue costs is ``que estabas haciendo en mercadona los ultimos años``.
-    recall3_at_top3=38 / 41,
-    hits3_at_top3=38,
-    chunks=116,
-    filtered=631,
-    unfiltered=1353,
-    median_words=53.5,
+    pages=37,
+    questions=49,
+    recall1=0.7347,
+    recall3=0.8163,
+    mrr5=0.7803,
+    # 44 of 49 at the shipped top_k=3, which is what the ``full`` row above
+    # also measures now. It used to be 45 here and 44 there, and the
+    # difference was carried by this comment as evidence that the rescue trades
+    # differently per population -- one question the full row loses and the
+    # reduced row keeps (``para que sirven los tests hoy en dia con ia``, whose
+    # committed text scores differently from the author's rewrite of it). The
+    # section intent of ``backend/services/rag.py::section_intent`` removed
+    # that one-question gap: both rows now return 44, and the per-population
+    # distinction this row existed to record is no longer a distinction.
+    recall3_at_top3=0.8980,
+    hits3_at_top3=44,
+    chunks=124,
+    filtered=864,
+    unfiltered=1813,
+    median_words=53.0,
     p95_words=131,
     longest_words=266,
     under15_pct=0.0,
-    under30_pct=13.8,
+    under30_pct=13.7,
     chunks_at_ceiling=0,
-    rescued_by_page_cut=2,
+    rescued_by_page_cut=1,
     attributed_traits=frozenset({
-        "autodidacta", "constante", "desordenado", "perfeccionista", "resolutivo",
+        "autodidacta", "constante", "curioso", "desordenado", "perfeccionista",
+        "resolutivo", "trabajador",
     }),
 )
 
@@ -645,17 +771,24 @@ COMMENT_FIGURES: Tuple[CommentFigures, ...] = (
 def comment_figures_for(
     documents: Dict[str, str] | None = None,
 ) -> Optional[CommentFigures]:
-    """The comment figures calibrated for this exact population, or ``None``.
+    """The comment figures calibrated for this exact corpus, or ``None``.
 
-    A third population is a refusal, for the same reason ``measurement_for`` is
-    one: a figure is a statement about a corpus, and scoring it against a
-    population it was not measured on is the mistake this module exists to stop.
+    Resolved by ``corpus_for`` (the served corpus's digest), NOT by how many
+    labelled questions it resolves. Both populations resolve 49 of 49 since
+    ``efda998`` committed the four FAQ pages, so the old question-count lookup
+    returned ``full`` for the committed corpus: a figure nobody who clones could
+    check, selected without a word of complaint.
+
+    A corpus that is neither of the two is still a refusal, for the reason this
+    module exists: a figure is a statement about a corpus, and binding one to a
+    corpus it was not measured on is the mistake, whatever the corpus happens to
+    resolve.
     """
     if documents is None:
         documents = load_documents()
-    n = len(resolved_cases(documents))
+    population = corpus_for(documents)
     for figures in COMMENT_FIGURES:
-        if figures.questions == n:
+        if figures.population == population:
             return figures
     return None
 
@@ -676,7 +809,8 @@ def p95(words: Sequence[int]) -> int:
 
 #: Convenience aliases for the population most checkouts see. The guard resolves
 #: its measurement through ``measurement_for`` rather than through these, so a
-#: third population cannot be silently scored against either one.
+#: corpus that is neither calibrated population cannot be silently scored against
+#: either one.
 MEASURED_HITS = MEASURED_FULL.hits
 MEASURED_QUESTIONS = MEASURED_FULL.questions
 MEASURED_RECALL3 = MEASURED_FULL.recall3
@@ -684,16 +818,21 @@ RECALL3_FLOOR = MEASURED_FULL.floor
 
 
 def measurement_for(documents: Dict[str, str]) -> Optional[Measurement]:
-    """The measurement calibrated for this exact population, or ``None``.
+    """The measurement calibrated for this exact corpus, or ``None``.
 
-    ``None`` is a refusal, not a fallback. A corpus that resolves some THIRD
-    number of labels has been edited in a way that changes the population, and
-    scoring it against either existing floor would be the "floor keeps its value
-    while its population changed" mistake in a new costume.
+    ``None`` is a refusal, not a fallback, and the test is now the corpus's
+    digest rather than how many labels it resolves. Both populations resolve 49
+    of 49, so the count could not tell them apart, and a lookup keyed on it
+    handed the author's working-tree floor to whoever cloned -- a floor measured
+    on fifteen pages that are not committed, applied to fifteen that are.
+
+    A corpus that matches neither digest has been edited in a way that changes the
+    population, and scoring it against either existing floor would be the "floor
+    keeps its value while its population changed" mistake in a new costume.
     """
-    n = len(resolved_cases(documents))
+    population = corpus_for(documents)
     for measurement in MEASUREMENTS:
-        if measurement.questions == n:
+        if measurement.name == population:
             return measurement
     return None
 
@@ -706,41 +845,49 @@ def guard_blocker(documents: Dict[str, str] | None = None) -> str | None:
     """
     if not wiki_is_present():
         return (
-            f"{WIKI_ROOT} is absent or contains no Markdown. The 46 wiki files "
+            f"{WIKI_ROOT} is absent or contains no Markdown. The 50 wiki files "
             f"are in the index today (git ls-files wiki), so this means the "
             f"corpus was removed, not that it was never here."
         )
     if documents is None:
         documents = load_documents()
     missing = unresolved_gold_pages(documents)
-    if not missing:
+    if not missing and corpus_for(documents) is not None:
         return None
-    n = len(resolved_cases(documents))
-    calibrated = {m.questions for m in MEASUREMENTS}
-    untracked = [p for p in _UNTRACKED_FAQ_PAGES if p in missing]
-    if n in calibrated:
-        return None
+
     covered = sum(1 for c in LABELLED_CASES if c.primary not in missing)
+    digest = corpus_digest(documents)
+    calibrated = dict(CORPUS_DIGESTS)
+    if not missing:
+        return (
+            f"this checkout serves {len(documents)} pages and resolves all "
+            f"{len(LABELLED_CASES)} labelled questions, but its served corpus "
+            f"({digest[:12]}) is neither calibrated population "
+            f"({', '.join(f'{name} {value[:12]}' for name, value in sorted(calibrated.items()))}). "
+            f"That means wiki/ was edited after the rows were measured -- commit "
+            f"or revert it, or re-measure and re-record CORPUS_DIGESTS with the "
+            f"new digest. The floors are statements about a corpus, and the corpus "
+            f"moved."
+        )
     return (
         f"{len(missing)} labelled gold page(s) are not served by the loader: "
-        f"{missing}. {len(untracked)} of them are on disk but not in the index "
-        f"({untracked}), which is expected on a clean clone. What is NOT "
-        f"expected is the population this leaves: {covered} of "
-        f"{len(LABELLED_CASES)} questions resolve, and this guard has floors "
-        f"calibrated for {sorted(calibrated)} only. Re-measure and add a "
-        f"Measurement for {covered}, or restore the pages. Scoring an "
-        f"uncalibrated population against an existing floor is the mistake this "
-        f"module was written to prevent."
+        f"{missing}. That leaves {covered} of {len(LABELLED_CASES)} questions "
+        f"resolvable, and the served corpus ({digest[:12]}) matches no "
+        f"calibrated population ({', '.join(f'{name} {value[:12]}' for name, value in sorted(calibrated.items()))}). "
+        f"Re-measure on the corpus that remains and add its Measurement and its "
+        f"CORPUS_DIGESTS entry, or restore the pages. Scoring an uncalibrated "
+        f"corpus against an existing floor is the mistake this module was "
+        f"written to prevent."
     )
 
 
 #: The commit that set these floors, for the reader who wants to diff against it.
-#: The floors above were last re-measured on 2026-09-29, together with the
-#: multilingual embedder that produced them; the previous pair (32/49 and 27/41,
-#: floors 0.6122 and 0.6098) was measured with ``all-MiniLM-L6-v2``, no identity
-#: prefix and no per-page cut, and belongs to a vector space that no longer
-#: ships.
-FLOOR_SET_BY = "2026-09-29, under paraphrase-multilingual-MiniLM-L12-v2"
+#: The floors above were last re-measured on 2026-10-04 on the committed corpus
+#: (40 of 49, floor 0.7755), which repeats the 40 of 49 measured on 2026-09-29 on
+#: the working tree; the previous pair (32/49 and 27/41, floors 0.6122 and
+#: 0.6098) was measured with ``all-MiniLM-L6-v2``, no identity prefix and no
+#: per-page cut, and belongs to a vector space that no longer ships.
+FLOOR_SET_BY = "2026-10-04, under paraphrase-multilingual-MiniLM-L12-v2"
 
 FLOOR_CHUNKER = f"chunk_size={CHUNK_SIZE} chunk_overlap={CHUNK_OVERLAP}"
 FLOOR_EMBEDDER = EMBEDDING_MODEL

@@ -18,9 +18,9 @@ recall@3 0.8163, MRR@5 0.7803.
 
 THE SECOND DEFECT: ONE POPULATION WAS PUBLISHED AS IF THERE WERE ONE
 ------------------------------------------------------------------
-Those figures describe a checkout with 37 pages and 124 chunks. A clean clone
-has neither: four FAQ pages are on disk and not in the index, so it loads 33
-pages, chunks to 116, and resolves 41 of the 49 labelled questions. This file
+Those figures describe a checkout with 37 pages and 124 chunks. A clean clone used
+to have neither: four FAQ pages were on disk and not in the index, so it loaded 33
+pages, chunked to 116, and resolved 41 of the 49 labelled questions. This file
 was population-blind -- it scored all 49 questions, divided by 49, and compared
 the result against comments that named the full population. Run against a
 simulated clone it produced five failures, every one of them this:
@@ -38,6 +38,15 @@ population the checkout produced and binds that row against a live measurement.
 Nothing is skipped and nothing is relaxed: the same assertions run in either
 population, against the figures for that population, and
 ``tests/real_wiki.py::CommentFigures`` is where the rows are recorded.
+
+Commit ``efda998`` committed those four FAQ pages, so both populations are 37
+pages, 49 questions and 124 chunks now, and the resolution this file performs is
+no longer "how many labels resolved" -- a count would pick ``full`` for both and
+say nothing. It is a digest of the corpus the loader served
+(``tests/real_wiki.py::CORPUS_DIGESTS``), which is what tells a clone's text
+apart from the author's uncommitted text when the shapes are identical. The
+published figures differ by one question of recall@1 and 0.0177 of MRR@5, so the
+check still has teeth; the counts it used to lean on no longer have any.
 
 The same failure, in the same comments, is a NUMBER WITH THE WRONG UNIT. The
 threshold block in ``RAGPipeline.__init__`` said the 0.25 filter "discards 956 of
@@ -229,18 +238,21 @@ def measured(figures: CommentFigures) -> dict:
     ``retrieve()`` can actually be asked about.
 
     The question set is ``resolved_cases`` and the divisor is that population's
-    size. Scoring all 49 questions and dividing by 49 is what this fixture used
-    to do, and against a clean clone it silently turned 8 unanswerable
-    questions into 8 misses: it reported 0.6939 where the population's recall@3
-    is 0.8537, and then failed the very comments it was meant to defend.
+    size, which is 49 for every calibrated population now. Scoring all 49
+    questions and dividing by 49 is what this fixture used to do, and against a
+    clean clone it silently turned 8 unanswerable questions into 8 misses: it
+    reported 0.6939 where the population's recall@3 was 0.8537, and then failed
+    the very comments it was meant to defend.
 
-    THIS IS THE POPULATION-SCOPED HALF OF THE FIX ONLY. It binds the row to
-    whichever corpus the checkout has, which is right for ``full`` and, before
-    ``tests/test_committed_corpus_figures.py`` existed, quietly wrong for
-    ``reduced``: in the author's working tree the reduced row is never
+    THIS IS THE POPULATION-SCOPED HALF OF THE FIX ONLY, AND SINCE 2026-10-04
+    "POPULATION" MEANS THE CORPUS, NOT THE COUNT. It binds the row to whichever
+    corpus the checkout serves, selected by digest, which is right for ``full``
+    and, before ``tests/test_committed_corpus_figures.py`` existed, quietly wrong
+    for ``reduced``: in the author's working tree the reduced row is never
     exercised, so a check scoped to "this checkout" cannot catch a figure that
     describes a different one. That file measures the reduced row against
-    ``git show HEAD:`` on purpose.
+    ``git show HEAD:`` on purpose. The digest is what makes the scope honest now
+    that both populations resolve all 49 labels and load the same 37 pages.
     """
     documents = load_documents()
     cases = resolved_cases(documents)
@@ -313,7 +325,7 @@ def threshold_prose(threshold_block: str) -> str:
 @pytest.mark.skipif(
     not (REPO_ROOT / "wiki").is_dir(),
     reason=(
-        "wiki/ is absent from this checkout. It is 46 TRACKED files, so this "
+        "wiki/ is absent from this checkout. It is 50 TRACKED files, so this "
         "only happens where the corpus was removed -- and there "
         "TestTheRetrievalGuardActuallyRan in tests/test_rag.py is failing, "
         "which is the signal. Do not read this skip as a pass."

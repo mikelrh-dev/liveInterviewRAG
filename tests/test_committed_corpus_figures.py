@@ -1,33 +1,42 @@
 """The ``reduced`` row must describe the corpus a THIRD PARTY gets.
 
-THE DEFECT
-----------
+THE DEFECT, AND WHY IT NEEDS A SEPARATE FILE
+--------------------------------------------
 ``tests/test_recall_claims.py`` binds the figures the two shipped comments
 publish to a live measurement of whatever ``wiki/`` happens to be on the
 machine running the suite. That is correct for the ``full`` population, which
-is DEFINED as the author's working tree (37 pages, all 49 gold pages served).
+is DEFINED as the working tree of the checkout running it.
 
 It is the wrong instrument for the ``reduced`` population. ``reduced`` is
-defined as what ``git clone`` produces: the four untracked FAQ pages are gone,
-so 33 pages load and 41 of the 49 questions resolve. But its figures were
-DERIVED on the working tree -- on text that is 15 files ahead of HEAD and never
-committed. So the two states of ``wiki/`` had the same page count and
-different text, and the comment row was calibrated on the text nobody else can
-read.
+defined as what ``git clone`` produces -- and its figures must be DERIVED on
+``git show HEAD:<path>``, because the author's working tree is text that 15
+modified ``wiki/*.md`` files have moved ahead of HEAD and that nobody else is
+ever served.
 
-Nothing detected it, which is the part worth stating: ``CHUNK_FILTER_VERSION``
-was current, the chunk count was right (116 either way), the page count was
-right (33), and the question count was right (41). Same shape, different
-corpus, different ranking. Measured on a real ``git clone`` of this branch,
-the committed corpus scores:
+That was true before commit ``efda998`` and it is true now, but it stopped
+being VISIBLE the same way. Before, the two corpora also differed in shape: the
+four FAQ pages were untracked, so the committed tree loaded 33 pages and
+resolved 41 of the 49 labels. Same page count on both sides would have been a
+coincidence, and this file asserted it was not one. Since ``efda998`` committed
+those four pages, BOTH sides load 37 pages, resolve 49 of 49 and chunk to 124:
+the committed corpus and the working tree are now indistinguishable by any count,
+which is exactly why this file -- and not a question count -- is what tells them
+apart.
 
-    pages 33, questions 41, chunks 116
-    recall@1 0.7561   recall@3 0.8537   MRR@5 0.8118
-    631 results with the filter, 1353 without, 722 discarded (53.4%)
+THE RE-MEASUREMENT, 2026-10-04
+------------------------------
+Against the corpus rebuilt from ``git show HEAD:``:
 
-while the row that shipped said 0.7317 / 0.8293 / 0.7935 and 633 / 1353 / 720.
-The clone scored HIGHER on all three recalls, so the published figures were
-not flattering themselves -- they were simply somebody else's numbers.
+    pages 37, questions 49, chunks 124
+    recall@1 0.7551   recall@3 0.8163   MRR@5 0.7980
+    851 results with the filter, 1813 without, 962 discarded (53.1%)
+    45 of 49 at the shipped top_k=3
+
+against the working tree's own row: 0.7347 / 0.8163 / 0.7803, 854 / 1813 / 959,
+44 of 49. Same page count, same question count, same chunk count, same 1813
+unfiltered results -- and a different ranking, because the text behind those
+numbers is not the same text. ``recall@3`` agreeing is the coincidence that hides
+the rest; ``recall@1`` moves by 0.0204 (one question) and MRR@5 by 0.0177.
 
 WHY A SEPARATE FILE AND NOT A FIXTURE TWIST
 -------------------------------------------
@@ -42,8 +51,8 @@ the PRODUCTION loader over it, and measures it through the production
 
 In the author's checkout that is a measurement of a corpus the author never
 runs, which is the whole point: the reduced row is only ever exercised by
-somebody who does NOT have the four extra pages, so that is where it has to be
-right.
+somebody who does NOT have the fifteen uncommitted rewrites, so that is where it
+has to be right.
 
 WHAT THIS DOES NOT CLAIM
 ------------------------
@@ -54,7 +63,9 @@ were not changed. What it does assert is that the record of the reduced
 measurement (``Measurement``) and the record of the figures the comments print
 (``CommentFigures``) both describe the committed corpus, so the two cannot
 drift onto different trees again -- which is how ``34/41`` and ``0.8293`` came
-to be a working-tree measurement wearing a clone's name.
+to be a working-tree measurement wearing a clone's name, and how ``33/41/116``
+came to describe a population that stopped existing when its defining commit
+landed.
 """
 
 from __future__ import annotations
@@ -70,7 +81,9 @@ from tests.real_wiki import (
     CHUNK_OVERLAP,
     CHUNK_SIZE,
     COMMENT_FIGURES_REDUCED,
+    CORPUS_DIGESTS,
     MEASURED_REDUCED,
+    corpus_digest,
     resolved_cases,
 )
 from tests.test_recall_claims import (
@@ -86,8 +99,9 @@ from tests.test_recall_claims import (
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 #: The two populations this file knows how to name. ``full`` is deliberately
-#: absent: it is the author's working tree, and its figures are checked by
-#: ``tests/test_recall_claims.py`` against the working tree it is read on.
+#: absent: it is the working tree of the checkout running the suite, and its
+#: figures are checked by ``tests/test_recall_claims.py`` against the working
+#: tree it is read on.
 REDUCED = COMMENT_FIGURES_REDUCED
 
 
@@ -115,13 +129,14 @@ def committed_wiki_root(tmp_path_factory: pytest.TempPathFactory) -> Path:
     file:
 
     ``git ls-files -- wiki``
-        The INDEX. It lists what is tracked, so the four FAQ pages that exist on
-        the author's disk and are not committed do not appear -- which is not a
-        convenience, it is the definition of the reduced population.
+        The INDEX. All fifty pages are listed, INCLUDING the four FAQ pages that
+        used to be the definition of this population: commit ``efda998`` committed
+        them, so the index no longer tells the two corpora apart.
     ``git show HEAD:<path>``
-        The COMMITTED blob. The author's 15 modified ``wiki/*.md`` files are
-        read from here at their committed content, so an uncommitted rewrite of
-        the corpus cannot move a published figure.
+        The COMMITTED blob, and THIS is what still defines ``reduced``. The
+        author's 15 modified ``wiki/*.md`` files are read from here at their
+        committed content, so an uncommitted rewrite of the corpus cannot move a
+        published figure.
 
     Returns the temp root; the wiki is written under ``<root>/wiki``.
     """
@@ -235,28 +250,27 @@ def measured(committed_documents: Dict[str, str], committed_cases) -> dict:
 # ── The corpus itself ────────────────────────────────────────────────────────
 #
 # Everything below compares published figures against `measured`, so if this
-# fixture ever measured the WRONG population every comparison would be
-# vacuously true. That is why it is asserted on its own, and why the assertion
-# names the number of untracked FAQ pages rather than just the page count.
+# fixture ever measured the WRONG corpus every comparison would be vacuously
+# true. That is why it is asserted on its own, and why the assertion is now a
+# DIGEST rather than a page count: since ``efda998`` both corpora load 37 pages
+# and resolve 49 labels, so a count can no longer tell them apart and a count that
+# agreed would be agreeing by coincidence.
 
 
 class TestTheCommittedCorpusIsTheOneTheReducedRowClaimsToDescribe:
     def test_the_committed_corpus_resolves_the_reduced_population(
         self, committed_documents, committed_cases
     ):
-        """33 pages, 41 questions -- the population named ``reduced``.
+        """37 pages, 49 questions -- and the corpus whose digest is recorded.
 
-        Stated as the two counts and the four pages by name, because "33" is a
-        coincidence with the working tree's count only if you already believe
-        the two are the same shape. They are not, and this is the assertion
-        that keeps the rest of this file from quietly measuring something else.
+        Stated as the two counts plus the digest, because "37 pages and 49
+        questions" is now what BOTH populations look like. The digest is the only
+        thing left that says which corpus this is, and it is recorded in
+        ``tests/real_wiki.py::CORPUS_DIGESTS`` next to the rows it selects.
         """
         assert len(committed_documents) == REDUCED.pages, (
             f"the committed corpus loads {len(committed_documents)} pages; the "
-            f"reduced population is calibrated for {REDUCED.pages}. The four "
-            "untracked FAQ pages (faq/nivel-ingles.md, faq/disponibilidad.md, "
-            "faq/hobbies-intereses.md, faq/por-que-contratarte.md) must be "
-            "absent, because they are not in the index."
+            f"reduced population is calibrated for {REDUCED.pages}."
         )
         assert len(committed_cases) == REDUCED.questions, (
             f"the committed corpus resolves {len(committed_cases)} of the "
@@ -264,30 +278,41 @@ class TestTheCommittedCorpusIsTheOneTheReducedRowClaimsToDescribe:
             f"{REDUCED.questions}."
         )
 
-    def test_the_four_untracked_faq_pages_are_really_absent(
+    def test_this_corpus_is_the_one_the_reduced_row_was_measured_on(
         self, committed_documents
     ):
-        """Named explicitly, because absence is what makes this population reduced.
+        """The digest, not the shape: same 37 pages, same 49 labels, other text.
 
-        If any of these four ever gets committed, the reduced population becomes
-        the full one, and the whole two-population structure in
-        ``tests/real_wiki.py`` silently collapses into two names for one
-        corpus. That is not this file's defect to fix, but it IS this file's
-        job to notice, because a duplicated population is a figure nobody can
-        check.
+        This is the assertion that replaced "the four untracked FAQ pages are
+        really absent". Those pages were what made the two corpora differ in
+        SHAPE, and commit ``efda998`` committed them: both sides now load 37
+        pages, resolve 49 of 49 and chunk to 124, so the absence check could no
+        longer distinguish them and its passing meant nothing.
+
+        The digest does distinguish them, and it is the key every ``*_for``
+        resolver in this suite uses. If this fails, one of three things happened:
+        a ``wiki/*.md`` was committed or reverted (the working tree moved and the
+        ``full`` row has to be re-measured), the loader changed what it serves
+        (both rows have to be re-measured), or the committed corpus became
+        identical to the working tree, in which case ``full`` and ``reduced``
+        really are one population under two names and the rows must be collapsed
+        rather than kept.
         """
-        present = {_norm(k) for k in committed_documents}
-        for page in (
-            "faq/nivel-ingles.md",
-            "faq/disponibilidad.md",
-            "faq/hobbies-intereses.md",
-            "faq/por-que-contratarte.md",
-        ):
-            assert page not in present, (
-                f"{page} is now served by a clean clone, so `reduced` and `full` "
-                "are the same corpus under two names. Re-measure and collapse "
-                "the two populations rather than keeping both rows."
-            )
+        digest = corpus_digest(committed_documents)
+        assert digest == CORPUS_DIGESTS["reduced"], (
+            f"the corpus rebuilt from `git show HEAD:` digests to {digest}, but "
+            f"tests/real_wiki.py::CORPUS_DIGESTS records "
+            f"{CORPUS_DIGESTS['reduced']} for the `reduced` population. Every "
+            "`*_for` resolver selects rows by this digest, so a mismatch means "
+            "either that HEAD moved (re-measure the row) or that the loader "
+            "serves something different than it did (re-measure both)."
+        )
+        assert digest != CORPUS_DIGESTS["full"], (
+            "the committed corpus and the working tree are now the SAME corpus. "
+            "`full` and `reduced` would be one population under two names, which "
+            "is a figure nobody can check -- collapse the two rows instead of "
+            "keeping both."
+        )
 
 
 # ── The figures ──────────────────────────────────────────────────────────────
@@ -299,10 +324,17 @@ class TestTheReducedRowDescribesTheCommittedCorpus:
     ):
         """recall@1 / recall@3 / MRR@5 on the row labelled ``reduced``.
 
-        The defect this pins, measured on a real clone of this branch:
-        published 0.7317 / 0.8293 / 0.7935, measured on the committed corpus
-        0.7561 / 0.8537 / 0.8118. Same 33 pages, same 116 chunks, same 41
+        The defect this pinned the first time, measured on a real clone of this
+        branch: published 0.7317 / 0.8293 / 0.7935, measured on the committed
+        corpus 0.7561 / 0.8537 / 0.8118. Same 33 pages, same 116 chunks, same 41
         questions -- different text, therefore a different ranking.
+
+        It pins again, harder, on the 2026-10-04 corpus: published
+        0.7561 / 0.8537 / 0.8118, measured 0.7551 / 0.8163 / 0.7980. Now both
+        sides are 37 pages, 49 questions and 124 chunks, so ``recall@3`` agrees
+        by coincidence while ``recall@1`` and ``MRR@5`` disagree by a question
+        and by 0.0177 -- which is what makes this file a guard on the TEXT and
+        not on the shape.
         """
         row = _population_row(embedder_block, REDUCED)
 
@@ -349,11 +381,15 @@ class TestTheReducedRowDescribesTheCommittedCorpus:
     ):
         """Chunks, matrix, and both halves of the filter's cost.
 
-        Published 116 chunks and 633/1353/720; measured 116 chunks and
-        631/1353/722. The chunk count agreeing is not luck and not evidence of
-        correctness -- it is the reason the defect was invisible. A count that
-        stays right while the text behind it changes is the worst kind of
-        corroboration: it makes a wrong row look checked.
+        Published 124 chunks and 851/1813/962; measured 124 chunks and
+        851/1813/962. Every count here now agrees with the working tree's row
+        too -- same 37 pages, same 124 chunks, same 1813 unfiltered results --
+        and that is not corroboration, it is the reason this file exists: a
+        count that stays right while the text behind it changes is the worst kind
+        of corroboration, because it makes a wrong row look checked. The three
+        results that SURVIVE the filter are the figure that moved (854 against
+        851), and they only moved because fifteen pages are not the fifteen the
+        author has modified.
         """
         shape_row = _population_row(threshold_block, REDUCED)
         assert int(_figure(shape_row, r"(\d+)\s+chunks")) == measured["chunks"], (

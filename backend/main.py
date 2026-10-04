@@ -111,24 +111,27 @@ tts_service = TTSService(
 # RAGPipeline._chunk_document never takes its splitting branch.
 #
 # There are TWO corpora, so there are two sets of figures, one row per
-# population. Four FAQ pages -- nivel-ingles, disponibilidad, hobbies-intereses
-# and por-que-contratarte -- exist in wiki/ on the author's disk and are NOT in
-# the index, so `git clone` serves 33 pages where the author's tree has 37. Same
-# method, same 400/50, different corpus: the chunk count moves by 8 and the
-# median by half a word. This comment used to publish the author's row alone,
-# which made every figure in it a true statement about a corpus that nobody else
-# has.
+# population. The four FAQ pages -- nivel-ingles, disponibilidad,
+# hobbies-intereses and por-que-contratarte -- that used to exist on the author's
+# disk without being committed, and so made a clone serve 33 pages where the
+# author's tree had 37, were committed in `efda998`. Both corpora are now 37
+# pages; what still separates them is that 15 `wiki/*.md` files are modified in
+# the working tree and uncommitted, so the text behind an identical chunk count
+# is not the same text. Same method, same 400/50, different corpus: the chunk
+# count does not move at all and the median moves by a whole word. This comment
+# used to publish the author's row alone, which made every figure in it a true
+# statement about a corpus that nobody else has.
 #
 # Chunked by _chunk_document at 400/50, measured per population:
 #
 #     full (37 pages, 49 questions) 124 chunks, median 54 words, p95 131, longest 266, 0 chunks reach 400 words; 0.0% are under 15 words and 13.7% are under 30, longest 134 short of the ceiling
-#     reduced (33 pages, 41 questions) 116 chunks, median 53.5 words, p95 131, longest 266, 0 chunks reach 400 words; 0.0% are under 15 words and 13.8% are under 30, longest 134 short of the ceiling
+#     reduced (37 pages, 49 questions) 124 chunks, median 53 words, p95 131, longest 266, 0 chunks reach 400 words; 0.0% are under 15 words and 13.7% are under 30, longest 134 short of the ceiling
 #
 # p95 is NEAREST RANK, sorted[ceil(0.95n)-1]; linear interpolation would put this
 # same corpus at 130.7, so the definition is named rather than assumed. The median
-# is a FLOAT because the chunk counts are even: statistics.median over 116 chunks
-# returns the mean of the two middle values, so 53.5 is what that corpus measures
-# rather than a rounded 54.
+# is a FLOAT because the chunk count is even on both corpora: statistics.median
+# over 124 chunks returns the mean of the two middle values, so 54.0 and 53.0 are
+# what those corpora measure rather than rounded 54 and 53.
 #
 # The distribution is NOT bottom-heavy in either population -- and the previous
 # version of this comment, which claimed 37.4% under 15 and concluded that a

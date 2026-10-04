@@ -15,9 +15,16 @@ es lo que la ata a una medición viva. Publicada por población:
     full    (37 páginas, 49 preguntas, 124 chunks)
             precision@1 0.7347   precision@3 0.3061   (45 de 147 slots)
             contra el techo que las etiquetas permiten: 45 de 50 = 0.90
-    reduced (33 páginas, 41 preguntas, 116 chunks)
-            precision@1 0.7561   precision@3 0.3171   (39 de 123 slots)
-            contra el techo: 39 de 42 = 0.93
+    reduced (37 páginas, 49 preguntas, 124 chunks)
+            precision@1 0.7551   precision@3 0.3129   (46 de 147 slots)
+            contra el techo: 46 de 50 = 0.92
+
+Las dos filas tienen las MISMAS cifras de páginas, preguntas y chunks desde el
+commit ``efda998``, que commiteó las cuatro páginas FAQ que antes el clon no
+tenía; lo que las sigue distinguiendo es el TEXTO (el ``digest`` de
+``tests/real_wiki.py::CORPUS_DIGESTS``). La diferencia de precisión es de UN slot
+relevante y de una pregunta hundida de más, y sale de quince páginas
+commiteadas que no son las quince modificadas sin commitear en el working tree.
 
 Y el reparto, que es la parte accionable:
 
@@ -26,7 +33,7 @@ Y el reparto, que es la parte accionable:
                     5 sin la respuesta en el top-3  (no lo arregla reordenar)
 
 LA PREMISA QUE HACE LEGIBLE EL 0.3061
--------------------------------------
+--------------------------------------
 Una pregunta con una sola página aceptable no puede puntuar más de 1/3 en
 ``precision@3``, así que el techo de la población ``full`` son 50 slots
 relevantes sobre 147 servidos. Leído sin ese denominador, 0.3061 parece una
@@ -55,9 +62,13 @@ que no empeore sin que alguien lo vuelva a medir y lo escriba aquí.
 CADA POBLACIÓN EN SU CORPUS
 ---------------------------
 ``reduced`` se lee siempre de ``git show HEAD:``, así que este archivo mide esa
-población en cualquier checkout. ``full`` sólo se mide si este checkout resuelve
-las 49 preguntas, porque la fila ``full`` ES el working tree del autor; en una
-clone limpia se salta, y el salto lo dice el motivo, no un verde.
+población en cualquier checkout. ``full`` sólo se mide si ESTE checkout es el
+working tree que la midió, y desde el 2026-10-04 eso se decide por el digest del
+corpus servido y no por el número de etiquetas: las dos poblaciones resuelven las
+49, así que un contador devolvería la fila ``full`` para el corpus commiteado sin
+avisar y estos tests pasarían por la holgura del techo, no porque la fila fuera
+la correcta. En una clone limpia el parámetro ``full`` se salta, y el salto lo
+dice el motivo, no un verde.
 """
 
 from dataclasses import dataclass
@@ -67,7 +78,15 @@ import pytest
 
 from backend.services.rag import RAGPipeline
 from tests.lexical_rescue_losses import RESCUE_COSTS, RESCUE_GAINS
-from tests.real_wiki import Case, load_documents, resolved_cases, wiki_is_present
+from tests.real_wiki import (
+    CORPUS_DIGESTS,
+    Case,
+    corpus_digest,
+    corpus_for,
+    load_documents,
+    resolved_cases,
+    wiki_is_present,
+)
 from tests.retrieval_measurements import (
     SHIPPED_TOP_K,
     DUPLICATED_QUESTION,
@@ -84,8 +103,13 @@ from tests.retrieval_measurements import (
 _WIKI_PRESENT = wiki_is_present()
 
 #: Cuántas etiquetas resuelve ESTE checkout, resuelto sin embedder: la carga del
-#: corpus es una lectura de 46 ficheros y no cuesta lo que cuesta una medición.
+#: corpus es una lectura de 50 ficheros y no cuesta lo que cuesta una medición.
 _CHECKOUT_QUESTIONS = len(resolved_cases(load_documents())) if _WIKI_PRESENT else 0
+
+#: Y qué corpus ES este checkout, que desde 2026-10-04 no es lo mismo que lo
+#: anterior: las dos poblaciones resuelven las 49 etiquetas, así que la pregunta
+#: que decide si la fila ``full`` es medible aquí es de qué TEXTO se trata.
+_CHECKOUT_CORPUS = corpus_for(load_documents()) if _WIKI_PRESENT else None
 
 
 #: Por qué esta población no se mide en este checkout. Va en el ``reason`` del
@@ -93,26 +117,32 @@ _CHECKOUT_QUESTIONS = len(resolved_cases(load_documents())) if _WIKI_PRESENT els
 #: resumen: un skip cuyo motivo nombra la fila que falta es un skip que se lee, y
 #: uno sin motivo es un verde que se cree.
 _WIKI_ABSENT = (
-    "wiki/ no está en este checkout, y son 46 ficheros TRACKED, así que esto sólo "
+    "wiki/ no está en este checkout, y son 50 ficheros TRACKED, así que esto sólo "
     "pasa donde se borró el corpus. Allí está fallando "
     "TestTheRetrievalGuardActuallyRan en tests/test_rag.py, que es la señal. No "
     "leas este skip como un pass."
 )
 
 _FULL_ABSENT = (
-    "este checkout resuelve {_questions} etiquetas, no las 49 que la población "
-    "'full' nombra: las cuatro páginas FAQ sin commitear no están aquí. La fila "
-    "'full' ES el working tree del autor, así que medirla con otro corpus sería "
-    "medir una población con el nombre de otra. La fila 'reduced' de este mismo "
-    "archivo sí se mide, y es la que corresponde a este checkout."
+    "este checkout sirve el corpus {_corpus!r}, no el working tree que la fila "
+    "'full' nombra (digest {_digest} en tests/real_wiki.py::CORPUS_DIGESTS). "
+    "Resuelve {_questions} etiquetas y eso ya no distingue nada: desde efda998 "
+    "las dos poblaciones resuelven las 49. La fila 'full' ES el working tree del "
+    "autor con sus quince wiki/*.md sin commitear, así que medirla con el texto "
+    "de HEAD sería medir una población con el nombre de otra. La fila 'reduced' "
+    "de este mismo archivo sí se mide, y es la que corresponde a este checkout."
 )
 
 
 def _skip_reason(population: str) -> str:
-    """El motivo del skip de ``population``, con el número de este checkout dentro."""
+    """El motivo del skip de ``population``, con lo que este checkout ES dentro."""
     if population == "reduced" or not _WIKI_PRESENT:
         return _WIKI_ABSENT
-    return _FULL_ABSENT.format(_questions=_CHECKOUT_QUESTIONS)
+    return _FULL_ABSENT.format(
+        _corpus=_CHECKOUT_CORPUS,
+        _digest=CORPUS_DIGESTS["full"][:12],
+        _questions=_CHECKOUT_QUESTIONS,
+    )
 
 
 #: Las dos filas, cada una contra su corpus. Los ``marks`` van en el parámetro y
@@ -121,7 +151,7 @@ POPULATIONS = (
     pytest.param(
         "full",
         marks=pytest.mark.skipif(
-            _CHECKOUT_QUESTIONS != 49, reason=_skip_reason("full")
+            _CHECKOUT_CORPUS != "full", reason=_skip_reason("full")
         ),
     ),
     pytest.param(
@@ -159,10 +189,11 @@ def corpus(request, tmp_path_factory) -> Corpus:
     warms, un guard que mide cuatro veces para afirmar cuatro veces sobre la
     misma pregunta no es más riguroso, es más lento.
 
-    La fila se resuelve con ``precision_for``, que RECHAZA una población no
-    calibrada en lugar de devolver otra. Un corpus que resuelve un tercer número
-    de etiquetas es una población nueva, y puntuarla contra una fila que no es
-    suya es el defecto que ``tests/real_wiki.py`` existe para impedir.
+    La fila se resuelve con ``precision_for``, que RECHAZA un corpus no
+    calibrado en lugar de devolver otro, y lo hace por su DIGEST. Un corpus
+    distinto es una población nueva aunque resuelva las mismas 49 etiquetas, y
+    puntuarla contra una fila que no es suya es el defecto que
+    ``tests/real_wiki.py`` existe para impedir.
     """
     population = request.param
     root = tmp_path_factory.mktemp(f"precision_{population}")
@@ -174,10 +205,11 @@ def corpus(request, tmp_path_factory) -> Corpus:
 
     row = precision_for(documents)
     assert row is not None, (
-        f"el corpus de la población {population!r} resuelve "
-        f"{len(resolved_cases(documents))} etiquetas y no hay fila de precisión "
-        "para ese número. Vuelve a medir sobre la población que queda y añade su "
-        "fila en tests/retrieval_measurements.py; no apuntes esta fila a otra."
+        f"el corpus de la población {population!r} digiere a "
+        f"{corpus_digest(documents)[:12]} y no hay fila de precisión para él "
+        f"({sorted(CORPUS_DIGESTS)} en tests/real_wiki.py::CORPUS_DIGESTS). "
+        "Vuelve a medir sobre el corpus que queda y añade su fila en "
+        "tests/retrieval_measurements.py; no apuntes esta fila a otro."
     )
 
     cases = resolved_cases(documents)
