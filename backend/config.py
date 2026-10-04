@@ -125,6 +125,38 @@ class Config:
         #     reduced (33 pages, 41 questions) recall@1 0.7561 · recall@3 0.8537 · MRR@5 0.8118
         # On the full population 40 of 49 gold pages are served, 2 of 49
         # absent from the ranking entirely.
+        #
+        # AT THE SHIPPED top_k=3, WHICH IS A DIFFERENT MEASUREMENT
+        # ---------------------------------------------------------
+        # The two rows above are measured at `top_k` = the population size, and
+        # they are labelled that way because they are: a top_k wide enough to
+        # hold every page answers "is the gold page anywhere in the ranking",
+        # which is what the cache identity and the filter counts want to know.
+        # It is not what an interviewer experiences. `RAG_TOP_K` ships 3, and
+        # until 2026-10-04 no figure in this repository was measured there -- so
+        # an improvement to the answer context would have been invisible to
+        # every published number here.
+        #
+        # The rows are prefixed `top_k=3` rather than opening with the
+        # population name ON PURPOSE: a line starting with `full (` or `reduced
+        # (` is a population row to `tests/test_recall_claims.py`, which holds
+        # every such line to the ONE measurement it takes at population width.
+        # These are a second width, measured at second width, and the test that
+        # owns them is `tests/test_committed_corpus_figures.py` for the reduced
+        # row -- because a clone's figure here is not derivable from the
+        # author's machine.
+        #     top_k=3, full (49 questions)     recall@3 0.8980   (44 of 49)
+        #     top_k=3, reduced (41 questions)  recall@3 0.9268   (38 of 41)
+        # Both include the BM25 rescue in
+        # `backend/services/rag.py::RAGPipeline._lexical_rescue`, which spends one
+        # slot in three on a lexical rank over the same chunk text. It is not
+        # lossless: it gains five questions and costs one on the full population,
+        # four and one on the reduced one, and every question on both sides is
+        # recorded by name in `tests/lexical_rescue_losses.py` and held to by
+        # `tests/test_lexical_rescue.py`. The wide rows above are unchanged by it
+        # -- the rescue only fires when the per-page cut bound, which cannot
+        # happen at a top_k wider than the corpus -- which is the reason both
+        # widths are published rather than one.
         # Four things differ from the 2026-08-28 English baseline and none of
         # them is the embedder alone: this model, the page-identity prefix on
         # the embedded text, the one-chunk-per-page cut, and the bodyless-
@@ -149,6 +181,25 @@ class Config:
         self.RAG_TOP_K: int = _env_int("RAG_TOP_K", "3")
         self.CHUNK_SIZE: int = _env_int("CHUNK_SIZE", "400")
         self.CHUNK_OVERLAP: int = _env_int("CHUNK_OVERLAP", "50")
+
+        # Cross-encoder re-ranking of the top-k (Phase 2). See
+        # backend/services/rerank.py for the measurement and for why the cosine
+        # threshold stays on cosenos and this only permutes.
+        #
+        # `RERANK_ENABLED` is the kill switch and it defaults to TRUE because the
+        # measurement is a net gain on both populations; an operator who wants
+        # the old latency profile turns it off rather than editing code, and
+        # /api/health then reports `rerank_mode: "disabled"`, which
+        # backend/routers/system.py treats as a decision rather than a fault.
+        #
+        # The model name is duplicated in backend/services/rerank.py as the
+        # module default, for the same reason EMBEDDING_MODEL is spelled out in
+        # both places: a duplicated literal that a test keeps in agreement is a
+        # contract, and one that nothing checks is a future incident.
+        self.RERANK_ENABLED: bool = _env_bool("RERANK_ENABLED", "true")
+        self.RERANKER_MODEL: str = os.getenv(
+            "RERANKER_MODEL", "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
+        )
 
         # Paths
         self.BASE_DIR: Path = Path(__file__).resolve().parent.parent

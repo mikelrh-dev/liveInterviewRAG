@@ -1,0 +1,140 @@
+# Local, single-service deployment of InterviewTTS in Docker.
+#
+# The Linux deployment runs nginx in front of a systemd unit bound to
+# 127.0.0.1. There is no nginx here and there must not be one: backend/main.py
+# already serves frontend/ as static files and mounts it at "/", so a second
+# static layer in front of it would be two servers answering for one directory.
+#
+# This file is a RUNTIME configuration, not a build input: it is the mechanism
+# by which the host's data reaches the container. Nothing it names is ever
+# copied into an image.
+
+name: interviewtts
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: interviewtts:local
+    container_name: interviewtts-api
+
+    # Reaps the orphans uvicorn's thread pool can leave behind and makes PID 1
+    # forward SIGTERM, so `docker compose stop` runs the graceful shutdown
+    # instead of killing the process mid-write to SQLite.
+    init: true
+
+    # Read on the HOST at run time and injected as process environment. This is
+    # the only channel through which OPENROUTER_API_KEY, HF_TOKEN, LLM_MODEL,
+    # WHISPER_MODEL, EMBEDDING_MODEL and the rest reach the service.
+    #
+    # It is deliberately NOT a bind mount of .env: the file would then sit in
+    # the container filesystem, and every `docker cp`, image export or `docker
+    # commit` from that container would carry the key with it. Environment
+    # variables are visible in `docker inspect` either way, but they are a
+    # property of a running process rather than a file you can copy out.
+    #
+    # backend/main.py:39 calls load_dotenv(), which finds nothing here (there is
+    # no .env in the image) and correctly leaves the injected values alone --
+    # python-dotenv does not override real environment variables.
+    env_file:
+      - .env
+
+    environment:
+      # Container-side model cache. Without these, huggingface_hub resolves
+      # ~/.cache/huggingface, and every `docker compose up` after a
+      # `docker compose down` re-downloads the embedder. deployment/
+      # interviewtts.service:41 solves the same problem with HOME=/opt/
+      # interviewtts; this is the container spelling of that line.
+      HF_HOME: /app/.cache/huggingface
+      HF_HUB_CACHE: /app/.cache/huggingface/hub
+      # Same reasoning, and it keeps incidental writes (token helpers, any
+      # library that wants a home) off /app.
+      HOME: /home/interviewtts
+      # Baked into the image, but stated here too because it is the one setting
+      # whose absence silently costs hundreds of megabytes per restart.
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-paraphrase-multilingual-MiniLM-L12-v2}
+      WHISPER_MODEL: ${WHISPER_MODEL:-small}
+
+      # HOST and PORT are deliberately absent. backend/config.py:186-203
+      # documents that the bind address is owned by the command line and that a
+      # HOST= line in the environment is a false signal -- an operator who sets
+      # it believes they configured an exposure the process does not have. The
+      # address is in the Dockerfile's CMD and the mapping is in ports below.
+      # (The host .env carries a legacy HOST= line; it is ignored by config.py
+      # and its value is not reproduced here on purpose.)
+
+    # LAN-EXPOSED for mobile testing (2026-10-04): the host side binds all
+    # interfaces so a phone on the same WiFi reaches the app. This weakens
+    # the loopback isolation below on purpose and temporarily: anyone on
+    # this LAN can open it. Revert to "127.0.0.1:8000:8000" when the mobile
+    # test is done. Inside the container the process still binds 0.0.0.0,
+    # because loopback there is the container's own namespace.
+    ports:
+      - "8000:8000"
+
+    volumes:
+      # ---- corpus: read-only, from the host, never in the image ---------------
+      # BOTH directories, and that is not redundancy. backend/services/
+      # candidate.py:38 reads the wiki when WIKI_DIR exists and silently falls
+      # back to candidate/docs/*.md when it does not, while profile.json is
+      # read unconditionally from CANDIDATE_DIR. So:
+      #   - wiki/ alone        -> corpus loads, but profile.json is missing and
+      #                           /api/health reports candidate_loaded=false
+      #   - candidate/ alone   -> runs on the markdown fallback corpus, which is
+      #                           NOT the wiki corpus the RAG is measured against
+      #   - both (this)        -> the deployed behaviour, byte for byte
+      # The `if self.wiki_dir and self.wiki_dir.exists()` branch itself is a
+      # known oddity (the docstring promises wiki-first, the code prefers
+      # whichever directory happens to exist). It is left alone: fixing it is a
+      # behaviour change, not a packaging change.
+      - ./candidate:/app/candidate:ro
+      - ./wiki:/app/wiki:ro
+
+      # ---- write targets: read-write, from the host ---------------------------
+      # audio/, data/ and reports/ are the same three paths the unit's
+      # ReadWritePaths= grants (interviewtts.service:92), and the same three the
+      # application writes for real: TTS output, the SQLite conversation store
+      # and the Markdown transcripts.
+      #
+      # Nothing here is cleaned, reset or seeded -- ./data keeps the existing
+      # interviewtts.db and ./audio keeps its recordings, which is the point of a
+      # bind mount. Note that a turn posted to this container DOES write to the
+      # host database, because that is what DB_PATH=data/interviewtts.db means.
+      - ./audio:/app/audio
+      - ./data:/app/data
+      - ./reports:/app/reports
+
+      # ---- caches: named volumes, deliberately NOT bind mounts ---------------
+      # Two reasons, and the second is the one that bites.
+      #
+      # 1. Size and ownership. The HF cache is ~457 MB of embedder plus ~460 MB
+      #    of CTranslate2 Whisper, written by uid 10001 inside the container.
+      #    As a bind mount those are host files owned by a UID Windows has no
+      #    concept of, sitting in the repository tree.
+      # 2. The chown in the Dockerfile only works for named volumes. A named
+      #    volume mounted over a path that EXISTS in the image is seeded from
+      #    that path and inherits its ownership -- which is why the Dockerfile
+      #    creates and chowns /app/.cache/huggingface and
+      #    /app/backend/.rag_cache. A bind mount replaces that path outright, and
+      #    Docker Desktop's Windows bind mounts are already permissive, so the
+      #    ownership transfer buys nothing there.
+      #
+      # The paths also match what the app resolves on its own: with no
+      # RAG_CACHE_DIR in .env, backend/config.py:169-171 defaults to
+      # BASE_DIR/backend/.rag_cache.
+      - hf-cache:/app/.cache/huggingface
+      - rag-cache:/app/backend/.rag_cache
+
+    restart: unless-stopped
+    stop_grace_period: 15s
+
+    # No `healthcheck:` here on purpose. The image already declares one against
+    # /api/health with the cold-start start-period this service needs; repeating
+    # it in compose would be a second copy that can drift out of sync with the
+    # first, which is how `docker ps` ends up reporting a state the image does
+    # not actually have.
+
+volumes:
+  hf-cache:
+  rag-cache:

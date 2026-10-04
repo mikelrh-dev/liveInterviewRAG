@@ -78,7 +78,7 @@ _CACHED_QUESTIONS = [
         # it needs its neighbours to match.
         "keywords": [],
         "answer": (
-            "Soy Mikel, desarrollador junior DAM. Estudié Desarrollo de Aplicaciones "
+            "Soy Mikel, desarrollador. Estudié Desarrollo de Aplicaciones "
             "Multiplataforma en Tartanga y antes era gerente en Mercadona, liderando un equipo "
             "de unas 50 personas, pero quise dar un giro y dedicarme a algo que me apasiona: "
             "el desarrollo de software."
@@ -304,24 +304,50 @@ _CACHED_QUESTIONS = [
         ],
         "keywords": [],
         # This answer used to claim "He usado Docker con docker-compose para
-        # desplegar InterviewTTS en un VPS". There is no Dockerfile and no
+        # desplegar InterviewTTS en un VPS". There was no Dockerfile and no
         # compose file anywhere in this repository, so that was a fabricated
         # credential delivered to a recruiter as the candidate's own
         # professional experience -- and because it is a cache entry it never
-        # reaches RAG, so the grounding work cannot catch it.
+        # reaches RAG, so the grounding work cannot catch it. The
+        # deploy-mechanism scan in tests/test_response_cache.py was written for
+        # that sentence and still guards it.
         #
-        # What replaces it asserts only what the deploy path proves: a
-        # systemd unit (deployment/interviewtts.service) running uvicorn from a
-        # venv bound to 127.0.0.1, behind nginx terminating TLS
-        # (nginx/interview.conf:69,73-74,108). It claims nothing about the
-        # candidate's history with Docker, because that is a biographical
-        # claim this repository cannot support either way, and a plausible
-        # lie is worse than saying what the project really does.
+        # The answer that replaced it said "En InterviewTTS no hay contenedores"
+        # and "Docker no lo uso en este proyecto". Both were TRUE when written
+        # and stopped being true on 2026-10-03, when this repository gained a
+        # root Dockerfile and docker-compose.yml for local, containerised runs.
+        # A denial that contradicts the repository sitting in front of the
+        # interviewer is the same defect one layer down: the scan was right
+        # about the claim and had no way to notice that its own PREMISE had
+        # moved, because the premise was the repository's contents. So the
+        # answer below states both halves, and each half is placed where the
+        # repository proves it.
+        #
+        #   Containers -- LOCAL ONLY. Proven by the root Dockerfile and
+        #   docker-compose.yml, whose own first line reads "Local,
+        #   single-service deployment of InterviewTTS in Docker".
+        #
+        #   Production -- NOT Docker. Proven by the systemd unit
+        #   (deployment/interviewtts.service:24) running uvicorn from a venv
+        #   bound to 127.0.0.1, behind nginx terminating TLS
+        #   (nginx/interview.conf:69,73-74,108). Nothing on the deploy path
+        #   builds or runs an image, and docker-compose.yml:3-6 states the
+        #   Linux deployment is nginx + systemd, with no nginx in the
+        #   container.
+        #
+        # Naming the split is the point: a recruiter who follows up with
+        # "¿y en producción?" must not discover a second, different lie.
+        #
+        # It still claims nothing about the candidate's history with Docker,
+        # because that is a biographical claim this repository cannot support
+        # either way, and a plausible lie is worse than saying what the
+        # project really does.
         "answer": (
-            "En InterviewTTS no hay contenedores. Lo despliego en un VPS: un servicio "
-            "systemd arranca uvicorn desde un venv de Python escuchando solo en localhost, "
-            "y nginx delante termina el TLS y hace de proxy inverso. Docker no lo uso "
-            "en este proyecto."
+            "En InterviewTTS uso contenedores para el desarrollo local: el repositorio "
+            "lleva un Dockerfile y un docker-compose.yml que levantan la aplicación con "
+            "un solo comando. En producción no los uso: despliego en un VPS con un "
+            "servicio systemd que arranca uvicorn desde un venv de Python escuchando solo "
+            "en localhost, y nginx delante termina el TLS y hace de proxy inverso."
         ),
     },
     {

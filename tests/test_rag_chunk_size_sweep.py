@@ -941,8 +941,18 @@ def test_duplicated_top_k_slots_are_now_impossible_and_that_is_worth_a_question(
     # plain function; putting THAT back as a class attribute rebinds it as an
     # instance method and `retrieve` then fails for every test after this one.
     original = RAGPipeline.__dict__["_one_chunk_per_page"]
+    # The lexical rescue is switched off for BOTH sides of this comparison. It
+    # used to be measured here by accident: the "deduped" side went through
+    # retrieve() with the rescue live, so a question the RESCUE recovered looked
+    # like a question the per-page CUT had rescued, and the full row moved from
+    # 1 to 2 without the cut behaving differently at all. This figure is about
+    # one thing -- what deduplicating the slots buys over not deduplicating them
+    # -- so the second ranker has to be out of both sides or it is measuring
+    # itself. ``tests/test_lexical_rescue.py`` measures the rescue separately.
+    original_rescue = RAGPipeline.__dict__["_lexical_rescue"]
     rescued = 0
     try:
+        RAGPipeline._lexical_rescue = lambda self, q, d, k: d
         for case in cases:
             RAGPipeline._one_chunk_per_page = staticmethod(lambda scores, top_k: scores[:top_k])
             raw = [_norm(c.source) for c, _ in rag.retrieve(case.question, top_k=3)]
@@ -956,6 +966,7 @@ def test_duplicated_top_k_slots_are_now_impossible_and_that_is_worth_a_question(
                 rescued += 1
     finally:
         RAGPipeline._one_chunk_per_page = original
+        RAGPipeline._lexical_rescue = original_rescue
 
     figures = comment_figures_for(sweep.documents)
     assert figures is not None, (

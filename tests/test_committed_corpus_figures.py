@@ -203,6 +203,19 @@ def measured(committed_documents: Dict[str, str], committed_cases) -> dict:
     finally:
         rag.threshold = shipped
 
+    # At the top_k production ships, which is a DIFFERENT measurement from every
+    # other figure in this fixture: everything above is at ``top_k`` = the
+    # population size, and this is at ``backend/config.py``'s ``RAG_TOP_K``.
+    # Measured here rather than only on the working tree because this file is
+    # the only one that can see the corpus a clone gets, and the lexical rescue
+    # fires at a width-dependent condition -- so its figure on a clone is not
+    # derivable from its figure on the author's machine.
+    hits_at_top3 = 0
+    for case in committed_cases:
+        sources = [norm(c.source) for c, _ in rag.retrieve(case.question, top_k=3)]
+        rank = sources.index(case.primary) + 1 if case.primary in sources else None
+        hits_at_top3 += rank is not None and rank <= 3
+
     return {
         "pages": len(committed_documents),
         "questions": questions,
@@ -211,6 +224,8 @@ def measured(committed_documents: Dict[str, str], committed_cases) -> dict:
         "recall3": recall3 / questions,
         "mrr5": reciprocal_rank / questions,
         "hits3": recall3,
+        "hits3_at_top3": hits_at_top3,
+        "recall3_at_top3": hits_at_top3 / questions,
         "filtered": filtered,
         "unfiltered": unfiltered,
         "dropped": unfiltered - filtered,
@@ -306,6 +321,28 @@ class TestTheReducedRowDescribesTheCommittedCorpus:
                 "tests/real_wiki.py::COMMENT_FIGURES_REDUCED plus this comment "
                 "-- do not edit the number to match a corpus nobody else has."
             )
+
+    def test_the_top_k3_figure_is_the_committed_corpus_one(self, measured):
+        """The shipped-top_k figure, on the corpus a clone actually gets.
+
+        ``COMMENT_FIGURES_REDUCED.recall3_at_top3`` is the one figure in this
+        module that could not be derived from the author's working tree: the
+        lexical rescue fires only when the per-page cut binds, which depends on
+        how many pages clear the threshold, and that differs between the two
+        corpora. It is measured here for the same reason every other figure in
+        this file is -- the reduced row is read by whoever clones, so it has to
+        be measured on what is committed.
+        """
+        assert REDUCED.hits3_at_top3 == measured["hits3_at_top3"], (
+            f"COMMENT_FIGURES_REDUCED records {REDUCED.hits3_at_top3}/"
+            f"{REDUCED.questions} at top_k=3; the committed corpus serves the "
+            f"gold page for {measured['hits3_at_top3']}/{measured['questions']}. "
+            "Re-measure and update tests/real_wiki.py -- do not adjust the row "
+            "to fit a corpus a clone does not have."
+        )
+        assert REDUCED.recall3_at_top3 == pytest.approx(
+            measured["recall3_at_top3"], abs=0.0005
+        )
 
     def test_the_corpus_shape_figures_are_the_committed_corpus_ones(
         self, measured, threshold_block

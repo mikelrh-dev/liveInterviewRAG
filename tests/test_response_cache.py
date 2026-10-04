@@ -139,26 +139,48 @@ def test_docker_question():
 
     Asserting only that the word "docker" is present was the shape of the
     defect: it passed while the answer fabricated a docker-compose deployment
-    this repository does not have. It now asserts the substance — that the
-    answer describes the deployment that ships and denies the one that does
-    not.
+    this repository does not have. It asserts the substance — that the answer
+    describes the deployment that ships and denies the one that does not.
+
+    WHY THE ANTI-CLAIM MOVED. This used to require the answer to contain "no
+    lo uso" and to forbid the string "docker-compose" outright, because when
+    it was written this repository had no Dockerfile and no compose file:
+    containers were a fabrication, and naming them at all WAS the defect.
+    Since 2026-10-03 the root ships both, for local and containerised runs, so
+    both assertions described a repository that no longer exists — and the
+    honest answer now has to NAME docker-compose to say where containers are
+    used at all.
+
+    The guard is re-aimed, not weakened. The claim that is still false is
+    "production runs on Docker": containers are local, production is
+    systemd + nginx. So it asserts the local/production split is stated, that
+    the denial is scoped to PRODUCTION rather than to Docker in general, and
+    that docker-compose is never credited to the VPS deployment. Drop the
+    split from the answer and this goes red.
     """
     answer = get_cached_response("¿Qué experiencia tienes con Docker?")
     assert answer is not None
     lowered = answer.lower()
     assert "docker" in lowered
-    assert "no lo uso" in lowered, (
-        f"the answer no longer declines the Docker credential it cannot "
-        f"support: {answer!r}"
-    )
     for mechanism in ("systemd", "nginx"):
         assert mechanism in lowered, (
             f"the answer no longer describes the deployment that actually "
             f"ships ({mechanism}): {answer!r}"
         )
-    assert "docker-compose" not in lowered, (
-        f"the answer credits a compose deployment this repository does not "
-        f"have: {answer!r}"
+    assert "local" in lowered, (
+        f"the answer names no local scope for the containers, so it does not "
+        f"say where Docker is actually used: {answer!r}"
+    )
+    assert re.search(r"producci[oó]n no (?:los |lo )?uso", lowered), (
+        f"the answer no longer declines the Docker credential for production, "
+        f"which is the part it cannot support: {answer!r}"
+    )
+    # docker-compose may be named for the local run; it may never be named as
+    # the VPS deployment, which is systemd + nginx.
+    production_clause = _normalised_text(lowered).split("produccion", 1)[-1]
+    assert "docker-compose" not in production_clause, (
+        f"the answer credits a compose deployment to production, which this "
+        f"repository does not have: {answer!r}"
     )
 
 
@@ -1096,9 +1118,17 @@ def test_the_scan_reaches_the_answer_that_shipped_the_unsupported_claim():
 # vocabulary scan cannot tell them apart -- and the truthful answer to a
 # Docker question has to be allowed to say the word. Hence the sentence scope
 # and the disclaimer: the mechanism term must be present in a sentence that
-# also disclaims it, and the disclaimed case is the one the shipped answer
-# takes ("En InterviewTTS no hay contenedores", "Docker no lo uso en este
-# proyecto").
+# also disclaims it.
+#
+# The disclaimed case used to be illustrated by this repository's own Docker
+# answer ("En InterviewTTS no hay contenedores", "Docker no lo uso en este
+# proyecto"). It cannot be any more, and not because the disclaimer stopped
+# working: this repository ships a root Dockerfile and docker-compose.yml
+# since 2026-10-03, so denying containers here is no longer true, and the
+# container entries are skipped as evidence-backed before the disclaimer is
+# consulted. The shipped answer now says containers are for local development
+# only, which is what the two artifacts support, and the disclaimer's live
+# examples moved to Kubernetes, which the repository still does not ship.
 #
 # KNOWN LIMITS OF A LEXICAL CHECK, RECORDED RATHER THAN HIDDEN
 # ------------------------------------------------------------
@@ -1117,6 +1147,14 @@ def test_the_scan_reaches_the_answer_that_shipped_the_unsupported_claim():
 #: File-name patterns that would demonstrate a container build exists anywhere
 #: in the repository. Matched against bare file names by ``_repo_has_artifact``,
 #: which prunes as it walks.
+#:
+#: SINCE 2026-10-03 THIS SET MATCHES. The repository root ships a ``Dockerfile``
+#: and a ``docker-compose.yml`` for local, containerised runs, so the container
+#: mechanisms in ``_MECHANISM_CLAIMS`` are evidence-backed and naming them in a
+#: cached answer is no longer a defect. The globs stay because they are what
+#: makes that true: the scan reads the filesystem, so the answer and the
+#: repository are checked against each other rather than against a constant
+#: somebody has to remember to update.
 _CONTAINER_ARTIFACTS = (
     "Dockerfile",
     "Dockerfile.*",
@@ -1230,22 +1268,38 @@ def test_no_cached_answer_claims_a_deploy_mechanism_the_repository_lacks():
         f"cached answers claiming a deploy mechanism this repository does not "
         f"ship: {offenders}. Either the answer describes a deployment that does "
         "not exist here, or the answer disclaims the mechanism in the same "
-        "sentence -- which is how the Docker answer says it."
+        "sentence -- which is how an answer about Kubernetes has to say it."
     )
 
 
-def test_the_mechanism_scan_detects_the_shipped_docker_claim(monkeypatch):
+def test_the_mechanism_scan_detects_an_unshipped_mechanism_claim(monkeypatch):
     """The negative control, on the exact string that shipped.
 
     A guard that has never been seen to reject the thing it was written for is
     a guard nobody can trust, and this one is a lexical scan that could quietly
     stop matching -- a renamed vocabulary entry, a stripped disclaimer list.
-    So the real sentence is injected and must be rejected by the real scan.
+    So a real sentence is injected and must be rejected by the real scan.
+
+    WHY IT NO LONGER INJECTS THE DOCKER SENTENCE. It used to, and it stopped
+    rejecting that sentence for a reason that has nothing to do with the scan:
+    the root Dockerfile and docker-compose.yml arrived on 2026-10-03, so
+    ``_mechanism_offenders`` now skips the container mechanisms as
+    evidence-backed (the ``continue`` at :func:`_mechanism_offenders`). The
+    historical Docker claim is therefore ACCEPTED by the scan today, correctly
+    -- this repository ships containers. A negative control pointed at a
+    mechanism the repository now genuinely ships asserts nothing and fails for
+    a reason that has nothing to do with the code under test.
+
+    So the control is repointed at Kubernetes, which the repository still does
+    not ship: there is no kustomization.yaml, no Chart.yaml and no
+    *-deployment.yaml anywhere in it. The control keeps its teeth for the same
+    reason it had them -- a claim the repository cannot back must be rejected.
+    Only the example moved, and it moved because the evidence moved.
     """
     shipped = (
-        "He usado Docker con docker-compose para desplegar InterviewTTS en un "
-        "VPS. Lo configuré con Nginx como reverse proxy. Aún estoy aprendiendo, "
-        "pero entiendo los conceptos básicos de contenedores y orquestación."
+        "Despliego InterviewTTS con Kubernetes en un VPS: un Deployment para el "
+        "backend, un Service que lo expone y un ConfigMap con la configuración. "
+        "Ya lo tengo en un clúster de tres nodos."
     )
     monkeypatch.setattr(
         "backend.services.response_cache._CACHED_QUESTIONS",
@@ -1253,14 +1307,13 @@ def test_the_mechanism_scan_detects_the_shipped_docker_claim(monkeypatch):
     )
     offenders = _mechanism_offenders(_cached_answers()[0])
     assert offenders, (
-        "the scan no longer rejects the claim that shipped, so it is not "
-        "pointed at the defect it was written for"
+        "the scan no longer rejects a claim about a mechanism this repository "
+        "does not ship, so it is not pointed at the defect it was written for"
     )
-    for mechanism in ("docker", "contenedores"):
-        assert mechanism in offenders, (
-            f"the scan missed {mechanism!r} in the shipped claim; it now "
-            f"reports {sorted(offenders)}"
-        )
+    assert "kubernetes" in offenders, (
+        f"the scan missed 'kubernetes' in the injected claim; it now reports "
+        f"{sorted(offenders)}"
+    )
 
 
 def test_the_mechanism_scan_accepts_a_disclaimed_mechanism():
@@ -1269,10 +1322,31 @@ def test_the_mechanism_scan_accepts_a_disclaimed_mechanism():
     Without this the guard would be "never say the word Docker", which would
     make the honest answer to "¿Qué experiencia tienes con Docker?" impossible
     to give — the recruiter asked, and silence is its own failure.
+
+    WHY THE EXAMPLES ARE KUBERNETES NOW. The three container examples this
+    used to assert ("Docker no lo uso en este proyecto", "En InterviewTTS no
+    hay contenedores") still return ``{}``, but they stopped testing the
+    DISCLAIMER: since the root Dockerfile and docker-compose.yml arrived on
+    2026-10-03, the container entries of ``_MECHANISM_CLAIMS`` are skipped by
+    the evidence check in ``_mechanism_offenders`` before the disclaimer is
+    ever consulted. The assertions passed for the wrong reason -- a control
+    that can no longer fail is not a control -- and one of them is now also
+    describing a deployment this repository does not have.
+
+    Kubernetes restores the mechanism under test. The repository ships no
+    orchestrator manifest, so ``_mechanism_offenders`` really does reach the
+    disclaimer branch for these sentences, and the clitic forms ("no uso",
+    "no hay", "no tengo") really are what ``_DISCLAIMER_RE`` has to absorb.
     """
-    assert _mechanism_offenders("En este proyecto no hay contenedores.") == {}
-    assert _mechanism_offenders("Docker no lo uso en este proyecto.") == {}
-    assert _mechanism_offenders("En InterviewTTS no hay contenedores.") == {}
+    assert _mechanism_offenders("En este proyecto no uso Kubernetes.") == {}
+    assert _mechanism_offenders("No hay Kubernetes en InterviewTTS.") == {}
+    assert _mechanism_offenders("No tengo Kubernetes.") == {}
+
+    # And the disclaimed case must still be ACCEPTED for the reason it was
+    # always accepted for -- the disclaimer -- rather than merely because the
+    # sentence names nothing. Removing the denial has to turn it red, or the
+    # three assertions above prove nothing about the disclaimer.
+    assert "kubernetes" in _mechanism_offenders("En este proyecto uso Kubernetes.")
 
 
 def test_the_mechanism_scan_accepts_a_mechanism_the_repository_ships():
@@ -1282,18 +1356,39 @@ def test_the_mechanism_scan_accepts_a_mechanism_the_repository_ships():
     direction explicitly, and asserts the evidence exists — so if the systemd
     unit were ever deleted, this fails and says the evidence moved, rather than
     the guard quietly becoming narrower.
+
+    WHY THE CONTAINER ASSERTION IS INVERTED. It used to require
+    ``_repo_has_artifact(_CONTAINER_ARTIFACTS) is False`` — no Dockerfile, so a
+    Docker claim is a fabrication, so the scan must reject it. On 2026-10-03
+    this repository gained a root Dockerfile and docker-compose.yml. The
+    assertion was not wrong when it was written; its premise expired. Asserting
+    ``is False`` now means asserting that a file the user can read at the
+    repository root does not exist, and it would fail forever unless somebody
+    deleted the Dockerfile.
+
+    The guard is still tied to the evidence, in both directions, which is what
+    the original message asked for. What changed is WHICH evidence exists. So
+    the container branch now asserts ``is True`` and then proves the scan
+    really accepts a Docker claim because of that evidence — not because the
+    vocabulary stopped matching.
     """
     for artifacts in (("*.service",), ("*.conf",)):
         assert _repo_has_artifact(artifacts), f"no artifact matches {artifacts}"
-    assert _repo_has_artifact(_CONTAINER_ARTIFACTS) is False, (
-        "this repository ships a container artifact, so a Docker claim would "
-        "no longer be a fabrication; recalibrate rather than let the "
-        "evidence-bound branch of the scan go untested"
+    assert _repo_has_artifact(_CONTAINER_ARTIFACTS) is True, (
+        "this repository no longer ships a container artifact, so the "
+        "evidence-bound branch for containers is untested; recalibrate rather "
+        "than let a shipped Docker claim be rejected again"
     )
     offenders = _mechanism_offenders(
         "Lo despliego con systemd y nginx delante haciendo de proxy inverso."
     )
     assert offenders == {}, f"a shipped mechanism was reported as ungrounded: {offenders}"
+
+    docker_claim = "En InterviewTTS uso contenedores para el desarrollo local."
+    assert _mechanism_offenders(docker_claim) == {}, (
+        "the repository ships a Dockerfile and docker-compose.yml, so a Docker "
+        f"claim must be accepted; it was reported as ungrounded: {offenders}"
+    )
 
 
 def test_the_mechanism_scan_is_not_pointed_at_nothing():
@@ -1303,17 +1398,33 @@ def test_the_mechanism_scan_is_not_pointed_at_nothing():
     globs match no file, would pass every test above while checking nothing.
     This is the "does the scan reach" question from the section above, asked
     of the deployment vocabulary.
+
+    WHY THE SECOND HALF IS INVERTED. It used to assert that the container globs
+    match NOTHING, so that the Docker negative control could not pass for the
+    wrong reason. That is no longer the wrong reason to guard against and no
+    longer the truth: the root Dockerfile and docker-compose.yml have shipped
+    since 2026-10-03, so the container patterns DO match, and the control that
+    needed them to come up empty is now the Kubernetes one above.
+
+    Reach is still asserted, in both directions, and the kubernetes half is
+    untouched because the repository still ships no orchestrator manifest —
+    that half is the one that has to keep failing when a claim is invented.
     """
     offenders = _mechanism_offenders("Despliego con Kubernetes en el VPS.")
     assert "kubernetes" in offenders, (
         f"the vocabulary cannot detect a claim it names: {offenders}"
     )
-    # The container globs must currently match NOTHING, or the docker control
-    # above is passing for the wrong reason (this repository has no Dockerfile).
-    assert not _repo_has_artifact(_CONTAINER_ARTIFACTS), (
-        "this repository now ships a container artifact; the docker claim is "
-        "no longer a fabrication, so recalibrate the guard rather than "
-        "letting it pass for the wrong reason"
+    # The container globs now match, so the container vocabulary is reachable
+    # and its evidence-bound branch is the one under test next door.
+    assert _repo_has_artifact(_CONTAINER_ARTIFACTS), (
+        "this repository no longer ships a container artifact; the Docker "
+        "claim is a fabrication again, so recalibrate the guard rather than "
+        "let the evidence-bound branch pass for the wrong reason"
+    )
+    assert not _repo_has_artifact(_ORCHESTRATOR_ARTIFACTS), (
+        "this repository now ships an orchestrator manifest, so the "
+        "kubernetes negative control is passing for the wrong reason; "
+        "recalibrate the guard rather than let it go toothless"
     )
 
 

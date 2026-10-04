@@ -33,6 +33,10 @@ def mock_services(isolated_write_targets):
         # report this fixture's otherwise-healthy deployment as degraded. The
         # fixture describes a working system; it has to say which one.
         mock_rag.mode = "embeddings"
+        # Same reason, one field over: `rerank_mode` is also read by /api/health
+        # to DERIVE its status, and a MagicMock attribute is not a mode.
+        mock_rag.rerank_mode = "loaded"
+        mock_rag.rerank_identity = "stub@rerank-v1"
 
         # LLM mock
         mock_llm.generate.return_value = "I built InterviewTTS using Python and FastAPI."

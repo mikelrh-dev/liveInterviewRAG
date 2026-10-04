@@ -24,6 +24,11 @@ WorkingDirectory=/opt/interviewtts
 ExecStart=/opt/interviewtts/venv/bin/uvicorn backend.main:app --host 127.0.0.1 --port 8000 --proxy-headers --forwarded-allow-ips 127.0.0.1
 Restart=always
 RestartSec=5
+# First boot downloads ~1 GB of models (Whisper 464 MB + embedder 458 MB).
+# systemd's 90 s default kills that download on a slow link and, with
+# Restart=always above, restart-loops every 5 s until the cache fills.
+# 10 min covers slow links; later boots reuse the cache and take seconds.
+TimeoutStartSec=10min
 Environment=PYTHONUNBUFFERED=1
 # HOME is stated rather than inherited, because the embedding model cache lives
 # under it. The user is created with `useradd --home-dir /opt/interviewtts`, and
@@ -71,7 +76,7 @@ ProtectHome=true
 #       Required, and the whole reason this line is worth reading. RAGPipeline
 #       persists its embeddings here and re-embeds the corpus whenever the cache
 #       cannot be written -- it catches the exception and logs a warning
-#       (backend/services/rag.py:709), so the symptom is a warning nobody reads
+#       (backend/services/rag.py:1059), so the symptom is a warning nobody reads
 #       and a full re-embed at every boot. That directory is gitignored, so a
 #       clone never creates it; README step 3 and deploy.sh do. It is a real
 #       directory with a real owner, so its absence is a provisioning mistake

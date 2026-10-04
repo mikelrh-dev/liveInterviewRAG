@@ -1,0 +1,139 @@
+# SECURITY BARRIER. This file is the only thing standing between the host's real
+# secrets and PII and a published image layer. The Dockerfile's COPY list is
+# deliberately narrow, so nothing below is load-bearing for the build -- it is
+# load-bearing for the day someone "simplifies" that COPY into `COPY . .`.
+#
+# Rule of thumb used here: exclude by DIRECTORY, not by file extension, wherever
+# the two could collide. `audio/` excludes recordings; a blanket `*.mp4` would
+# also have deleted frontend/assets/avatar-talking.mp4, which is the thing the
+# page actually loads.
+
+# ---------------------------------------------------------------- secrets ----
+# .env holds a real OPENROUTER_API_KEY, an HF_TOKEN and the live model choices.
+# The whole family goes, not just `.env`: excluding one filename is a rule that
+# survives until someone adds `.env.local` and nobody checks the new file. There
+# is nothing in the image that reads any of them -- the values are injected at
+# run time by compose's env_file, which reads the host file without ever putting
+# it in a layer.
+.env
+.env.*
+
+# ------------------------------------------------------------------- PII ------
+# Real personal data, never to leave the machine in an image:
+#   wiki/       legal name, birth year, city, university, work history
+#   candidate/  generated from wiki/, same content in Markdown
+#   RAGraw/     the CV as a PDF
+# These are bind-mounted read-only by docker-compose.yml instead.
+wiki/
+candidate/
+RAGraw/
+
+# Also exclude them under any nesting, in case one is ever moved without the
+# root-level pattern being revisited.
+**/wiki/
+**/candidate/
+**/RAGraw/
+
+# ------------------------------------------------------------- app state -----
+# Written at run time. audio/ has thousands of recorded answers on this host and
+# must never be baked; data/ holds the SQLite conversation store (the most
+# sensitive thing this project produces) and its *.db.bak-* backups.
+audio/
+data/
+reports/
+backend/.rag_cache/
+
+# Belt and braces for a database that ends up somewhere else: every SQLite
+# artifact, by extension, wherever it sits.
+*.db
+*.db.bak-*
+*.sqlite
+*.sqlite3
+
+# Recorded-media extensions, but NOT *.mp4/-- frontend/assets ships .mp4 avatars
+# that the page needs, so this rule is narrower than it looks on purpose.
+*.mp3
+*.wav
+*.webm
+*.ogg
+
+# ------------------------------------------------------- build inputs no ----
+# None of these are read at run time. .venv/venv/python/build and
+# interviewtts.egg-info would copy a WINDOWS virtualenv (already-resolved
+# .exe launchers, wrong ABI) over the image's own site-packages. node_modules is
+# the JS test runner's tree.
+#
+# Every directory pattern below is written `**/name/` rather than `name/`, and
+# that is not style. Docker anchors a pattern CONTAINING a slash against the
+# full path relative to the context root, so a bare `.ruff_cache/` matches
+# `/.ruff_cache/` and nothing else -- it silently ignored
+# `backend/.ruff_cache`, which is where this repository's actually keeps it.
+# The first build shipped 5 __pycache__ directories and 2 .ruff_cache
+# directories because of exactly that. `**/` is the only spelling that matches
+# at every depth. (Patterns with NO slash at all, like `*.db`, already match a
+# basename at any depth and need no prefix.)
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/.ruff_cache/
+**/.mypy_cache/
+**/*.egg-info/
+**/.eggs/
+**/node_modules/
+**/.venv/
+**/venv/
+**/build/
+**/dist/
+.venv/
+venv/
+env/
+ENV/
+python/
+node_modules/
+package-lock.json
+
+# --------------------------------------------------------- not project code --
+# Tooling, local indexes and working documents. `original/` is a nested git
+# clone (a gitlink), `wikiDocs/` an Obsidian vault whose manifest references the
+# private wiki, `.codegraph/` a derived index, `.atl/` and `.measure/` local
+# runtime state.
+.git/
+.gitattributes
+.github/
+.codegraph/
+.atl/
+.measure/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+openspec/
+auditoria/
+interviewtts-docs/
+wikiDocs/
+original/
+nginx/
+avatar/
+"Nueva carpeta/"
+scripts/
+tests/
+docs/
+
+# Windows host litter, which would otherwise show up as unreadable-name noise
+# in the build context.
+Thumbs.db
+desktop.ini
+.DS_Store
+nul
+*.lnk
+
+# The Docker artefacts themselves, so a rebuild never sees the last one.
+Dockerfile
+.dockerignore
+docker-compose.yml
+docker-compose.yaml
+compose.yaml
+
+# ----------------------------------------------------------------- logs ------
+*.log

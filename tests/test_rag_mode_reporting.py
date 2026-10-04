@@ -124,6 +124,12 @@ class TestHealthReportsTheMode:
         class Stub:
             chunks = [object()] * 7
             mode = "tfidf"
+            # A stub that answers `mode` but not `rerank_mode` would make
+            # /api/health raise instead of degrade, and an AttributeError in a
+            # health probe is exactly the failure mode the endpoint is supposed
+            # to prevent. It mirrors the pipeline interface, so it carries both.
+            rerank_mode = "loaded"
+            rerank_identity = "stub@rerank-v1"
 
         monkeypatch.setattr(container, "rag_pipeline", lambda: Stub())
 

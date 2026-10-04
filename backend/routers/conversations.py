@@ -19,7 +19,7 @@ router = APIRouter()
 async def create_conversation():
     """Create a new conversation session."""
     conversation_id = uuid.uuid4().hex
-    welcome = "¡Hola! Soy Mikel, desarrollador junior DAM. Pregúntame sobre mi experiencia, proyectos o habilidades."
+    welcome = "¡Hola! Soy Mikel, desarrollador. Pregúntame sobre mi experiencia, proyectos o habilidades."
 
     now_iso = datetime.utcnow().isoformat()
     conversations[conversation_id] = {

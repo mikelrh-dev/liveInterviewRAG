@@ -13,6 +13,8 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import yaml
 
+from backend.services.rerank import RERANK_VERSION, Reranker
+
 logger = logging.getLogger(__name__)
 
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n?", re.DOTALL)
@@ -86,6 +88,26 @@ QUERY_EXPANSIONS: Dict[str, List[str]] = {
 # "4" cache keeps serving a bodyless heading as the top-1 context for 3 of the
 # 49 labelled questions.
 CHUNK_FILTER_VERSION = "5"
+
+#: Which lexical-rescue behaviour produced a given set of results. NOT part of
+#: the embedding cache's identity, and that is a decision rather than an
+#: omission, so it is recorded here rather than left to be inferred.
+#:
+#: The cache stores VECTORS, and the rescue stores nothing: it is fitted at
+#: query time from ``embedding_text(chunk)`` over whatever chunks the run
+#: already holds. Those four fields -- ``content``, ``h1``, ``summary`` and
+#: ``section`` -- are exactly what ``_save_embeddings_cache`` persists, so a run
+#: restored from cache and a run that recomputed hold byte-identical text and
+#: therefore produce byte-identical BM25 scores. Bumping ``CHUNK_FILTER_VERSION``
+#: for this would invalidate a cache whose vectors are perfectly correct and cost
+#: a full re-embed (~100s on this corpus) to rebuild numbers that did not move.
+#: The invariant that actually matters is pinned by
+#: ``tests/test_lexical_rescue.py::TestTheRescueDoesNotDependOnTheCache``.
+#:
+#: So: bump THIS when the analyzer, the k1/b pair or the gate changes, and leave
+#: ``CHUNK_FILTER_VERSION`` alone. It is the version of a retrieval DECISION,
+#: not of a chunking semantic.
+LEXICAL_RESCUE_VERSION = "1"
 
 # ``[TODO ...]`` and friends. Tolerates the real spellings seen in wiki/:
 # ``[TODO: ask Mikel]``, ``[TODO]``, ``[TODO — fill in]``.
@@ -442,6 +464,197 @@ def embedding_text(chunk: Chunk) -> str:
     return f"{'. '.join(parts)}. {chunk.content}"
 
 
+# ── The lexical ranker (BM25), used only to rescue a full top-k ──────────────
+#
+# WHY IT EXISTS, AS A RANKING FAILURE AND NOT A COVERAGE FAILURE
+# ------------------------------------------------------------
+# The dense side does not run out of candidates on this corpus; it fills all
+# three production slots on 49 of 49 labelled questions and the gold page still
+# misses the top 3. Measured at top_k=3 before this existed: 40 of 49, with the
+# gold page present and ranked 4-15. A rescue that only fires when the dense
+# side returns FEWER than top_k results therefore never fires at all here --
+# measured, 0 of 49 -- and a rescue that appends to a top_k=49 list cannot move
+# a rank either, because the gold page is already in that list. Both were run
+# against the real corpus before any of this was written.
+#
+# So the compensation is for the CUT, not for the filter: the last slot is offered
+# to a lexical ranker over the same text the embedder saw.
+
+
+#: Words, so digits and punctuation never become terms.
+_BM25_TOKEN_RE = re.compile(r"[^\W\d_]+", re.UNICODE)
+
+#: Accented letters folded to their base form, and ONLY those.
+#:
+#: An explicit table rather than ``unicodedata.normalize("NFD", ...)`` plus a
+#: combining-mark filter, which is the usual spelling of this and is WRONG in
+#: Spanish: ``ñ`` decomposes into ``n`` plus a combining tilde, so the filter
+#: rewrites ``peña`` as ``pena`` -- and those are two different words in
+#: Spanish, one a cliff and one a penalty. ``ñ`` is a letter of its own here, not
+#: an ``n`` carrying an accent, so it is absent from this table on purpose and
+#: survives tokenisation intact.
+#:
+#: ``ü`` is here because it occurs (``tecnología``, ``inglés``) and folds to
+#: ``u``; the diaeresis is likewise not a separate letter.
+_BM25_ACCENT_FOLD = str.maketrans({
+    "á": "a", "é": "e", "í": "i", "ó": "o", "ú": "u", "ü": "u",
+    "Á": "a", "É": "e", "Í": "i", "Ó": "o", "Ú": "u", "Ü": "u",
+})
+
+#: There is deliberately NO stopword list, and that is a measurement rather than
+#: an omission.
+#:
+#: An 80-word hand-written Spanish list was here and was removed after being
+#: measured: strict recall@3 at top_k=3 over the 49 labelled questions, BM25
+#: ranking alone, 0.8367 with the list and 0.8367 without it. Not one question
+#: either way. The reason is structural rather than lucky -- BM25's idf already
+#: pushes a term down by how many chunks contain it, and a function word is in
+#: nearly all of them, so the list re-applied a discount the ranking had already
+#: taken. Keeping it would have meant 30 lines of Spanish vocabulary that a
+#: future reader has to maintain and cannot tell is doing anything, which is the
+#: same defect ``retrieve()``'s docstring records about the removed
+#: ``detect_doc_type`` keyword table: "keeping a table whose every key named a
+#: type nothing could filter on would be keeping a lookup nobody calls."
+#:
+#: Single characters ARE still dropped, and that is free: they are length
+#: noise in a corpus of prose and there is no IDF argument for them.
+
+
+def bm25_tokens(text: str) -> List[str]:
+    """The terms ``Bm25Index`` counts, and what ``expand_query`` must NOT touch.
+
+    Lowercased, accents folded, single characters dropped, function words KEPT
+    (see ``_BM25_STOPWORDS``'s absence above for the measurement).
+
+    Accent folding is the part that earns its place, and it is Spanish-specific
+    in the way that matters: a candidate writes ``practicas`` and the page says
+    ``prácticas``, so with accents kept the two are different terms and a
+    question can name a page it does not lexically match at all. Measured on the
+    49 labelled questions at top_k=3, BM25 ranking alone: 0.8163 keeping accents,
+    0.8367 folding them -- one question, for one line of ``str.maketrans``.
+    """
+    folded = text.lower().translate(_BM25_ACCENT_FOLD)
+    return [token for token in _BM25_TOKEN_RE.findall(folded) if len(token) > 1]
+
+
+class Bm25Index:
+    """Okapi BM25 over a fixed set of chunk texts, fitted once per ingest.
+
+    THE ASSERTION: given the same chunks, ``score(query)`` is a pure function of
+    the query, so the rescue contributes a deterministic rank and not a source
+    of run-to-run variation.
+
+    It does NOT choose what is relevant. There is no threshold and no cutoff
+    here; the caller decides which chunks are eligible at all (see
+    ``RAGPipeline._lexical_rescue``, which hands in only chunks the cosine
+    filter already accepted). A lexical ranker with its own idea of what clears
+    the bar would silently widen the candidate pool, and the threshold comment
+    in ``RAGPipeline.__init__`` would stop being a true statement.
+
+    The weighted matrix is DENSE rather than sparse on purpose. BM25's term
+    weight is elementwise in (chunk, term), and the term-frequency saturation
+    divides by a per-chunk length, so the whole computation is a handful of
+    vectorised operations over a 124 x ~2000 matrix -- 2 MB, built once at
+    ingest. Writing it against ``scipy.sparse`` would buy nothing and would make
+    the formula harder to read than the thing it computes.
+
+    ``idf`` is the Robertson/Sparck-Jones form with the +1 smoothing sklearn also
+    uses in ``TfidfVectorizer``, so it is always positive and a term present in
+    every chunk contributes rather than subtracting. Written out here rather than
+    taken from a fitted ``TfidfVectorizer`` because a tf-idf cosine is NOT BM25:
+    it lacks the saturation below, which is the whole reason this exists instead
+    of calling the fallback path.
+    """
+
+    def __init__(self, texts: List[str], k1: float, b: float):
+        self.k1 = k1
+        self.b = b
+        self.vocabulary_: Dict[str, int] = {}
+        rows: List[Dict[int, int]] = []
+        lengths: List[int] = []
+        for text in texts:
+            counts: Dict[int, int] = {}
+            length = 0
+            for token in bm25_tokens(text):
+                column = self.vocabulary_.setdefault(token, len(self.vocabulary_))
+                counts[column] = counts.get(column, 0) + 1
+                length += 1
+            rows.append(counts)
+            lengths.append(length)
+
+        n_docs = len(rows)
+        width = len(self.vocabulary_)
+        document_frequency = np.zeros(width, dtype=np.float64)
+        for counts in rows:
+            for column in counts:
+                document_frequency[column] += 1.0
+
+        self.idf_ = (
+            np.log(1.0 + (n_docs - document_frequency + 0.5) / (document_frequency + 0.5))
+            + 1.0
+        )
+
+        lengths_array = np.asarray(lengths, dtype=np.float64)
+        self.average_length = float(lengths_array.mean()) if n_docs else 1.0
+
+        self.weighted_ = np.zeros((n_docs, width), dtype=np.float64)
+        for index, counts in enumerate(rows):
+            if not counts:
+                continue
+            columns = np.fromiter(counts.keys(), dtype=np.intp, count=len(counts))
+            frequencies = np.fromiter(
+                counts.values(), dtype=np.float64, count=len(counts)
+            )
+            # |d|/avgdl is per chunk; the saturation is therefore per (chunk,
+            # term) and nothing here couples two chunks together.
+            length_ratio = lengths_array[index] / (self.average_length or 1.0)
+            denominator = frequencies + self.k1 * (1.0 - self.b + self.b * length_ratio)
+            self.weighted_[index, columns] = (
+                self.idf_[columns] * frequencies * (self.k1 + 1.0) / denominator
+            )
+
+    def score(self, query: str, rows: Optional[List[int]] = None) -> np.ndarray:
+        """BM25 of ``query`` against the given chunk indices, or against all.
+
+        ``rows`` is the ELIGIBLE subset, not a post-filter: terms are summed over
+        the rows handed in, so a chunk outside them contributes nothing. That is
+        what lets the caller keep the cosine filter authoritative.
+
+        The query is NOT passed through ``expand_query``, and that is the point.
+        The expansion appends synonyms the interviewer did not type, which is a
+        reasonable thing to do before EMBEDDING a sentence and a wrong thing to
+        do before counting literal terms: the whole premise of this ranker is
+        that the candidate named ``fastapi`` and the page says ``FastAPI``.
+        Measured at top_k=3 over the 49 labelled questions, expanding here as
+        well gives 44 of 49 -- the same count, and not one question different on
+        either side, so the expansion buys this ranker nothing.
+        """
+        vocabulary = self.vocabulary_
+        columns: Dict[int, int] = {}
+        for token in bm25_tokens(query):
+            column = vocabulary.get(token)
+            if column is not None:
+                columns[column] = columns.get(column, 0) + 1
+
+        selected = (
+            np.arange(self.weighted_.shape[0], dtype=np.intp)
+            if rows is None
+            else np.asarray(rows, dtype=np.intp)
+        )
+        if not columns or selected.size == 0:
+            return np.zeros(selected.size, dtype=np.float64)
+
+        terms = np.fromiter(columns.keys(), dtype=np.intp, count=len(columns))
+        occurrences = np.fromiter(
+            columns.values(), dtype=np.float64, count=len(columns)
+        )
+        # The query side saturates too, so a term repeated in one question does
+        # not outweigh a term that appears once and matches a rare page name.
+        query_weights = (
+            occurrences * (self.k1 + 1.0) / (occurrences + self.k1)
+        )
+        return self.weighted_[np.ix_(selected, terms)].dot(query_weights)
+
 
 class RAGPipeline:
     """In-memory RAG pipeline with cosine similarity retrieval."""
@@ -450,9 +663,89 @@ class RAGPipeline:
     #: below, because a different ceiling is a different vector space.
     TFIDF_MAX_FEATURES = 384
 
+    #: BM25 term-frequency saturation. k1 is how fast a repeated term stops
+    #: paying; b is how much a long chunk is penalised for being long. Both are
+    #: the values Robertson and Sparck-Jones published and the ones every BM25
+    #: implementation since has kept, and they were NOT swept here: the sweep is
+    #: a retrieval decision of its own and deserves its own measurement, not a
+    #: number borrowed from the literature inside a change about something else.
+    BM25_K1 = 1.5
+    BM25_B = 0.75
+
+    #: The smallest ``top_k`` at which the lexical rescue runs.
+    #:
+    #: It is a floor and not a preference, and the measurement is what set it.
+    #: The rescue works by GIVING UP the last dense slot, so what it costs is
+    #: whatever that slot was holding. Measured on the full population with the
+    #: rescue forced on at both widths:
+    #:
+    #:     top_k=3   40/49 -> 44/49   5 gained, 1 lost
+    #:     top_k=2   39/49 -> 41/49   5 gained, 3 lost
+    #:
+    #: So at top_k=2 it would still be a net GAIN, and that is exactly why this
+    #: is a decision rather than a guard against a regression. Reserving one of
+    #: two slots makes the answer context half lexical and changes the evidence
+    #: the model reads on 8 of the 49 questions instead of 6; one slot in three
+    #: is the share this change was authorised at, and top_k=2 is not the answer
+    #: path anyway -- it is what the context panel asks for
+    #: (``backend/turns/streaming.py``, ``backend/turns/blocking.py``), while the
+    #: answer context is ``config.RAG_TOP_K`` at 3.
+    #:
+    #: If the intent is that the rescue serves every caller, delete this constant
+    #: and re-derive the two top_k=2 figures above in
+    #: ``tests/real_wiki.py``. Do not lower it without that measurement.
+    MIN_RESCUE_TOP_K = 3
+
+    #: The widest list the cross-encoder will permute.
+    #:
+    #: It exists because a width is a CLAIM about what the caller will read, and
+    #: the two published measurement widths disagree about that. At the shipped
+    #: width (``RAG_TOP_K`` = 3) the list IS the context the model reads, in
+    #: order, and reordering it is the whole point. At population width -- which
+    #: is where ``tests/test_recall_claims.py`` measures ``recall@1``/``@3``/
+    #: ``MRR@5``, and ``tests/real_wiki.py`` derives the floors from -- a top_k
+    #: of 49 is a RANKING, and only its first three entries were ever a context.
+    #: Permuting all 49 would reorder 46 slots no reader sees, cost roughly seven
+    #: times the CPU for the same answer, and move three published figures
+    #: describing a width the product does not serve.
+    #:
+    #: So 3 is derived rather than chosen: it is ``RAG_TOP_K``, and it covers the
+    #: context panel too, which asks for 2
+    #: (``backend/turns/streaming.py``, ``backend/turns/blocking.py``). Raising it
+    #: is a decision about a width nobody uses, not a tuning knob.
+    MAX_RERANK_TOP_K = 3
+
+    #: There is deliberately NO cosine threshold on the surrendered slot, and
+    #: that is a measured decision rather than an omission.
+    #:
+    #: A threshold looked like the way to make the rescue lossless, and on the
+    #: full population it appeared to work: surrendering only slots below 0.50
+    #: gave 43 of 49 with nothing lost, against 44 of 49 with one loss. It does
+    #: not survive the second population. On the committed corpus the single
+    #: question at stake has a surrendered-slot cosine of 0.3097 while the
+    #: CHEAPEST gain available is 0.3264 -- the loss sits BELOW every gain, so
+    #: there is no threshold that excludes the loss and keeps a gain. Swept at
+    #: 0.01 over 0.25-0.69 on both populations, the only thresholds that lose
+    #: nothing are the ones that rescue nothing.
+    #:
+    #: A parameter-free gate was tried in the same place and is worse: requiring
+    #: the surrendered slot to sit below the median (or the mean) eligible cosine
+    #: for that question blocks all 49, because dense rank 3 is above the median
+    #: on every question measured. Comparing the candidate's BM25 against the
+    #: surrendered page's own BM25 fires on 49 of 49 and blocks nothing, because
+    #: the surrendered page usually matches no query term and scores zero.
+    #:
+    #: So the trade is taken openly instead of hidden behind a number that does
+    #: not generalise: the rescue gains five questions and loses one on each
+    #: population, and
+    #: ``tests/test_lexical_rescue.py::TestTheRescueOnlyAdds`` asserts the exact
+    #: set of questions it costs, so the cost cannot change without the guard
+    #: turning red.
+
     def __init__(self, chunk_size: int = 400, chunk_overlap: int = 50, threshold: float = 0.25,
                  cache_dir: Optional[Path] = None,
-                 embedding_model: str = "paraphrase-multilingual-MiniLM-L12-v2"):
+                 embedding_model: str = "paraphrase-multilingual-MiniLM-L12-v2",
+                 reranker: Optional["Reranker"] = None):
         """``embedding_model``'s default is the model the app ships, and it is
         kept here rather than read from ``backend.config`` so the service stays
         free of a module-level global: the pipeline is constructed with whatever
@@ -463,6 +756,13 @@ class RAGPipeline:
         ``tests/test_rag_cache_identity.py::TestTheModelNameIsASingleSourceOfTruth``
         -- a duplicated literal that a test keeps in agreement is a contract,
         where a duplicated literal that nothing checks is a future incident.
+
+        ``reranker`` defaults to a DISABLED one, not to an enabled one. A default
+        enabled would mean every construction site -- the measurement harnesses,
+        the tests that only want embeddings, ``tests/test_rag.py`` -- silently
+        inherits a 470 MB download and ~90 ms per query, which is a decision made
+        in a default rather than in ``backend.config.py``, where the operator can
+        see it. ``backend/main.py`` passes the real one explicitly.
         """
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
@@ -517,9 +817,23 @@ class RAGPipeline:
         # count, the labelled questions return these counts of RESULTS:
         #     full (37 pages, 49 questions) discards 959 of the 1813 results (52.9%) -- 854 results with the filter and 1813 without
         #     reduced (33 pages, 41 questions) discards 722 of the 1353 results (53.4%) -- 631 results with the filter and 1353 without
-        # and at the shipped top_k=3 it costs the caller nothing at all, which
+        # and at the shipped top_k=3 it costs the caller one slot in three, which
         # is the fact the two numbers together say: a wide filter that is
         # invisible until a question runs thin.
+        #
+        # THAT LAST SENTENCE USED TO SAY "nothing at all", and the lexical rescue
+        # is what made it false. One slot in three is now offered to BM25 by
+        # ``_lexical_rescue``, which ranks over ALL chunks rather than over this
+        # filter's survivors, so a page the cosine side rejected can reach the
+        # model. That is deliberate and it is what two of the three questions the
+        # rescue was built for need: their gold pages score 0.2301 and 0.1703
+        # against this 0.25, so they are filtered out of the candidate set
+        # entirely rather than ranked low, and no lexical slot can reach a page
+        # the dense side never proposed. The counts above are untouched by it,
+        # and not by luck -- the rescue cannot run at a ``top_k`` wider than the
+        # corpus, which is the width these counts are measured at, and that is
+        # asserted rather than assumed in
+        # ``tests/test_lexical_rescue.py::TestTheFilterCountsAreNotWidenedByTheRescue``.
         #
         # Both counts are counts of RESULTS, which is the only space
         # ``retrieve()`` can be asked about, and they are bounded by the page
@@ -538,8 +852,10 @@ class RAGPipeline:
         self._embedder = None
         self._use_tfidf = False
         self._tfidf_vectorizer = None
+        self._bm25: Optional[Bm25Index] = None
         self._initialized = False
         self._embedding_model = embedding_model
+        self._reranker: "Reranker" = reranker if reranker is not None else Reranker(enabled=False)
         self._cache_dir = cache_dir
         self._metadata_path: Optional[Path] = None
         if self._cache_dir:
@@ -606,6 +922,40 @@ class RAGPipeline:
         if not self._initialized:
             return "uninitialized"
         return "tfidf" if self._use_tfidf else "embeddings"
+
+    @property
+    def rerank_mode(self) -> str:
+        """Whether the cross-encoder that reorders the top-k is actually in use.
+
+        A SEPARATE property rather than another value of ``mode``, because the
+        two fail independently and an operator needs to tell them apart: a
+        TF-IDF fallback with a loaded reranker and a multilingual embedder with a
+        dead reranker are different deployments with different fixes, and one
+        string cannot say which is which.
+
+        It exists at all because of the same argument as ``mode``. The top-k SET
+        is identical with and without the reranker -- a permutation cannot change
+        it -- so ``rag_chunks``, the recall figures and the filter counts in
+        ``/api/health`` are all identical either way. A pipeline that lost its
+        reranker is therefore invisible to every other field in that payload, and
+        ``status: ok`` over it would be true of a service nobody is running.
+        Read by ``/api/health`` via ``EXPECTED_RERANK_MODE``.
+        """
+        return self._reranker.mode
+
+    @property
+    def rerank_identity(self) -> str:
+        """Which reordering decision produced the order being served right now.
+
+        Versioned (``RERANK_VERSION``) for the same reason
+        ``LEXICAL_RESCUE_VERSION`` is: so that a log line or a health payload can
+        name the retrieval DECISION rather than leaving it to be inferred from
+        whatever the defaults happen to be today. It is not part of the embedding
+        cache's identity, and the reasoning for that is in
+        ``backend/services/rerank.py`` -- the cache stores vectors and four text
+        fields, and a reordering changes neither.
+        """
+        return self._reranker.identity
 
     # ── Embedding cache helpers ──────────────────────────────────────────
 
@@ -838,11 +1188,17 @@ class RAGPipeline:
 
         start_time = time.time()
         self.chunks = []
+        # Both branches below replace ``self.chunks``, so the lexical index has
+        # to be dropped HERE rather than at each exit: an index fitted over the
+        # PREVIOUS ingest is the one way this class could serve a BM25 score for
+        # a chunk that no longer exists. See ``_lexical_index``.
+        self._bm25 = None
 
         # ── Try cache first ────────────────────────────────────────────
         cached = self._load_embeddings_cache(documents)
         if cached is not None:
             self.chunks = cached
+            self._warm_reranker()
             elapsed = time.time() - start_time
             logger.info("RAG cache hit — %d chunks restored in %.3fs", len(self.chunks), elapsed)
             return len(self.chunks)
@@ -861,9 +1217,29 @@ class RAGPipeline:
         doc_hash = self._compute_documents_hash(documents)
         self._save_embeddings_cache(self.chunks, doc_hash)
 
+        self._warm_reranker()
+
         elapsed = time.time() - start_time
         logger.info("Ingestion (compute) completed in %.2fs", elapsed)
         return len(self.chunks)
+
+    def _warm_reranker(self) -> None:
+        """Load the cross-encoder now, so the first query does not pay for it.
+
+        Deliberately at the END of the ingest and on BOTH branches, because the
+        two branches are the two ways a corpus arrives and a warm that only
+        happens on a cache miss would leave the cold path paying ~20 s inside a
+        user's turn -- with somebody waiting. The trade is that startup pays it
+        once instead, which is the moment where paying it costs nothing.
+
+        It is a WARM, not a requirement: ``ensure_loaded`` swallows its own
+        failure and records ``failed``, so a deploy with no network still ingests
+        and still serves the dense+BM25 order. That is why this returns nothing
+        and why the caller does not check.
+        """
+        if not self._reranker.enabled:
+            return
+        self._reranker.ensure_loaded()
 
     def _chunk_document(self, filename: str, content: str) -> List[Chunk]:
         """Split a document into chunks, respecting heading boundaries.
@@ -1028,6 +1404,28 @@ class RAGPipeline:
         for i, chunk in enumerate(self.chunks):
             chunk.embedding = normalized[i]
 
+    @property
+    def _lexical_index(self) -> Optional[Bm25Index]:
+        """The BM25 index over the current chunks, fitted on first use.
+
+        Built lazily rather than in ``ingest_documents`` because most runs never
+        retrieve: the context panel path, the health endpoint and every ingest
+        that is only measuring do not, and fitting an index nobody scores is
+        work done for nothing. ``ingest_documents`` is the only place that
+        replaces ``self.chunks``, and it drops the index there, so what is fitted
+        always matches what is being retrieved.
+
+        ``None`` when there is no text to rank. A pipeline with no chunks is not
+        a pipeline that should fail on the way to returning ``[]``.
+        """
+        if self._bm25 is None and self.chunks:
+            self._bm25 = Bm25Index(
+                [embedding_text(c) for c in self.chunks],
+                k1=self.BM25_K1,
+                b=self.BM25_B,
+            )
+        return self._bm25
+
     def retrieve(self, query: str, top_k: int = 3) -> List[Tuple[Chunk, float]]:
         """Retrieve the most relevant chunks for a query.
 
@@ -1065,14 +1463,42 @@ class RAGPipeline:
         the production path was 0.5714 with the guess applied and 0.6531
         without. Two questions fixed, six broken.
 
-        The filter was removed rather than repaired because a substring match
+The filter was removed rather than repaired because a substring match
         has no business deciding what the model is allowed to read, and because
-        the only honest fix for a filter that removes the right answer some of
-        the time is to not filter. The keyword table went with it: keeping a
+        the only honest fix for a filter that removes the right answer some of the
+        time is to not filter. The keyword table went with it: keeping a
         table whose every key named a type nothing could filter on would be
         keeping a lookup nobody calls. ``Chunk.type`` stays -- it is read from
         frontmatter, shown in the context header, and part of the embedding
         cache's identity; what is gone is the filter over it.
+
+        NOTE ON THE LEXICAL RESCUE
+        ---------------------------
+        One of the three slots is offered to BM25 when the cut, not the filter,
+        is what lost the answer. Everything above this note is unchanged: the
+        filter still runs at ``self.threshold``, the sort still decides the dense
+        order, and a query whose eligible pages fit in ``top_k`` returns exactly
+        what it returned before. See ``_lexical_rescue`` for the gate and
+        ``backend/services/rag.py`` LEXICAL_RESCUE_VERSION for why the embedding
+        cache does not carry it.
+
+        NOTE ON THE CROSS-ENCODER RE-RANK
+        ----------------------------------
+        The list that comes out of the two stages above is then PERMUTED by a
+        cross-encoder, and that is the last thing that happens. Reordering rather
+        than re-selecting is the whole safety argument: the cosine threshold
+        stays a threshold on cosenos applied BEFORE the reranker, the set of
+        pages served is bit-for-bit the set without it, and ``recall@3`` is
+        therefore untouchable at this stage by construction rather than by a
+        favourable measurement. What moves is the ORDER, and with it ``recall@1``:
+        measured on the 49 labelled questions, 36 -> 40, net +4 (7 promotions,
+        3 demotions); on the reduced population 31 -> 33, net +2.
+
+        Two costs are real and are not hidden by that guarantee. It adds ~90 ms of
+        CPU per query to a ~24 ms retrieval, and it cannot recover a page the
+        cosine filter already discarded -- five of the 49 questions stay out of
+        the top-3 for that reason and no reordering reaches them. See
+        ``backend/services/rerank.py`` and ``_rerank``.
         """
         if not self.chunks:
             return []
@@ -1105,7 +1531,205 @@ class RAGPipeline:
 
         # Sort by descending score
         scores.sort(key=lambda x: x[1], reverse=True)
-        return self._one_chunk_per_page(scores, top_k)
+        dense = self._one_chunk_per_page(scores, top_k)
+        if len(dense) < top_k:
+            # Fewer eligible PAGES than slots: the cut had nothing to cut, so
+            # there is nothing for a rescue to rescue and the dense list is the
+            # answer. This is the same condition the note above describes, read
+            # on the result instead of on the filter.
+            return self._rerank(query, dense, top_k)
+        return self._rerank(query, self._lexical_rescue(query, dense, top_k), top_k)
+
+    def _rerank(
+        self, query: str, ordered: List[Tuple[Chunk, float]], top_k: int
+    ) -> List[Tuple[Chunk, float]]:
+        """Reorder an already-chosen list with the cross-encoder, or return it.
+
+        THE ASSERTION: the returned list holds the SAME chunks in a different
+        order. Nothing is added, nothing is dropped, and the number of distinct
+        pages is unchanged -- which is what makes ``recall@3`` structurally
+        untouchable by this stage rather than merely unregressed in one
+        measurement. The distinctness itself is inherited from
+        ``_one_chunk_per_page``, and a permutation cannot break it.
+
+        WHY IT GOES LAST, AFTER THE RESCUE
+        ----------------------------------
+        Because this stage decides ORDER and the other two decide SET. A
+        cross-encoder that could add a page would be changing which pages the
+        model is allowed to read, which is the decision ``__init__`` measures and
+        publishes with a name, and it would put ``recall@3`` at risk for a gain
+        this project has not measured. Permuting last keeps every set-valued
+        claim in this repository exactly true.
+
+        The passage handed to the model is ``embedding_text(chunk)``, NOT
+        ``chunk.content``, and that choice is worth nine questions: with
+        ``content`` the measured net is **-5** (6 promotions, 11 demotions) and
+        with ``embedding_text`` it is **+4** (7 and 3). The bi-encoder, BM25 and
+        this cross-encoder all read the same text for that reason; the identity
+        prefix is what tells a 0.1B model which page it is looking at. Measured
+        and asserted by ``tests/test_rerank.py``.
+
+        The returned SCORE is the cross-encoder logit, for the same reason
+        ``_lexical_rescue`` returns BM25 rather than the cosine: it is the
+        quantity that decided the position. The panel's score column is
+        consequently heterogeneous across three scales, which was already true
+        of two of them and is visible rather than hidden.
+
+        It is gated by ``MAX_RERANK_TOP_K`` and not applied to every width, for the
+        same structural reason the rescue is gated by ``MIN_RESCUE_TOP_K``: a
+        width is a claim about what the caller will read. A top_k wide enough to
+        hold every page (``tests/test_recall_claims.py`` measures at exactly that)
+        is a RANKING, not a context -- reordering it reorders slots that no
+        reader ever sees, costs ~7x the CPU, and would move the published
+        population-width figures for a change nobody experiences. The gate is
+        derived from the shipped width on purpose: ``RAG_TOP_K`` is 3 and the
+        context panel asks for 2, so 3 covers every production caller.
+        """
+        if (
+            not self._reranker.enabled
+            or top_k > self.MAX_RERANK_TOP_K
+            or len(ordered) < 2
+        ):
+            # Fewer than two slots has no order to improve, and skipping it saves
+            # a pointless model call on the questions where the corpus is thin.
+            return ordered
+        passages = [embedding_text(chunk) for chunk, _ in ordered]
+        try:
+            ranked = self._reranker.rerank(query, passages)
+        except Exception:  # noqa: BLE001 — degradar, nunca propagar
+            # ``Reranker.rerank`` already swallows its own failures, so this is
+            # defence in depth rather than the primary path: it also covers a
+            # subclass, and it means the guarantee "a reranker failure never
+            # breaks retrieval" is a property of THIS call site instead of a
+            # property of another module's internal discipline. A component that
+            # costs 90 ms, 470 MB and 1 GB of RSS can fail in ways this file
+            # cannot enumerate, and a retrieval pipeline with an LLM behind it
+            # is the wrong place to find out which one it was.
+            logger.exception(
+                "Cross-encoder re-rank raised; serving the dense+BM25 order "
+                "unchanged for %r",
+                query,
+            )
+            return ordered
+        if ranked is None:
+            # Degraded: no model, or the model failed. The dense+BM25 order is a
+            # measured configuration (36/49 and 31/33 gold@1), not a nameless
+            # failure mode, so it is served unchanged and ``/api/health`` reports
+            # why through ``rerank_mode``.
+            return ordered
+        return [(ordered[index][0], score) for index, score in ranked]
+
+    def _lexical_rescue(
+        self,
+        query: str,
+        dense: List[Tuple[Chunk, float]],
+        top_k: int,
+    ) -> List[Tuple[Chunk, float]]:
+        """Trade the LAST dense slot for the best page BM25 says was missed.
+
+        THE ASSERTION: a question that already had its gold page inside the
+        dense top-k keeps it, and a question whose eligible pages fit in top_k is
+        returned untouched. Both are checked directly on the real corpus by
+        ``tests/test_lexical_rescue.py::TestTheRescueOnlyAdds``.
+
+        It does this by ADDING a page, never by re-ranking the dense ones: the
+        first ``top_k - 1`` results are the dense results, verbatim and in their
+        own order, so a page the cosine side already ranked into the answer
+        cannot be displaced by one it did not. Measured at top_k=3 over the 49
+        labelled questions: strict recall@3 0.8163 -> 0.8980, five questions
+        gained and one lost.
+
+        IT IS NOT LOSSLESS, and it is worth being exact about that, because
+        "the rescue only adds" is the sentence that makes this look free. A top-k
+        is a fixed number of slots: offering one of them to a second ranker
+        necessarily means the slot is no longer available to the first. What IS
+        guaranteed is directional -- the kept ``top_k - 1`` are never re-ordered,
+        never swapped and never dropped -- so the rescue can only change the
+        answer at rank ``top_k``. That single rank is worth five questions on
+        each population and costs one, and no threshold on the surrendered slot
+        can separate the two (see ``RESCUE_MAX_SURRENDERED_COSINE``'s absence
+        above). The question it costs is named, per population, in
+        ``tests/lexical_rescue_losses.py``.
+
+        WHY IT IS GATED ON THE CUT, WHICH IS THE ONLY THING THAT WORKS HERE
+        ----------------------------------------------------------------------
+        The first design was "supplement when the dense side returns fewer than
+        top_k". On this corpus that condition is never true: the dense side
+        fills 3 of 3 on 49 of 49 questions, so the branch was dead code and moved
+        nothing (measured: 0 of 49 fired, identical figures on all four metrics).
+        The failure this compensates for is the CUT losing an eligible page, so
+        the gate asks whether the cut bound at all, which is exactly
+        ``len(dense) == top_k``.
+
+        WHY THE CANDIDATE POOL IGNORES THE COSINE THRESHOLD
+        ---------------------------------------------------
+        This is the part that looks like a mistake and is not, so it is measured
+        rather than argued. Two of the three questions this rescue was built for
+        are not RANKING misses at all -- their gold pages are BELOW the 0.25
+        threshold, at best-cosine 0.2301 (``skills/backend.md``) and 0.1703
+        (``stories/autodidacta-fastapi-docker-async.md``) against a page that
+        would have been served at 0.3895. Restricting BM25 to the filter's own
+        survivors therefore cannot recover them, and does not: measured at
+        top_k=3, that variant reaches 42 of 49 and recovers NONE of the three,
+        against 45 of 49 and two of three for this one. ``backend/config.py``
+        already records why that is not a bug to be argued away -- the previous
+        0.30 was calibrated against a different vector space, and a cosine scale
+        is a property of the model, not of the corpus.
+
+        The consequence is stated rather than hidden: one slot in three can now
+        hold a page the cosine filter rejected, so "at the shipped top_k=3 it
+        costs the caller nothing at all" is no longer true of the threshold and
+        was corrected where it is published. What the filter still decides
+        UNCONDITIONALLY is the dense two slots, and the measured result counts
+        the threshold publishes are untouched, because the rescue cannot run at
+        the ``top_k`` twice the chunk count those counts are measured at -- see
+        ``tests/test_lexical_rescue.py::TestTheRescueLeavesTheCountsAlone``.
+
+        WHAT THE RETURNED SCORE IS
+        --------------------------
+        The BM25 score, not the chunk's cosine. It is the quantity that actually
+        selected the page, and the two are not the same scale: a lexical rank is
+        unbounded while a cosine sits in [-1, 1]. Substituting the cosine would
+        publish a plausible-looking number with no relationship to why the page
+        was chosen, and would put a 0.26 above a 0.45 in the context panel. The
+        cost is that the panel's score column is now heterogeneous, which is
+        visible rather than hidden.
+        """
+        if top_k < self.MIN_RESCUE_TOP_K:
+            return dense
+
+        index = self._lexical_index
+        if index is None:
+            return dense
+
+        taken = {chunk.source for chunk, _ in dense}
+        pool = [
+            position
+            for position, chunk in enumerate(self.chunks)
+            if chunk.source not in taken
+        ]
+        if not pool:
+            return dense
+
+        scores = index.score(query, rows=pool)
+        if not scores.size or float(scores.max()) <= 0.0:
+            # The query shares no term with anything in the corpus -- every token
+            # of it was a function word. BM25 has no opinion, so every score is
+            # zero and sorting them returns CORPUS ORDER, whose first element is
+            # whichever page happens to chunk first. That is not a weak match,
+            # it is an arbitrary page wearing a score, and it would displace the
+            # third-best cosine match to say so. Declining leaves the dense
+            # answer intact, which is the right answer to a question with no
+            # lexical content. Pinned by
+            # ``tests/test_lexical_rescue.py::test_a_query_with_no_lexical_evidence_injects_nothing``.
+            return dense
+        # Stable, so chunks BM25 ties keep the corpus order they arrived in.
+        order = np.argsort(-scores, kind="stable")
+        ranked = [(self.chunks[pool[i]], float(scores[i])) for i in order]
+        rescued = self._one_chunk_per_page(ranked, 1)
+        if not rescued:
+            return dense
+        return dense[: top_k - 1] + rescued
 
     @staticmethod
     def _one_chunk_per_page(
@@ -1232,10 +1856,34 @@ class RAGPipeline:
         This is the deduplication, not a cache. ``retrieve()`` is a pure
         function of ``(query, top_k)``: it reads ``self.chunks`` and
         ``self._embedder``, calls ``expand_query``, and sorts on score with a
-        stable sort -- it mutates nothing. One call therefore yields exactly
-        what two calls yielded, and both formatters are pure functions of the
-        result. Nothing is memoised, so there is no cache to go stale, no key
-        to be wrong, and no per-turn state to leak between requests.
+        stable sort -- it mutates nothing that a caller can observe. One call
+        therefore yields exactly what two calls yielded, and both formatters are
+        pure functions of the result. No per-turn state exists to leak between
+        requests and no result is memoised, so there is no answer cache to go
+        stale and no key to be wrong.
+
+        ONE SCOPE CHANGE, because the cross-encoder made the claim above too
+        strong. ``retrieve()`` now also reads ``self._reranker``, whose ``mode``
+        is MUTABLE: it goes ``uninitialized`` -> ``loaded`` when the warm at the
+        end of ``ingest_documents`` finishes. The same question asked before and
+        after that warm can therefore come back in a different ORDER -- never with
+        a different set of pages, which is the guarantee that matters and is
+        untouched. The dedup this method exists for is unaffected either way,
+        because both calls inside one turn see the same mode: the warm happens
+        once per ingest, not per query, and ``ingest_documents`` is not reachable
+        from a turn. What would break the claim is a reload mid-turn, and nothing
+        does that.
+
+        ONE THING IS now fitted rather than recomputed per call, and the claim
+        above is scoped to say so: ``_lexical_index`` builds the BM25 matrix on
+        first retrieval and keeps it. It is a pure function of ``self.chunks``
+        -- which ``embedding_text`` derives from fields the embedding cache
+        already persists -- so a fitted index cannot describe a different corpus
+        than the one being retrieved, and ``ingest_documents`` drops it in the
+        one place ``self.chunks`` is replaced. What it buys is not a faster
+        answer but a consistent one: re-fitting per call would make two
+        retrievals of the same question depend on nothing at all, which is worth
+        less than it sounds and costs a 124 x ~2000 matrix every question.
 
         Returns:
             ``(context_string, chunks_with_scores)`` -- in that order, matching

@@ -43,6 +43,10 @@ HEALTHY = {
     "candidate_loaded": True,
     "rag_chunks": 124,
     "rag_mode": "embeddings",
+    # `loaded`, not `disabled`, because this fixture describes a service running
+    # what it ships. Both are healthy (see `_HEALTHY_RERANK_STATES`); `loaded` is
+    # the one that proves the healthy path is not accidentally the off path.
+    "rerank_mode": "loaded",
     "persistence": "ok",
 }
 
@@ -55,6 +59,7 @@ def _deployment(**overrides):
     rag = MagicMock()
     rag.chunks = [object()] * fields["rag_chunks"]
     rag.mode = fields["rag_mode"]
+    rag.rerank_mode = fields["rerank_mode"]
 
     stt = MagicMock()
     stt.is_loaded = fields["whisper_loaded"]
@@ -101,6 +106,7 @@ class TestAHealthyService:
             "whisper_loaded",
             "rag_chunks",
             "rag_mode",
+            "rerank_mode",
             "candidate_loaded",
         ):
             assert field in payload, f"/api/health stopped publishing {field}"
@@ -144,6 +150,14 @@ class TestDegradationsAreVisible:
                 id="uninitialised",
             ),
             pytest.param(
+                "rerank_mode", "failed", "the cross-encoder did not load",
+                id="rerank-failed",
+            ),
+            pytest.param(
+                "rerank_mode", "uninitialized", "no cross-encoder has been loaded",
+                id="rerank-uninitialised",
+            ),
+            pytest.param(
                 "whisper_loaded", False, "nothing can be transcribed", id="no-whisper"
             ),
             pytest.param(
@@ -177,6 +191,18 @@ class TestDegradationsAreVisible:
         amber over a working instance every time an operator turns a flag off.
         """
         assert _health(persistence="disabled")["status"] == "ok"
+
+    def test_a_reranker_that_is_switched_off_is_not_a_failure(self):
+        """``RERANK_ENABLED=false`` is a decision, not an outage.
+
+        The same argument as the store above, and it matters more here: the
+        reranker PERMUTES the top-k, so a service running without one serves the
+        same pages in the previous order and loses nothing it was serving before.
+        Reporting that as degraded would train an operator to ignore the rail.
+        """
+        payload = _health(rerank_mode="disabled")
+        assert payload["status"] == "ok", payload
+        assert "rerank_mode" not in payload["problems"], payload
 
 
 # ─── An unreachable store is reflected, not swallowed ───────────────────────

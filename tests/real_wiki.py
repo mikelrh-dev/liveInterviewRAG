@@ -480,6 +480,24 @@ class CommentFigures:
     at ``top_k`` = twice the chunk count -- the only space the public path can be
     asked about, and the unit the threshold comment had to be rewritten into.
 
+    The ``*_at_top3`` fields are the figures at the top_k PRODUCTION asks for
+    (``backend/config.py`` ``RAG_TOP_K``, which ships 3), and they exist because
+    every other recall figure here is measured at ``top_k`` = the population
+    size. That is a deliberate choice for those measurements -- a top_k wide
+    enough to hold every page turns the metric into "is the gold page anywhere in
+    the ranking", which is what the embedding-cache identity and the filter
+    counts want to know -- and it is the wrong question for the one number an
+    interviewer experiences, which is what lands in the model's context. For a
+    long time the repository published no figure at top_k=3 at all, so an
+    improvement there would have been invisible to every published claim and to
+    every guard derived from one. ``recall3_at_top3`` is that figure.
+
+    It is a DIFFERENT measurement from ``recall3``, not a restatement of it, and
+    the two can disagree in both directions: the lexical rescue in
+    ``RAGPipeline._lexical_rescue`` only fires when the per-page cut actually
+    bound, which is a top_k-sized event, so it moves ``recall3_at_top3`` and
+    leaves ``recall3`` exactly where it was. That is why both are recorded.
+
     The word-shape fields (``median_words`` .. ``chunks_at_ceiling``) were added
     for ``backend/main.py``'s ``CHUNK_SIZE`` justification, and
     ``rescued_by_page_cut`` for the guard in
@@ -523,6 +541,8 @@ class CommentFigures:
     recall1: float
     recall3: float
     mrr5: float
+    recall3_at_top3: float
+    hits3_at_top3: int
     chunks: int
     filtered: int
     unfiltered: int
@@ -566,6 +586,12 @@ COMMENT_FIGURES_FULL = CommentFigures(
     recall1=0.7347,
     recall3=0.8163,
     mrr5=0.7803,
+    # At the top_k production ships. 44 of 49 with the lexical rescue, 40
+    # without it: the rescue fires on 5 questions and costs 1, and both numbers
+    # are published because the guard re-derives the pair rather than one of
+    # them. ``recall3`` above is unchanged by the rescue and must stay that way.
+    recall3_at_top3=0.8980,
+    hits3_at_top3=44,
     chunks=124,
     filtered=854,
     unfiltered=1813,
@@ -589,6 +615,12 @@ COMMENT_FIGURES_REDUCED = CommentFigures(
     recall1=0.7561,
     recall3=0.8537,
     mrr5=0.8118,
+    # 38 of 41 at the shipped top_k=3, from 35 without the rescue: four gained,
+    # one lost. The trade is NOT the same question as on the full population,
+    # which is the point of recording it per population -- here the question the
+    # rescue costs is ``que estabas haciendo en mercadona los ultimos años``.
+    recall3_at_top3=38 / 41,
+    hits3_at_top3=38,
     chunks=116,
     filtered=631,
     unfiltered=1353,

@@ -20,6 +20,27 @@ router = APIRouter()
 #: has been loaded at all. Exported so the rule is stated once.
 EXPECTED_RAG_MODE = "embeddings"
 
+#: The re-ranking mode the service is supposed to be in, and the states that are
+#: not faults.
+#:
+#: ``disabled`` is a DECISION the deployment made (``RERANK_ENABLED=false``), so
+#: it is healthy for the same reason ``disabled`` is healthy in
+#: ``_HEALTHY_STORE_STATES`` below: an operator turning a feature off is not an
+#: incident. Everything else -- ``uninitialized``, ``failed`` -- is the
+#: cross-encoder not doing the job it was measured doing.
+#:
+#: It needs its own rule because ``failed`` is INVISIBLE to every other field in
+#: this payload. The reranker permutes the top-k, so the set of pages served is
+#: byte-identical with and without it: ``rag_chunks``, the recall figures and the
+#: filter counts are all the same either way. A service that lost its reranker
+#: two months ago would answer ``status: "ok"`` here forever if this field did
+#: not exist, and the ordering it silently stopped doing is worth 4 questions of
+#: gold@1 on the full population.
+EXPECTED_RERANK_MODE = "loaded"
+
+#: Re-rank states that are a decision rather than a fault.
+_HEALTHY_RERANK_STATES = frozenset({"loaded", "disabled"})
+
 #: The store states that are not a fault. ``disabled`` is a decision the
 #: deployment made, not something that went wrong.
 _HEALTHY_STORE_STATES = frozenset({"ok", "disabled"})
@@ -62,6 +83,11 @@ async def health_check():
       lost its embedding model answered ``status: "ok"`` and the status rail
       painted a green dot over a retrieval pipeline that was no longer the one
       it claimed to be.
+    * ``rerank_mode`` has the same shape of problem for the same reason, and it
+      is the more likely one to arrive: a cross-encoder download failing on a
+      host without egress is a routine deploy accident, it degrades to the
+      previous ordering rather than to an error, and nothing else in this body
+      moves when it happens.
     * A zero chunk count is a real answer to "can this service retrieve
       anything", and nothing read it.
     * The store's failure policy is that no method ever raises, so an
@@ -77,6 +103,7 @@ async def health_check():
     whisper_loaded = container.stt_service().is_loaded
     rag_chunks = len(container.rag_pipeline().chunks)
     rag_mode = container.rag_pipeline().mode
+    rerank_mode = container.rag_pipeline().rerank_mode
     candidate_loaded = container.candidate_profile().profile_data is not None
     persistence = _persistence_state()
 
@@ -87,6 +114,8 @@ async def health_check():
         problems.append("rag_chunks")
     if rag_mode != EXPECTED_RAG_MODE:
         problems.append("rag_mode")
+    if rerank_mode not in _HEALTHY_RERANK_STATES:
+        problems.append("rerank_mode")
     if not candidate_loaded:
         problems.append("candidate_loaded")
     if persistence not in _HEALTHY_STORE_STATES:
@@ -98,6 +127,12 @@ async def health_check():
         "whisper_loaded": whisper_loaded,
         "rag_chunks": rag_chunks,
         "rag_mode": rag_mode,
+        # The mode AND the versioned decision that produced the current order.
+        # The identity is here so an operator reading one of these can tell which
+        # reordering is live without reading the source; see RERANK_VERSION in
+        # backend/services/rerank.py.
+        "rerank_mode": rerank_mode,
+        "rerank_identity": container.rag_pipeline().rerank_identity,
         "candidate_loaded": candidate_loaded,
         "persistence": persistence,
     }

@@ -7,7 +7,7 @@ def test_build_system_prompt_no_context():
     """System prompt without context is valid."""
     prompt = build_system_prompt()
     assert "Mikel" in prompt
-    assert "desarrollador junior DAM" in prompt
+    assert "desarrollador" in prompt
     assert "primera persona" in prompt
     assert "información relevante" not in prompt
 

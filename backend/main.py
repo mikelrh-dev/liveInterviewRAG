@@ -67,6 +67,7 @@ from backend.services.candidate import CandidateProfile
 from backend.services.llm import LLMService
 from backend.services.persistence import PersistenceService
 from backend.services.rag import RAGPipeline
+from backend.services.rerank import Reranker
 from backend.services.report import ReportService
 from backend.services.stt import STTService
 from backend.services.tts import TTSService
@@ -160,6 +161,16 @@ rag_pipeline = RAGPipeline(
     chunk_overlap=config.CHUNK_OVERLAP,
     cache_dir=config.RAG_CACHE_DIR,
     embedding_model=config.EMBEDDING_MODEL,
+    # The ONLY construction site that enables the cross-encoder. Everywhere else
+    # the pipeline gets a disabled one by default, so turning it off is
+    # `RERANK_ENABLED=false` in the environment rather than a hunt through call
+    # sites. Measured gain and cost are in backend/services/rerank.py and
+    # tests/test_rerank.py; the state is reported by /api/health as
+    # ``rerank_mode``.
+    reranker=Reranker(
+        model_name=config.RERANKER_MODEL,
+        enabled=config.RERANK_ENABLED,
+    ),
 )
 candidate_profile = CandidateProfile(config.CANDIDATE_DIR, wiki_dir=config.WIKI_DIR)
 
