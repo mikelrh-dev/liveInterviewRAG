@@ -13,7 +13,7 @@ summary_1line: Junior DAM developer with a retail-management past turned coder
 
 ## Identity
 
-- **Name:** Mikel Romero Homobono
+- **Name:** Mikel R.
 - **Role:** Software Developer (Junior)
 
 ## Top skills (summary)

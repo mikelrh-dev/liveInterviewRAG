@@ -16,6 +16,8 @@ Durante las prácticas (FCT) en **Ceesa**, me dediqué íntegramente a desarroll
 
 Esto me permitió aprender a desarrollar y entender qué soluciones tiene que ofrecer un ERP en el día a día: **fiscalidad, inventarios, logs, traspasos, tesorería/arqueos**.
 
+**Deploy:** Sí — la web de documentación visible en mi portfolio (https://mikelrh-dev.github.io/)
+
 ## Why
 - Proyecto final de las prácticas de 2º DAM (FP Superior Desarrollo de Aplicaciones Multiplataforma)
 - Demostrar comprensión de arquitectura ERP, diseño de bases de datos y modelado de procesos de negocio

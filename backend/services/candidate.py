@@ -191,13 +191,16 @@ class CandidateProfile:
         --------------------------------------
         ``_parse_experience`` splits ``PERIOD: Role, Company`` on the FIRST
         comma (``compile.py:96-98``), so the study line
-        "2024–2026: FP Superior DAM at Tartanga (Erandio, presencial), started
-        while working at Mercadona" compiles to company="started while working
-        at Mercadona". This method prints that unchanged rather than
-        second-guessing it: filtering it would mean classifying entries
-        semantically, which is exactly the second opinion just ruled out. The
-        heading the caller uses says "trayectoria", not "empleos", so nothing
-        asserts that a degree is an employer, and the fragment is a true one.
+        "2024–2026: FP Superior DAM, presencial, started while working at
+        Mercadona" (``wiki/profile/mikel.md:30``) compiles to role="FP Superior
+        DAM" and company="presencial, started while working at Mercadona" --
+        the split lands on the comma after "DAM", so "presencial" travels into
+        the company slot with the rest. This method prints that unchanged
+        rather than second-guessing it: filtering it would mean classifying
+        entries semantically, which is exactly the second opinion just ruled
+        out. The heading the caller uses says "trayectoria", not "empleos", so
+        nothing asserts that a degree is an employer, and the fragment is a
+        true one.
 
         LIMITS
         ------

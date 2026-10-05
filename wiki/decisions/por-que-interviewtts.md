@@ -2,7 +2,7 @@
 type: decision
 title: por-que-interviewtts
 created: 2026-06-14
-updated: 2026-06-14
+updated: 2026-09-29
 confidence: medium
 tags: [interviewtts, portfolio, ai, project]
 related: [projects/interview-tts.md, profile/mikel.md]
@@ -16,7 +16,7 @@ Queria un proyecto de portafolio que se alejara de un CRUD tipico. Me llama la a
 - Un pipeline RAG completo (embeddings, chunking, retrieval)
 - Integracion con LLM (DeepSeek/Owl) para generar respuestas contextuales
 - STT (Whisper) + TTS (Edge TTS) para la interaccion por voz
-- Despliegue en Oracle Free Tier con Docker
+- Despliegue real en un VPS de Oracle Free Tier: systemd gestionando uvicorn y Nginx como proxy inverso con TLS. Sin contenedores.
 
 ## Alternativas consideradas
 - **CRUD tipico** (blog, ecommerce, clone de Twitter): mas comun, no destacaba

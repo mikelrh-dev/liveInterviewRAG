@@ -26,7 +26,7 @@ summary_1line: "Testing autodidacta: pytest unitario e integración tras cada ca
 - Funciones aisladas (unitarios): lógica de negocio, helpers, parsers
 - Endpoints API (integración): request/response, status codes, errores
 - Mocking de servicios externos: APIs de LLM, TTS, STT — para no depender de servicios reales en tests
-- En InterviewTTS: suite de 84 tests cubriendo config, RAG, LLM, STT, TTS, API y memoria de conversación
+- En InterviewTTS: suite de 1188 tests de Python + 349 de Node, cubriendo config, RAG, LLM, STT, TTS, API, memoria de conversación y un guard de retrieval medido contra el wiki real
 
 ## See also
 - [[projects/interview-tts]]

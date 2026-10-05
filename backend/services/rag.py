@@ -1040,12 +1040,15 @@ class RAGPipeline:
         #
         # WHAT THE FILTER COSTS, in one unit. At ``top_k`` = twice the chunk
         # count, the labelled questions return these counts of RESULTS:
-#     full (37 pages, 49 questions) discards 952 of the 1813 results (52.5%) -- 861 results with the filter and 1813 without
+#     full (37 pages, 49 questions) discards 950 of the 1813 results (52.4%) -- 863 results with the filter and 1813 without
 #     reduced (37 pages, 49 questions) discards 949 of the 1813 results (52.3%) -- 864 results with the filter and 1813 without
         # The two rows now share every COUNT on this block -- 37 pages, 49
-        # questions, 124 chunks, 1813 unfiltered results -- and differ by three
-        # survivors of the filter, because the fifteen uncommitted pages are not
-        # the fifteen a clone is served.
+        # questions, 124 chunks, 1813 unfiltered results -- and differ by ONE
+        # survivor of the filter, 863 against 864, because the fifteen
+        # uncommitted pages are not the fifteen a clone is served. Re-measured
+        # 2026-10-05 on the redacted-and-filled working tree: the gap closed from
+        # three survivors to one, and the recall figures on both rows did not
+        # move at all.
         # and at the shipped top_k=3 it costs the caller one slot in three, which
         # is the fact the two numbers together say: a wide filter that is
         # invisible until a question runs thin.

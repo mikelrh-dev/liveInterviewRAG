@@ -13,7 +13,8 @@ summary_1line: Gerente B (Encargado) at Mercadona, 2019-Nov 2025
 
 ## Context
 - **Company:** Mercadona — Spain's largest supermarket chain. Industry: retail / food distribution.
-- **Team size:** Managed large teams across store operations.
+- **Team size:** Tienda de ~100 personas; equipo directo a mi cargo de ~50.
+- **Why you joined:** Me lo ofrecieron a los pocos meses de entrar — promovido a Gerente B.
 - **Period:** 2019 to November 2025 (left to transition into tech).
 
 ## Responsibilities
@@ -27,7 +28,6 @@ summary_1line: Gerente B (Encargado) at Mercadona, 2019-Nov 2025
 - Lideré equipos grandes en un entorno retail de alto volumen y ritmo.
 - Gestioné la operación completa de la tienda durante mis turnos: planificación, ejecución y resolución de incidencias de forma autónoma.
 - Toma de decisiones diaria bajo presión: priorizar tareas, resolver conflictos y garantizar la continuidad del servicio.
-- [TODO: ask Mikel] — Any specific metrics? (e.g., stock accuracy %, audit scores, team retention, incident reduction)
 
 ## What this role taught you
 - **Liderazgo y gestión de personas:** coordinar equipos grandes, delegar, motivar y resolver conflictos.

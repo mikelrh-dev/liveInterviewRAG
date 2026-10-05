@@ -78,8 +78,8 @@ _CACHED_QUESTIONS = [
         # it needs its neighbours to match.
         "keywords": [],
         "answer": (
-            "Soy Mikel, desarrollador. Estudié Desarrollo de Aplicaciones "
-            "Multiplataforma en Tartanga y antes era gerente en Mercadona, liderando un equipo "
+            "Soy Mikel, desarrollador. Estudié un FP Superior en Desarrollo de Aplicaciones "
+            "Multiplataforma y antes era gerente en Mercadona, liderando un equipo "
             "de unas 50 personas, pero quise dar un giro y dedicarme a algo que me apasiona: "
             "el desarrollo de software."
         ),
@@ -526,10 +526,9 @@ _CACHED_QUESTIONS = [
         # at the Ceesa internship, not an attraction to the subject).
         #
         # What replaces it, every clause cited:
-        #   the programme and the school  -> wiki/profile/mikel.md:24 ("FP
-        #       Superior Desarrollo de Aplicaciones Multiplataforma (DAM) at
-        #       TCIFP TARTANGA LHII (Erandio, presencial) ... finished 2026"),
-        #       and wiki/faq/presentacion-30-segundos.md:15
+        #   the programme  -> wiki/profile/mikel.md:24 ("FP Superior Desarrollo
+        #       de Aplicaciones Multiplataforma (DAM), presencial ... finished
+        #       2026"), and wiki/faq/presentacion-30-segundos.md:15
         #   "siempre me atrajo la tecnología" -> wiki/faq/por-que-dejar-
         #       supermercados.md:15,18, which is the candidate's own page for
         #       exactly this motivation
@@ -539,7 +538,7 @@ _CACHED_QUESTIONS = [
         #   the AI and "de lleno"            -> same page, :18 and :29
         "answer": (
             "Elegí DAM, el FP Superior de Desarrollo de Aplicaciones Multiplataforma que "
-            "estudié en TCIFP Tartanga LHII, porque siempre me atrajo la tecnología. Es la "
+            "cursé, porque siempre me atrajo la tecnología. Es la "
             "base que me da el cambio de carrera: Java, SQL, estructura en capas y "
             "patrones de diseño. Y al salir del temario me topé con el mundo de la "
             "inteligencia artificial aplicada al desarrollo, en el que me he metido de lleno."

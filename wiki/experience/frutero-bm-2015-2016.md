@@ -25,7 +25,9 @@ summary_1line: Frutero at BM Supermercados, 2015-2016 — entry-level retail rol
 ## Measurable achievements
 - Responsable de la operativa de la sección de frutería desde mi primer trabajo: pedidos, merma y servicio.
 - Aprendí a gestionar stock y minimizar pérdidas desde el inicio de mi carrera laboral.
-- [TODO: ask Mikel] — Any specific metrics or achievements in this role?
+- Roté por muchas tiendas de BM cubriendo bajas y vacaciones — me adaptaba rápido y mantenía el ritmo en contextos nuevos.
+- Destacaba por la cantidad de trabajo que sacaba y por estar siempre dispuesto a echar una mano en cualquier parte de la tienda.
+- En cada tienda donde estuve, la gestión de la sección mejoraba.
 
 ## What this role taught you
 - **Ética de trabajo:** primer contacto con el mundo laboral, responsabilidad y compromiso desde una posición inicial.

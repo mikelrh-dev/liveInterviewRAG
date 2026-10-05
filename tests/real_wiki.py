@@ -80,6 +80,19 @@ never has to guess which vector space a number belongs to:
     definition of ``reduced`` was built on, so a clean clone stopped loading 33
     pages and started loading 37. Measured 40/49 = 0.8163 on the committed
     corpus, floor 0.7755.
+  * 2026-10-05, ``full`` re-measured after those fifteen uncommitted pages were
+    edited again -- ``[TODO]`` placeholders resolved into prose, new facts added,
+    and the identifying details redacted -- so the digest moved and this row had
+    to be re-derived rather than re-pointed, which is the refusal
+    ``guard_blocker`` exists to force. Re-measured through the same production
+    path: 37 pages, 49 questions, 124 chunks, recall@1 0.7347, recall@3 0.8163
+    (40 of 49), MRR@5 0.7803 and 44 of 49 at ``top_k=3`` -- every one of those
+    IDENTICAL to the run above, and so are the word shape, the page-cut rescue
+    and the seven attributed traits. The only figure that moved is ``filtered``:
+    861 -> 863 survivors of the cosine filter out of the same 1813, which closed
+    the gap against ``reduced`` from three survivors to one. A corpus edit that
+    moves no ranking figure at all is worth writing down: it is what "the figures
+    describe the corpus" looks like when the corpus changes underneath them.
 
 Both populations were measured through the production path -- the real loader,
 the real 400/50 chunker, real embeddings, real ``expand_query``, strict
@@ -239,7 +252,7 @@ def corpus_digest(documents: Dict[str, str]) -> str:
 #: here rather than inside each row so there is ONE answer to "which corpus is
 #: this", and the five resolvers that need it cannot answer five different ways.
 CORPUS_DIGESTS: Dict[str, str] = {
-    "full": "aee73e6448744ba66646aa7f931abce94e5e4452d488a34b13e14cc065ec127f",
+    "full": "588d9a0a592255ca1d00b5aca873992a81c1146b6a2faa5e0f8468b9fe1a021f",
     "reduced": "8b02b3efe687033b906975d38a7a3ca9bb5531aca35c3047c517207721aee105",
 }
 
@@ -713,7 +726,7 @@ COMMENT_FIGURES_FULL = CommentFigures(
     recall3_at_top3=0.8980,
     hits3_at_top3=44,
     chunks=124,
-    filtered=861,
+    filtered=863,
     unfiltered=1813,
     median_words=54.0,
     p95_words=131,

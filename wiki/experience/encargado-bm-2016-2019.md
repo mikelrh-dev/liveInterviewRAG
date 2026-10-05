@@ -14,7 +14,7 @@ summary_1line: Encargado (segundo a bordo) at BM Supermercados, 2016-2019
 ## Context
 - **Company:** BM Supermercados — regional supermarket chain in northern Spain. Industry: retail.
 - **Team size:** Managed store teams.
-- **Why you joined:** [TODO: ask Mikel] — Promoted from Frutero role? What made you take on management?
+- **Why you joined:** Lo solicité yo — quería aprender un nuevo rol y dar el paso a la gestión.
 
 ## Responsibilities
 - **Segundo encargado a bordo** — apoyo directo al encargado principal y asunción de responsabilidades operativas.
@@ -25,7 +25,7 @@ summary_1line: Encargado (segundo a bordo) at BM Supermercados, 2016-2019
 ## Measurable achievements
 - Responsable de la operativa diaria de la tienda como segundo encargado: pedidos, personal e incidencias.
 - Experiencia previa a Mercadona en gestión de equipos y resolución de problemas.
-- [TODO: ask Mikel] — Any specific achievements? (e.g., improved stock processes, team development, store performance)
+- Tiendas pequeñas: equipo reducido donde era fácil hacer piña — grupo cohesionado y trato cercano.
 
 ## What this role taught you
 - **Gestión de equipos:** primera experiencia dirigiendo personal y coordinando turnos.

@@ -2,7 +2,7 @@
 type: skills
 title: data
 created: 2026-06-13
-updated: 2026-06-13
+updated: 2026-08-28
 confidence: high
 tags: [skill-domain, database, sql, mysql, postgresql, mongodb]
 related: [projects/interview-tts.md, projects/pagina-web-practicas.md, projects/fraud-detector.md]

@@ -2,7 +2,7 @@
 type: skills
 title: frontend
 created: 2026-06-13
-updated: 2026-06-13
+updated: 2026-08-28
 confidence: medium
 tags: [skill-domain, frontend, javascript, html, css]
 related: [projects/interview-tts.md, projects/pagina-web-practicas.md]

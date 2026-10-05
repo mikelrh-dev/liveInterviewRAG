@@ -14,7 +14,7 @@ summary_1line: Sistema hibrido de deteccion de fraude con reglas + ML + LLM loca
 ## What
 Sistema hibrido de deteccion de fraude en transacciones financieras que combina tres capas de analisis: un motor de reglas determinista (9 reglas), un modelo de machine learning (XGBoost con 10 features), y un LLM local (Ollama) que genera informes tecnicos explicativos para analistas. El sistema NO usa el LLM para decidir — solo para explicar. Incluye monitoring con drift detection (Evidently), audit trail inmutable con checksums SHA-256, y un dashboard React para analistas.
 
-**URL:** [TODO: ask Mikel — deployed URL?]
+**Deploy:** Sí — visible en mi portfolio (https://mikelrh-dev.github.io/)
 
 ## Why
 Queria un proyecto de portfolio que demostrara ML en produccion, no solo notebooks. La mayoria de proyectos de ML en portafolios se quedan en "entrene un modelo y muestre la matriz de confusion". Fraud Detector va mas alla: feature engineering real, ensemble scoring, monitoring con drift detection, y un LLM que genera informes para humanos. Tambien queria practicar arquitectura de microservicios con workers async y una cola Redis.
