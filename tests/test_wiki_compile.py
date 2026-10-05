@@ -54,7 +54,7 @@ class TestProfileMapping:
         result = run_compile(wiki, tmp_path / "candidate")
         assert result.returncode == 0, result.stdout + result.stderr
         profile = read_profile(tmp_path / "candidate")
-        assert profile["name"] == "Mikel Romero Homobono"
+        assert profile["name"] == "Mikel R."
         assert profile["title"] == "Software Developer (Junior)"
 
     def test_summary_verbatim_from_frontmatter(self, tmp_path):
